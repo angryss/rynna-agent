@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rynna_core::{
-    Agent, AgentProfiles, Completion, CompletionRequest, Message, ModelProvider, Profile,
-    ProfileProvider, ProviderError, Workspace,
+    Agent, AgentError, AgentProfiles, Completion, CompletionRequest, Message, ModelProvider,
+    Profile, ProfileAgentError, ProfileProvider, ProviderContext, ProviderError, Workspace,
 };
 
 struct FixedProvider(&'static str);
@@ -22,6 +22,19 @@ impl ModelProvider for RecordingProvider {
     async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
         self.0.lock().unwrap().push(request);
         Ok(Completion::new(Message::assistant("recorded")))
+    }
+}
+
+struct ManagedProvider;
+
+#[async_trait]
+impl ModelProvider for ManagedProvider {
+    async fn complete(&self, _request: CompletionRequest) -> Result<Completion, ProviderError> {
+        let mut message = Message::assistant("managed");
+        message.provider_context = Some(ProviderContext::OpenAi(vec![serde_json::json!({
+            "type": "compaction",
+        })]));
+        Ok(Completion::new(message))
     }
 }
 
@@ -276,4 +289,57 @@ async fn omitted_workspace_uses_the_profile_default_workspace_directory() {
     let system = &requests.lock().unwrap()[0].messages[0].content;
     assert!(system.contains("\"name\":null"));
     assert!(system.contains("\"starting_directory\":\"/projects/home\""));
+}
+
+#[tokio::test]
+async fn workspace_managed_contexts_persist_across_requests_and_remain_isolated() {
+    let (mut metadata, _) = profile("local", "unused");
+    metadata.workspaces = ["first", "second"]
+        .into_iter()
+        .map(|name| Workspace {
+            name: name.into(),
+            directories: vec![format!("/projects/{name}").into()],
+            default_directory: format!("/projects/{name}").into(),
+        })
+        .collect();
+    let profiles = AgentProfiles::new(
+        "local",
+        [(metadata, Agent::new(Arc::new(ManagedProvider), "policy"))],
+    )
+    .unwrap();
+
+    let first_reply = profiles
+        .clone()
+        .with_workspace(None, Some("first"))
+        .unwrap()
+        .respond(None, &[], "hello")
+        .await
+        .unwrap();
+    assert!(matches!(
+        first_reply.provider_context,
+        Some(ProviderContext::ManagedToken(_))
+    ));
+
+    profiles
+        .clone()
+        .with_workspace(None, Some("first"))
+        .unwrap()
+        .respond(
+            None,
+            &[Message::user("hello"), first_reply.clone()],
+            "continue",
+        )
+        .await
+        .unwrap();
+
+    let error = profiles
+        .with_workspace(None, Some("second"))
+        .unwrap()
+        .respond(None, &[Message::user("hello"), first_reply], "continue")
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ProfileAgentError::Agent(AgentError::InvalidHistory)
+    ));
 }

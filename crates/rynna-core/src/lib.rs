@@ -751,14 +751,20 @@ const MAX_MANAGED_CONTEXTS: usize = 16;
 
 #[derive(Default)]
 struct ManagedContextStore {
-    contexts: BTreeMap<String, Vec<Message>>,
+    contexts: BTreeMap<String, (ManagedContextScope, Vec<Message>)>,
     order: VecDeque<String>,
 }
 
+#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+struct ManagedContextScope {
+    workspace: Option<String>,
+    model: Option<(String, String, String)>,
+}
+
 impl ManagedContextStore {
-    fn insert(&mut self, messages: Vec<Message>) -> String {
+    fn insert(&mut self, scope: ManagedContextScope, messages: Vec<Message>) -> String {
         let token = uuid::Uuid::new_v4().to_string();
-        self.contexts.insert(token.clone(), messages);
+        self.contexts.insert(token.clone(), (scope, messages));
         self.order.push_back(token.clone());
         while self.order.len() > MAX_MANAGED_CONTEXTS {
             if let Some(expired) = self.order.pop_front() {
@@ -768,8 +774,16 @@ impl ManagedContextStore {
         token
     }
 
-    fn get(&self, token: &str) -> Option<&[Message]> {
-        self.contexts.get(token).map(Vec::as_slice)
+    fn get(&self, scope: &ManagedContextScope, token: &str) -> Option<&[Message]> {
+        self.contexts
+            .get(token)
+            .filter(|(stored_scope, _)| stored_scope == scope)
+            .map(|(_, messages)| messages.as_slice())
+    }
+
+    fn retain_scopes(&mut self, mut keep: impl FnMut(&ManagedContextScope) -> bool) {
+        self.contexts.retain(|_, (scope, _)| keep(scope));
+        self.order.retain(|token| self.contexts.contains_key(token));
     }
 }
 
@@ -789,6 +803,7 @@ pub struct Agent {
     system_prompt: Arc<str>,
     tools: Arc<BTreeMap<String, Arc<dyn Tool>>>,
     context_manager: Arc<dyn ContextManagement>,
+    managed_context_scope: ManagedContextScope,
     managed_contexts: Arc<Mutex<ManagedContextStore>>,
 }
 
@@ -807,6 +822,7 @@ impl Agent {
             system_prompt: system_prompt.into(),
             tools: Arc::new(BTreeMap::new()),
             context_manager: Arc::new(ThresholdContextManager::default()),
+            managed_context_scope: ManagedContextScope::default(),
             managed_contexts: Arc::new(Mutex::new(ManagedContextStore::default())),
             memory: None,
             memory_session: None,
@@ -836,6 +852,7 @@ impl Agent {
             system_prompt: system_prompt.into(),
             tools: Arc::new(indexed),
             context_manager: Arc::new(ThresholdContextManager::default()),
+            managed_context_scope: ManagedContextScope::default(),
             managed_contexts: Arc::new(Mutex::new(ManagedContextStore::default())),
             memory: None,
             memory_session: None,
@@ -930,7 +947,7 @@ impl Agent {
                             .managed_contexts
                             .lock()
                             .expect("managed context lock must not be poisoned")
-                            .get(token)
+                            .get(&self.managed_context_scope, token)
                             .map(<[Message]>::to_vec)
                             .ok_or(AgentError::InvalidHistory)?;
                         if managed.last().is_none_or(|last| {
@@ -1067,7 +1084,10 @@ impl Agent {
                             .managed_contexts
                             .lock()
                             .expect("managed context lock must not be poisoned")
-                            .insert(messages[start..].to_vec());
+                            .insert(
+                                self.managed_context_scope.clone(),
+                                messages[start..].to_vec(),
+                            );
                         final_message.provider_context = Some(ProviderContext::ManagedToken(token));
                     }
                     if let Some(memory) = &self.memory {
@@ -1262,11 +1282,29 @@ impl AgentProfiles {
         default_workspace_directory: PathBuf,
         workspaces: Vec<Workspace>,
     ) -> Result<(), ProfileError> {
-        let (metadata, _) = Arc::make_mut(&mut self.profiles)
+        let (metadata, agent) = Arc::make_mut(&mut self.profiles)
             .get_mut(profile)
             .ok_or_else(|| ProfileError::UnknownProfile(profile.to_owned()))?;
+        let previous_default = metadata.default_workspace_directory.clone();
+        let previous_workspaces = metadata
+            .workspaces
+            .iter()
+            .map(|workspace| (workspace.name.clone(), workspace.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let next_workspaces = workspaces
+            .iter()
+            .map(|workspace| (workspace.name.clone(), workspace.clone()))
+            .collect::<BTreeMap<_, _>>();
         metadata.default_workspace_directory = default_workspace_directory;
         metadata.workspaces = workspaces;
+        agent
+            .managed_contexts
+            .lock()
+            .expect("managed context lock must not be poisoned")
+            .retain_scopes(|scope| match scope.workspace.as_ref() {
+                None => previous_default == metadata.default_workspace_directory,
+                Some(name) => previous_workspaces.get(name) == next_workspaces.get(name),
+            });
         Ok(())
     }
 
@@ -1327,7 +1365,7 @@ impl AgentProfiles {
             agent.system_prompt, workspace_context
         )
         .into();
-        agent.managed_contexts = Arc::new(Mutex::new(ManagedContextStore::default()));
+        agent.managed_context_scope.workspace = workspace_name.map(str::to_owned);
         Ok(self)
     }
 
@@ -1366,8 +1404,13 @@ impl AgentProfiles {
             ThinkingLevel::Default => provider,
             level => provider.with_thinking(level)?,
         };
-        // Never reuse opaque provider continuations across model/effort selections.
-        agent.managed_contexts = Arc::new(Mutex::new(ManagedContextStore::default()));
+        // Keep provider continuations isolated by model and effort while preserving them across
+        // request-local snapshots that select the same conversation context.
+        agent.managed_context_scope.model = Some((
+            selection.provider.clone(),
+            selection.model.clone(),
+            selection.thinking.as_str().to_owned(),
+        ));
         Ok(self)
     }
 
