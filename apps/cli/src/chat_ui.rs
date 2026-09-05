@@ -48,6 +48,7 @@ struct SlashCommandMatch {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandAction {
+    Model,
     Clear,
     Help,
     Quit,
@@ -71,6 +72,12 @@ const SLASH_COMMANDS: &[SlashCommand] = &[
         name: "/help",
         description: "Show available commands",
         action: CommandAction::Help,
+        aliases: &[],
+    },
+    SlashCommand {
+        name: "/model",
+        description: "Open the model selector",
+        action: CommandAction::Model,
         aliases: &[],
     },
     SlashCommand {
@@ -192,8 +199,8 @@ impl ChatUi {
         if key.code == KeyCode::Enter && self.input.trim() == "/model" && !self.busy {
             self.input.clear();
             self.cursor = 0;
-            self.picker.show();
-            return None;
+            self.selected_command = 0;
+            return Some(InputAction::Command(CommandAction::Model));
         }
         if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if let Some(message) = self
@@ -504,6 +511,12 @@ fn command_suggestions(commands: &[SlashCommandMatch], selected_command: usize) 
 
 fn apply_command(ui: &mut ChatUi, history: &mut Vec<Message>, command: CommandAction) -> bool {
     match command {
+        CommandAction::Model => {
+            if !ui.busy {
+                ui.picker.show();
+            }
+            false
+        }
         CommandAction::Clear => {
             ui.messages.clear();
             ui.scroll_from_bottom = 0;
@@ -521,7 +534,7 @@ fn apply_command(ui: &mut ChatUi, history: &mut Vec<Message>, command: CommandAc
                         .map(|alias| format!("{} — {}", alias.name, alias.description)),
                 );
             }
-            help.push("/model — Select a provider and model\n/provider <provider> — Change provider\n/thinking default|low|medium|high — Set effort".to_owned());
+            help.push("/provider <provider> — Change provider\n/thinking default|low|medium|high — Set effort".to_owned());
             let help = help.join("\n");
             ui.push_message(MessageKind::Assistant, help);
             false
@@ -906,6 +919,33 @@ mod tests {
     };
 
     #[test]
+    fn model_command_opens_picker_from_full_command_or_autocomplete() {
+        for input in ["/model", "/model ", "/m", "/mo"] {
+            let mut ui = ChatUi::new("local", "small");
+            ui.picker.pairs = vec![rynna_core::ProfileProvider {
+                provider: "local".into(),
+                model: "small".into(),
+                enabled: true,
+                is_default: true,
+            }];
+            ui.input = input.into();
+            ui.cursor = ui.input.len();
+            if input == "/m" {
+                ui.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+                assert_eq!(ui.input, "/model");
+            }
+            let action = ui.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert_eq!(action, Some(InputAction::Command(CommandAction::Model)));
+            let mut history = vec![Message::user("Previous question")];
+            assert!(!apply_command(&mut ui, &mut history, CommandAction::Model));
+            assert!(ui.picker.open);
+            assert!(ui.input.is_empty());
+            assert!(ui.messages.is_empty());
+            assert_eq!(history.len(), 1);
+        }
+    }
+
+    #[test]
     fn picker_preserves_draft_and_blocks_opening_during_response() {
         let mut ui = ChatUi::new("local", "small");
         ui.picker.pairs = vec![rynna_core::ProfileProvider {
@@ -1072,6 +1112,8 @@ mod tests {
         let screen = terminal.backend().to_string();
         assert!(screen.contains("/clear"), "{screen}");
         assert!(screen.contains("Clear the conversation"), "{screen}");
+        assert!(screen.contains("/model"), "{screen}");
+        assert!(screen.contains("Open the model selector"), "{screen}");
         assert!(screen.contains("/help"), "{screen}");
         assert!(screen.contains("Show available commands"), "{screen}");
         assert!(screen.contains("/quit"), "{screen}");
