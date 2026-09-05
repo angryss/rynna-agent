@@ -73,6 +73,8 @@ describe('TauriAgentClient', () => {
           active_skills: [],
           mcp_servers: ['filesystem'],
           capabilities: ['workspace'],
+          default_project_directory: '.',
+          projects: [],
         },
       ],
       configured_profiles: [
@@ -85,6 +87,8 @@ describe('TauriAgentClient', () => {
           active_skills: [],
           mcp_servers: ['filesystem'],
           capabilities: ['workspace'],
+          default_project_directory: '.',
+          projects: [],
         },
       ],
     });
@@ -126,8 +130,8 @@ describe('TauriAgentClient', () => {
       active_skills: [],
       mcp_servers: [],
       capabilities: [],
-      default_workspace_directory: '.',
-      workspaces: [],
+      default_project_directory: '.',
+      projects: [],
     };
     const invoke = vi
       .fn()

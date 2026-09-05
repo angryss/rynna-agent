@@ -12,9 +12,9 @@ fn help_describes_interactive_run_and_server_modes() {
             .and(predicate::str::contains("run"))
             .and(predicate::str::contains("serve"))
             .and(predicate::str::contains("profiles"))
-            .and(predicate::str::contains("workspaces"))
+            .and(predicate::str::contains("projects"))
             .and(predicate::str::contains("--profile"))
-            .and(predicate::str::contains("--workspace"))
+            .and(predicate::str::contains("--project"))
             .and(predicate::str::contains("--config"))
             .and(predicate::str::contains("--configure-providers"))
             .and(predicate::str::contains("--provider-config")),

@@ -61,8 +61,8 @@ pub fn router(agent: Agent) -> Router {
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
-        default_workspace_directory: ".".into(),
-        workspaces: Vec::new(),
+        default_project_directory: ".".into(),
+        projects: Vec::new(),
     };
     let profiles = AgentProfiles::new("default", [(profile, agent)])
         .expect("the built-in server profile must be valid");
@@ -268,8 +268,8 @@ pub fn router_with_web(agent: Agent, web_dir: impl AsRef<Path>) -> Router {
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
-        default_workspace_directory: ".".into(),
-        workspaces: Vec::new(),
+        default_project_directory: ".".into(),
+        projects: Vec::new(),
     };
     let profiles = AgentProfiles::new("default", [(profile, agent)])
         .expect("the built-in server profile must be valid");
@@ -468,10 +468,10 @@ async fn update_saved_profile(
         let mut runtime = state.profiles.lock().await;
         if runtime.contains(&name) {
             runtime
-                .set_workspace_configuration(
+                .set_project_configuration(
                     &name,
-                    saved.default_workspace_directory.clone(),
-                    saved.workspaces.clone(),
+                    saved.default_project_directory.clone(),
+                    saved.projects.clone(),
                 )
                 .map_err(runtime_profile_error)?;
         }
@@ -522,7 +522,7 @@ fn runtime_profile_error(error: ProfileError) -> ApiError {
     }
 }
 
-fn workspace_error(error: ProfileError) -> ApiError {
+fn project_error(error: ProfileError) -> ApiError {
     match error {
         ProfileError::UnknownProfile(profile) => ApiError {
             status: StatusCode::BAD_REQUEST,
@@ -1027,6 +1027,7 @@ async fn api_method_not_allowed() -> ApiError {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RespondRequest {
     #[serde(default)]
     pub selection: Option<rynna_core::ModelSelection>,
@@ -1035,7 +1036,7 @@ pub struct RespondRequest {
     #[serde(default)]
     pub profile: Option<String>,
     #[serde(default)]
-    pub workspace: Option<String>,
+    pub project: Option<String>,
     pub prompt: String,
     #[serde(default)]
     pub history: Vec<Message>,
@@ -1057,8 +1058,8 @@ async fn respond(
         .await
         .clone()
         .with_memory_session(request.session_id)
-        .with_workspace(request.profile.as_deref(), request.workspace.as_deref())
-        .map_err(workspace_error)?
+        .with_project(request.profile.as_deref(), request.project.as_deref())
+        .map_err(project_error)?
         .with_model_selection(request.profile.as_deref(), request.selection.as_ref())
         .map_err(|error| ApiError {
             status: StatusCode::BAD_REQUEST,
@@ -1109,8 +1110,8 @@ async fn respond_stream(
         .await
         .clone()
         .with_memory_session(request.session_id)
-        .with_workspace(request.profile.as_deref(), request.workspace.as_deref())
-        .map_err(workspace_error)?
+        .with_project(request.profile.as_deref(), request.project.as_deref())
+        .map_err(project_error)?
         .with_model_selection(request.profile.as_deref(), request.selection.as_ref())
         .map_err(|error| ApiError {
             status: StatusCode::BAD_REQUEST,

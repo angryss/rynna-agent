@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use rynna_core::{
     Agent, AgentError, AgentProfiles, Completion, CompletionRequest, Message, ModelProvider,
-    Profile, ProfileAgentError, ProfileProvider, ProviderContext, ProviderError, Workspace,
+    Profile, ProfileAgentError, ProfileProvider, Project, ProviderContext, ProviderError,
 };
 
 struct FixedProvider(&'static str);
@@ -51,8 +51,8 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
             active_skills: Vec::new(),
             mcp_servers: Vec::new(),
             capabilities: Vec::new(),
-            default_workspace_directory: ".".into(),
-            workspaces: Vec::new(),
+            default_project_directory: ".".into(),
+            projects: Vec::new(),
         },
         Agent::new(Arc::new(FixedProvider(reply)), "Profile policy"),
     )
@@ -227,11 +227,11 @@ fn disabled_models_and_unknown_thinking_are_rejected() {
 }
 
 #[tokio::test]
-async fn workspace_selection_adds_trusted_session_context_without_mutating_the_profile() {
+async fn project_selection_adds_trusted_session_context_without_mutating_the_profile() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let (mut metadata, _) = profile("local", "unused");
-    metadata.default_workspace_directory = "/projects/default".into();
-    metadata.workspaces.push(Workspace {
+    metadata.default_project_directory = "/projects/default".into();
+    metadata.projects.push(Project {
         name: "rynna".into(),
         directories: vec!["/projects/rynna".into(), "/projects/shared".into()],
         default_directory: "/projects/rynna".into(),
@@ -247,7 +247,7 @@ async fn workspace_selection_adds_trusted_session_context_without_mutating_the_p
 
     profiles
         .clone()
-        .with_workspace(None, Some("rynna"))
+        .with_project(None, Some("rynna"))
         .unwrap()
         .respond(None, &[], "hello")
         .await
@@ -259,17 +259,17 @@ async fn workspace_selection_adds_trusted_session_context_without_mutating_the_p
     assert_eq!(profiles.profiles(), vec![metadata]);
 
     let error = profiles
-        .with_workspace(None, Some("missing"))
+        .with_project(None, Some("missing"))
         .err()
-        .expect("unknown workspaces must be rejected");
-    assert!(error.to_string().contains("workspace `missing`"));
+        .expect("unknown projects must be rejected");
+    assert!(error.to_string().contains("project `missing`"));
 }
 
 #[tokio::test]
-async fn omitted_workspace_uses_the_profile_default_workspace_directory() {
+async fn omitted_project_uses_the_profile_default_project_directory() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let (mut metadata, _) = profile("local", "unused");
-    metadata.default_workspace_directory = "/projects/home".into();
+    metadata.default_project_directory = "/projects/home".into();
     let profiles = AgentProfiles::new(
         "local",
         [(
@@ -280,7 +280,7 @@ async fn omitted_workspace_uses_the_profile_default_workspace_directory() {
     .unwrap();
 
     profiles
-        .with_workspace(None, None)
+        .with_project(None, None)
         .unwrap()
         .respond(None, &[], "hello")
         .await
@@ -292,11 +292,11 @@ async fn omitted_workspace_uses_the_profile_default_workspace_directory() {
 }
 
 #[tokio::test]
-async fn workspace_managed_contexts_persist_across_requests_and_remain_isolated() {
+async fn project_managed_contexts_persist_across_requests_and_remain_isolated() {
     let (mut metadata, _) = profile("local", "unused");
-    metadata.workspaces = ["first", "second"]
+    metadata.projects = ["first", "second"]
         .into_iter()
-        .map(|name| Workspace {
+        .map(|name| Project {
             name: name.into(),
             directories: vec![format!("/projects/{name}").into()],
             default_directory: format!("/projects/{name}").into(),
@@ -310,7 +310,7 @@ async fn workspace_managed_contexts_persist_across_requests_and_remain_isolated(
 
     let first_reply = profiles
         .clone()
-        .with_workspace(None, Some("first"))
+        .with_project(None, Some("first"))
         .unwrap()
         .respond(None, &[], "hello")
         .await
@@ -322,7 +322,7 @@ async fn workspace_managed_contexts_persist_across_requests_and_remain_isolated(
 
     profiles
         .clone()
-        .with_workspace(None, Some("first"))
+        .with_project(None, Some("first"))
         .unwrap()
         .respond(
             None,
@@ -333,7 +333,7 @@ async fn workspace_managed_contexts_persist_across_requests_and_remain_isolated(
         .unwrap();
 
     let error = profiles
-        .with_workspace(None, Some("second"))
+        .with_project(None, Some("second"))
         .unwrap()
         .respond(None, &[Message::user("hello"), first_reply], "continue")
         .await

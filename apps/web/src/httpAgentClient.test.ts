@@ -109,6 +109,8 @@ describe('HttpAgentClient', () => {
               active_skills: ['rust'],
               mcp_servers: [],
               capabilities: ['workspace'],
+              default_project_directory: '.',
+              projects: [],
             },
           ],
           configured_profiles: [
@@ -121,6 +123,8 @@ describe('HttpAgentClient', () => {
               active_skills: ['rust'],
               mcp_servers: [],
               capabilities: ['workspace'],
+              default_project_directory: '.',
+              projects: [],
             },
           ],
         }),
@@ -170,8 +174,8 @@ describe('HttpAgentClient', () => {
       active_skills: [],
       mcp_servers: [],
       capabilities: [],
-      default_workspace_directory: '.',
-      workspaces: [],
+      default_project_directory: '.',
+      projects: [],
     };
     const fetcher = vi
       .fn()

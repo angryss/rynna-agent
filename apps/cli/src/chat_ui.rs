@@ -789,7 +789,7 @@ pub async fn run(
     profiles: &AgentProfiles,
     profile: &str,
     model: &str,
-    workspace: Option<&str>,
+    project: Option<&str>,
 ) -> Result<()> {
     let mut session = TerminalSession::enter()?;
     let mut ui = ChatUi::new(profile, model);
@@ -878,7 +878,7 @@ pub async fn run(
 
                         ui.busy = true;
                         let profiles = profiles.clone().with_memory_session(Some(memory_session))
-                            .with_workspace(Some(profile), workspace)?
+                            .with_project(Some(profile), project)?
                             .with_model_selection(Some(profile), selection.as_ref())?;
                         let profile = profile.to_owned();
                         let request_history = history.clone();

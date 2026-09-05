@@ -7,7 +7,7 @@ const profile = { name: 'work', providers: [
   { provider: 'local', model: 'small', default: true },
   { provider: 'cloud', model: 'deep' },
   { provider: 'cloud', model: 'hidden', enabled: false },
-], active_skills: [], mcp_servers: [], capabilities: [], default_workspace_directory: '.', workspaces: [] };
+], active_skills: [], mcp_servers: [], capabilities: [], default_project_directory: '.', projects: [] };
 
 it('searches provider groups and chooses a model with the keyboard without submitting', async () => {
   const user = userEvent.setup();

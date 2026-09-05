@@ -33,9 +33,9 @@ claude_program = "claude"
 provider = "ollama"
 model = "qwen3:8b"
 system_prompt = "You are Rynna, a careful and capable local AI software agent."
-default_workspace_directory = "."
-# A named workspace may span multiple directories; its default must be one of them.
-workspaces = [
+default_project_directory = "."
+# A named project may span multiple directories; its default must be one of them.
+projects = [
   { name = "rynna", directories = [".", "../shared"], default_directory = "." },
 ]
 # Enable installed Agent Skills by name or directory (see docs/skills.md).

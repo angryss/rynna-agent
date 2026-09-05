@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fs2::FileExt;
-use rynna_core::{Profile, ProfileProvider, Workspace};
+use rynna_core::{Profile, ProfileProvider, Project};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -742,8 +742,8 @@ impl ProfileCatalog {
                     active_skills: Vec::new(),
                     mcp_servers: Vec::new(),
                     capabilities: Vec::new(),
-                    default_workspace_directory: default_workspace_directory(),
-                    workspaces: Vec::new(),
+                    default_project_directory: default_project_directory(),
+                    projects: Vec::new(),
                 },
             )]),
             mcp_servers: BTreeMap::new(),
@@ -884,8 +884,8 @@ impl ProfileCatalog {
                 active_skills: profile.active_skills.clone(),
                 mcp_servers: profile.mcp_servers.clone(),
                 capabilities: profile.capabilities.clone(),
-                default_workspace_directory: profile.default_workspace_directory.clone(),
-                workspaces: profile.workspaces.clone(),
+                default_project_directory: profile.default_project_directory.clone(),
+                projects: profile.projects.clone(),
             },
         );
         self.apply_file(file)?;
@@ -1046,8 +1046,8 @@ impl ProfileCatalog {
                 active_skills: profile.active_skills.clone(),
                 mcp_servers: profile.mcp_servers.clone(),
                 capabilities: profile.capabilities.clone(),
-                default_workspace_directory: profile.default_workspace_directory.clone(),
-                workspaces: profile.workspaces.clone(),
+                default_project_directory: profile.default_project_directory.clone(),
+                projects: profile.projects.clone(),
             },
             providers,
             system_prompt: profile
@@ -1215,42 +1215,39 @@ impl ProfileCatalog {
             ensure_unique("MCP server", &profile.mcp_servers)?;
             ensure_unique("capability", &profile.capabilities)?;
             ensure_not_blank(
-                "default workspace directory",
-                profile
-                    .default_workspace_directory
-                    .to_string_lossy()
-                    .as_ref(),
+                "default project directory",
+                profile.default_project_directory.to_string_lossy().as_ref(),
             )?;
-            let mut workspace_names = BTreeSet::new();
-            for workspace in &profile.workspaces {
-                ensure_not_blank("workspace name", &workspace.name)?;
-                if !workspace_names.insert(&workspace.name) {
-                    return Err(ConfigError::DuplicateWorkspace {
+            let mut project_names = BTreeSet::new();
+            for project in &profile.projects {
+                ensure_not_blank("project name", &project.name)?;
+                if !project_names.insert(&project.name) {
+                    return Err(ConfigError::DuplicateProject {
                         profile: name.clone(),
-                        workspace: workspace.name.clone(),
+                        project: project.name.clone(),
                     });
                 }
-                if workspace.directories.is_empty() {
-                    return Err(ConfigError::WorkspaceDirectoriesEmpty {
+                if project.directories.is_empty() {
+                    return Err(ConfigError::ProjectDirectoriesEmpty {
                         profile: name.clone(),
-                        workspace: workspace.name.clone(),
+                        project: project.name.clone(),
                     });
                 }
                 let mut directories = BTreeSet::new();
-                for directory in &workspace.directories {
-                    ensure_not_blank("workspace directory", directory.to_string_lossy().as_ref())?;
+                for directory in &project.directories {
+                    ensure_not_blank("project directory", directory.to_string_lossy().as_ref())?;
                     if !directories.insert(directory) {
-                        return Err(ConfigError::DuplicateWorkspaceDirectory {
+                        return Err(ConfigError::DuplicateProjectDirectory {
                             profile: name.clone(),
-                            workspace: workspace.name.clone(),
+                            project: project.name.clone(),
                             directory: directory.clone(),
                         });
                     }
                 }
-                if !directories.contains(&workspace.default_directory) {
-                    return Err(ConfigError::UnknownWorkspaceDefaultDirectory {
+                if !directories.contains(&project.default_directory) {
+                    return Err(ConfigError::UnknownProjectDefaultDirectory {
                         profile: name.clone(),
-                        workspace: workspace.name.clone(),
+                        project: project.name.clone(),
                     });
                 }
             }
@@ -1359,13 +1356,13 @@ struct ProfileConfig {
     mcp_servers: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     capabilities: Vec<String>,
-    #[serde(default = "default_workspace_directory")]
-    default_workspace_directory: PathBuf,
+    #[serde(default = "default_project_directory")]
+    default_project_directory: PathBuf,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    workspaces: Vec<Workspace>,
+    projects: Vec<Project>,
 }
 
-fn default_workspace_directory() -> PathBuf {
+fn default_project_directory() -> PathBuf {
     PathBuf::from(".")
 }
 
@@ -1479,20 +1476,20 @@ pub enum ConfigError {
         "profile `{profile}` activates multiple command capabilities, whose tool names would conflict"
     )]
     ConflictingCommandCapabilities { profile: String },
-    #[error("profile `{profile}` defines workspace `{workspace}` more than once")]
-    DuplicateWorkspace { profile: String, workspace: String },
-    #[error("workspace `{workspace}` in profile `{profile}` must contain at least one directory")]
-    WorkspaceDirectoriesEmpty { profile: String, workspace: String },
-    #[error("workspace `{workspace}` in profile `{profile}` contains duplicate directory `{}`", directory.display())]
-    DuplicateWorkspaceDirectory {
+    #[error("profile `{profile}` defines project `{project}` more than once")]
+    DuplicateProject { profile: String, project: String },
+    #[error("project `{project}` in profile `{profile}` must contain at least one directory")]
+    ProjectDirectoriesEmpty { profile: String, project: String },
+    #[error("project `{project}` in profile `{profile}` contains duplicate directory `{}`", directory.display())]
+    DuplicateProjectDirectory {
         profile: String,
-        workspace: String,
+        project: String,
         directory: PathBuf,
     },
     #[error(
-        "the default directory for workspace `{workspace}` in profile `{profile}` must be one of its directories"
+        "the default directory for project `{project}` in profile `{profile}` must be one of its directories"
     )]
-    UnknownWorkspaceDefaultDirectory { profile: String, workspace: String },
+    UnknownProjectDefaultDirectory { profile: String, project: String },
     #[error(
         "Claude subscription profile `{profile}` cannot declare skills, MCP servers, or capabilities"
     )]

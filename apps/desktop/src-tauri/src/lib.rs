@@ -425,6 +425,7 @@ pub(crate) fn secure_codex_home(home: PathBuf) -> Result<PathBuf, String> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RespondRequest {
     #[serde(default)]
     pub selection: Option<rynna_core::ModelSelection>,
@@ -433,7 +434,7 @@ pub struct RespondRequest {
     #[serde(default)]
     pub profile: Option<String>,
     #[serde(default)]
-    pub workspace: Option<String>,
+    pub project: Option<String>,
     pub prompt: String,
     #[serde(default)]
     pub history: Vec<Message>,
@@ -456,8 +457,8 @@ pub async fn respond_with_agent(
     agent: &Agent,
     request: RespondRequest,
 ) -> Result<RespondResponse, String> {
-    if request.selection.is_some() || request.workspace.is_some() {
-        return Err("model and workspace selection require a profile".to_owned());
+    if request.selection.is_some() || request.project.is_some() {
+        return Err("model and project selection require a profile".to_owned());
     }
     let message = agent
         .clone()
@@ -475,7 +476,7 @@ pub async fn respond_with_profiles(
     let message = profiles
         .clone()
         .with_memory_session(request.session_id)
-        .with_workspace(request.profile.as_deref(), request.workspace.as_deref())
+        .with_project(request.profile.as_deref(), request.project.as_deref())
         .map_err(|error| error.to_string())?
         .with_model_selection(request.profile.as_deref(), request.selection.as_ref())
         .map_err(|error| error.to_string())?
@@ -506,7 +507,7 @@ pub async fn respond_stream_with_profiles(
     let message = profiles
         .clone()
         .with_memory_session(request.session_id)
-        .with_workspace(request.profile.as_deref(), request.workspace.as_deref())
+        .with_project(request.profile.as_deref(), request.project.as_deref())
         .map_err(|error| error.to_string())?
         .with_model_selection(request.profile.as_deref(), request.selection.as_ref())
         .map_err(|error| error.to_string())?
@@ -697,10 +698,10 @@ pub fn update_saved_profile(
     }?;
     if saved.name == original_name && runtime.contains(original_name) {
         runtime
-            .set_workspace_configuration(
+            .set_project_configuration(
                 original_name,
-                saved.default_workspace_directory.clone(),
-                saved.workspaces.clone(),
+                saved.default_project_directory.clone(),
+                saved.projects.clone(),
             )
             .map_err(|error| error.to_string())?;
     }
@@ -1175,8 +1176,8 @@ fn configured_profiles(
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
-        default_workspace_directory: ".".into(),
-        workspaces: Vec::new(),
+        default_project_directory: ".".into(),
+        projects: Vec::new(),
     };
     let openai_provider: Arc<dyn ModelProvider> =
         Arc::new(CodexAppServerProvider::with_selectable_home(
