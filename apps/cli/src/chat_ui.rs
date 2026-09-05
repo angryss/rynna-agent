@@ -214,7 +214,11 @@ impl ChatUi {
             }
             return None;
         }
-        if key.code == KeyCode::Enter && self.input.trim() == "/model" && !self.busy {
+        if key.code == KeyCode::Enter
+            && key.modifiers.is_empty()
+            && self.input.trim() == "/model"
+            && !self.busy
+        {
             self.input.clear();
             self.cursor = 0;
             self.selected_command = 0;
@@ -967,6 +971,25 @@ mod tests {
             );
             assert!(ui.messages.is_empty());
         }
+    }
+
+    #[test]
+    fn alt_enter_in_model_command_inserts_newline_without_opening_picker() {
+        let mut ui = ChatUi::new("local", "small");
+        ui.picker.pairs = vec![rynna_core::ProfileProvider {
+            provider: "local".into(),
+            model: "small".into(),
+            enabled: true,
+            is_default: true,
+        }];
+        ui.input = "/model".into();
+        ui.cursor = ui.input.len();
+        let action = ui.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert_eq!(action, None);
+        assert_eq!(ui.input, "/model\n");
+        assert_eq!(ui.cursor, ui.input.len());
+        assert!(!ui.picker.open);
+        assert!(ui.messages.is_empty());
     }
 
     #[test]
