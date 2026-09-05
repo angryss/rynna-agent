@@ -6,6 +6,8 @@ In desktop and web chat, click the model and thinking label at the bottom right 
 
 In interactive terminal chat, click the model label on the bottom-right composer border or press **F2** (or enter `/model`) to open the picker. `/model` also appears in the slash-command menu; type `/m` and press Tab to complete it or Enter to open it. Type to search models or providers, use **↑/↓** or the mouse wheel to browse, and press **Enter** or click a model to select it. **←/→** or **Tab/Shift-Tab** cycles thinking levels; the levels are also clickable. **Esc** or a click outside closes the picker and preserves your draft. **Profile default** restores normal routing. Selection is unavailable while a response is running.
 
+The terminal slash-command menu also includes `/provider` and `/thinking`, with argument hints and prefix/Tab completion.
+
 Both terminal and plain-text CLI chat also support these commands (plain-text `/model` lists choices instead of opening the picker):
 
 - `/model` lists numbered enabled provider/model pairs.

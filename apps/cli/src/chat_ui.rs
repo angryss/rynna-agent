@@ -29,7 +29,7 @@ const MAX_COMPOSER_CONTENT_HEIGHT: u16 = 8;
 struct SlashCommand {
     name: &'static str,
     description: &'static str,
-    action: CommandAction,
+    action: SlashAction,
     aliases: &'static [SlashCommandAlias],
 }
 
@@ -43,7 +43,13 @@ struct SlashCommandAlias {
 struct SlashCommandMatch {
     name: &'static str,
     description: &'static str,
-    action: CommandAction,
+    action: SlashAction,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SlashAction {
+    Local(CommandAction),
+    Selection,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,25 +71,37 @@ const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/clear",
         description: "Clear the conversation",
-        action: CommandAction::Clear,
+        action: SlashAction::Local(CommandAction::Clear),
         aliases: &[],
     },
     SlashCommand {
         name: "/help",
         description: "Show available commands",
-        action: CommandAction::Help,
+        action: SlashAction::Local(CommandAction::Help),
         aliases: &[],
     },
     SlashCommand {
         name: "/model",
         description: "Open the model selector",
-        action: CommandAction::Model,
+        action: SlashAction::Local(CommandAction::Model),
+        aliases: &[],
+    },
+    SlashCommand {
+        name: "/provider",
+        description: "List providers or set <provider>",
+        action: SlashAction::Selection,
+        aliases: &[],
+    },
+    SlashCommand {
+        name: "/thinking",
+        description: "Set default|low|medium|high effort",
+        action: SlashAction::Selection,
         aliases: &[],
     },
     SlashCommand {
         name: "/quit",
         description: "Exit Rynna",
-        action: CommandAction::Quit,
+        action: SlashAction::Local(CommandAction::Quit),
         aliases: &[SlashCommandAlias {
             name: "/exit",
             description: "Alias for /quit",
@@ -259,7 +277,10 @@ impl ChatUi {
                 self.input.clear();
                 self.cursor = 0;
                 self.selected_command = 0;
-                return Some(InputAction::Command(selected.action));
+                return Some(match selected.action {
+                    SlashAction::Local(action) => InputAction::Command(action),
+                    SlashAction::Selection => InputAction::Selection(selected.name.to_owned()),
+                });
             }
             if self.input.starts_with('/') {
                 let command = self.input.split_whitespace().next().unwrap_or_default();
@@ -534,7 +555,6 @@ fn apply_command(ui: &mut ChatUi, history: &mut Vec<Message>, command: CommandAc
                         .map(|alias| format!("{} — {}", alias.name, alias.description)),
                 );
             }
-            help.push("/provider <provider> — Change provider\n/thinking default|low|medium|high — Set effort".to_owned());
             let help = help.join("\n");
             ui.push_message(MessageKind::Assistant, help);
             false
@@ -919,6 +939,37 @@ mod tests {
     };
 
     #[test]
+    fn selection_commands_complete_and_dispatch_without_becoming_prompts() {
+        for (prefix, command) in [("/p", "/provider"), ("/t", "/thinking")] {
+            for complete in [false, true] {
+                let mut ui = ChatUi::new("local", "small");
+                ui.input = prefix.into();
+                ui.cursor = ui.input.len();
+                if complete {
+                    ui.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+                    assert_eq!(ui.input, command);
+                }
+                assert_eq!(
+                    ui.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                    Some(InputAction::Selection(command.into()))
+                );
+                assert!(ui.input.is_empty());
+                assert!(ui.messages.is_empty());
+            }
+        }
+        for command in ["/provider cloud", "/thinking high", "/model 2"] {
+            let mut ui = ChatUi::new("local", "small");
+            ui.input = command.into();
+            ui.cursor = ui.input.len();
+            assert_eq!(
+                ui.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                Some(InputAction::Selection(command.into()))
+            );
+            assert!(ui.messages.is_empty());
+        }
+    }
+
+    #[test]
     fn model_command_opens_picker_from_full_command_or_autocomplete() {
         for input in ["/model", "/model ", "/m", "/mo"] {
             let mut ui = ChatUi::new("local", "small");
@@ -1112,6 +1163,16 @@ mod tests {
         let screen = terminal.backend().to_string();
         assert!(screen.contains("/clear"), "{screen}");
         assert!(screen.contains("Clear the conversation"), "{screen}");
+        assert!(screen.contains("/provider"), "{screen}");
+        assert!(
+            screen.contains("List providers or set <provider>"),
+            "{screen}"
+        );
+        assert!(screen.contains("/thinking"), "{screen}");
+        assert!(
+            screen.contains("Set default|low|medium|high effort"),
+            "{screen}"
+        );
         assert!(screen.contains("/model"), "{screen}");
         assert!(screen.contains("Open the model selector"), "{screen}");
         assert!(screen.contains("/help"), "{screen}");
