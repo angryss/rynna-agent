@@ -170,6 +170,8 @@ describe('HttpAgentClient', () => {
       active_skills: [],
       mcp_servers: [],
       capabilities: [],
+      default_workspace_directory: '.',
+      workspaces: [],
     };
     const fetcher = vi
       .fn()

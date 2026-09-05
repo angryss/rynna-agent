@@ -81,6 +81,15 @@ cargo run -p rynna-cli -- --config rynna.example.toml --profile local chat
 cargo run -p rynna-cli -- --config rynna.example.toml --profile work run --prompt "Review this change"
 ```
 
+Select a named workspace for a new chat or run, or manage the selected profile's workspaces directly:
+
+```bash
+cargo run -p rynna-cli -- --config rynna.example.toml --profile local --workspace rynna chat
+cargo run -p rynna-cli -- --config rynna.example.toml --profile local workspaces create product --directory /projects/app --directory /projects/api --default-directory /projects/app
+cargo run -p rynna-cli -- --config rynna.example.toml --profile local workspaces update product --default-directory /projects/api
+cargo run -p rynna-cli -- --config rynna.example.toml --profile local workspaces delete product
+```
+
 Open the terminal provider settings interface with:
 
 ```bash
@@ -98,7 +107,7 @@ cargo run -p rynna-cli -- serve
 npm run dev
 ```
 
-Open <http://127.0.0.1:5173>. Vite proxies API requests to port 3000. The header profile picker selects the active profile. Open **Settings** to add, edit, or delete profiles, arrange each profile's ordered provider/model fallback chain, and manage shared provider credentials from the left navigation. Press Enter in the composer to submit; use Shift-Enter or Alt-Enter to insert a newline. The browser streams typed thinking and content events from the server, keeps the active thinking section open, and collapses it when the user-facing answer begins. Select the Thinking summary to expand or collapse it manually.
+Open <http://127.0.0.1:5173>. Vite proxies API requests to port 3000. The header profile and workspace pickers select the active conversation context. Open **Settings** to add, edit, or delete profiles and profile-owned workspaces, arrange each profile's ordered provider/model fallback chain, and manage shared provider credentials from the left navigation. Press Enter in the composer to submit; use Shift-Enter or Alt-Enter to insert a newline. The browser streams typed thinking and content events from the server, keeps the active thinking section open, and collapses it when the user-facing answer begins. Select the Thinking summary to expand or collapse it manually.
 
 To exercise the production topology, build the SPA and serve it from the Rust process:
 
@@ -127,6 +136,7 @@ The desktop app also exposes **Connect OpenAI**. Choose **Use ChatGPT subscripti
 | `RYNNA_CONFIG` | platform config path | Explicit profile-catalog path; equivalent to `--config` |
 | `RYNNA_PROVIDER_CONFIG` | `<config-dir>/rynna/providers.toml` | Provider settings path; equivalent to `--provider-config` |
 | `RYNNA_PROFILE` | catalog `default_profile` | Process default profile; equivalent to `--profile` |
+| `RYNNA_WORKSPACE` | default workspace | Named workspace for `chat` and `run`; equivalent to `--workspace` |
 | `RYNNA_API_BASE` | `http://127.0.0.1:11434/v1` | OpenAI-compatible API base URL |
 | `RYNNA_MODEL` | `qwen3:8b` | Provider model identifier |
 | `RYNNA_API_KEY` | unset | Optional bearer token; never place it in source control |
@@ -154,7 +164,8 @@ See [`rynna.example.toml`](rynna.example.toml) for the complete version 1 schema
 - `providers.<name>` may use `openai-compatible`, `anthropic-messages`, or `claude-subscription`. OpenRouter uses the OpenAI-compatible adapter at `https://openrouter.ai/api/v1` with `api_key_env = "OPENROUTER_API_KEY"`. Direct Anthropic profiles use `api_key_env` (normally `ANTHROPIC_API_KEY`); store secrets only in environment variables, never in TOML.
 - `claude-subscription` uses Claude Code's supported headless interface after `claude auth login --claudeai` (or an explicit `CLAUDE_CODE_OAUTH_TOKEN` created by `claude setup-token`). Claude subscription / usage bundle billing is handled by Claude. Rynna removes competing API, profile, gateway, and cloud-provider environment overrides; disables Claude Code tools, MCP, customizations, and persistence; and rejects profiles that declare Rynna capabilities, skills, or MCP servers.
 - Provider settings in the CLI, web app, and desktop app store shared credential readiness only. Runtime provider, model, and profile routing remains authoritative in `config.toml` and is loaded at process startup.
-- `profiles.<name>` selects an ordered, non-empty list of provider/model entries and may define `system_prompt`, `capabilities`, `active_skills`, and `mcp_servers`. The first entry is primary; later entries are attempted as fallbacks.
+- `profiles.<name>` selects an ordered, non-empty list of provider/model entries and may define `system_prompt`, `capabilities`, `active_skills`, `mcp_servers`, `default_workspace_directory`, and `workspaces`. The first provider entry is primary; later entries are attempted as fallbacks.
+- `default_workspace_directory` is the starting directory for new sessions that do not select a named workspace. Each named workspace contains one or more directory paths and one `default_directory` chosen from that list. Workspaces are isolated per profile. They provide trusted model context but do not broaden native filesystem roots or command allowlists.
 - `active_skills` enables standard `SKILL.md` packages independently for each profile. Add names or directories in Settings → Profiles → Skills or in the catalog. See [Agent Skills setup](docs/skills.md) for discovery paths, examples, permissions, and restart behavior.
 - `capabilities.<name>` defines an in-process native capability. `kind = "filesystem"` supplies eight workspace-scoped tools: read, write, exact edit, list, find, search, create directory, and file metadata. `kind = "command"` supplies one bounded `run_command` tool over an explicit alias-to-executable map.
 - `mcp_servers.<name>` stores a structured MCP server definition. Every profile reference is validated when the catalog loads.
@@ -174,11 +185,12 @@ Skills load through the profile-scoped `read_skill` tool; legacy catalog MCP nam
 
 `GET /v1/providers`, `POST /v1/providers`, and `PUT`/`DELETE /v1/providers/{kind}` provide provider settings CRUD for the browser. The persisted TOML contains only Ollama's API base URL, the selected OpenAI/Anthropic authentication method, or an OpenRouter credential-readiness marker. OpenRouter reads its API key from `OPENROUTER_API_KEY`; OpenAI API keys are piped to Codex. Neither key is stored in this file or returned by the API.
 
-`POST /v1/respond` accepts caller-owned user/assistant history, an optional profile name, and a new prompt. Omit `profile` to use the process default:
+`POST /v1/respond` accepts caller-owned user/assistant history, an optional profile name, an optional named workspace, and a new prompt. Omit `profile` to use the process default; omit `workspace` to use that profile's implicit default workspace:
 
 ```json
 {
   "profile": "work",
+  "workspace": "rynna",
   "prompt": "Continue the investigation",
   "history": [
     { "role": "user", "content": "Inspect the logs" },

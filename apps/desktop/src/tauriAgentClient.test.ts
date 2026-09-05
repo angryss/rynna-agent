@@ -126,6 +126,8 @@ describe('TauriAgentClient', () => {
       active_skills: [],
       mcp_servers: [],
       capabilities: [],
+      default_workspace_directory: '.',
+      workspaces: [],
     };
     const invoke = vi
       .fn()

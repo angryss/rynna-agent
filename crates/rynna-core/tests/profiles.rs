@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rynna_core::{
     Agent, AgentProfiles, Completion, CompletionRequest, Message, ModelProvider, Profile,
-    ProfileProvider, ProviderError,
+    ProfileProvider, ProviderError, Workspace,
 };
 
 struct FixedProvider(&'static str);
@@ -12,6 +12,16 @@ struct FixedProvider(&'static str);
 impl ModelProvider for FixedProvider {
     async fn complete(&self, _request: CompletionRequest) -> Result<Completion, ProviderError> {
         Ok(Completion::new(Message::assistant(self.0)))
+    }
+}
+
+struct RecordingProvider(Arc<Mutex<Vec<CompletionRequest>>>);
+
+#[async_trait]
+impl ModelProvider for RecordingProvider {
+    async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
+        self.0.lock().unwrap().push(request);
+        Ok(Completion::new(Message::assistant("recorded")))
     }
 }
 
@@ -28,6 +38,8 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
             active_skills: Vec::new(),
             mcp_servers: Vec::new(),
             capabilities: Vec::new(),
+            default_workspace_directory: ".".into(),
+            workspaces: Vec::new(),
         },
         Agent::new(Arc::new(FixedProvider(reply)), "Profile policy"),
     )
@@ -199,4 +211,69 @@ fn disabled_models_and_unknown_thinking_are_rejected() {
         )
         .is_err()
     );
+}
+
+#[tokio::test]
+async fn workspace_selection_adds_trusted_session_context_without_mutating_the_profile() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (mut metadata, _) = profile("local", "unused");
+    metadata.default_workspace_directory = "/projects/default".into();
+    metadata.workspaces.push(Workspace {
+        name: "rynna".into(),
+        directories: vec!["/projects/rynna".into(), "/projects/shared".into()],
+        default_directory: "/projects/rynna".into(),
+    });
+    let profiles = AgentProfiles::new(
+        "local",
+        [(
+            metadata.clone(),
+            Agent::new(Arc::new(RecordingProvider(requests.clone())), "policy"),
+        )],
+    )
+    .unwrap();
+
+    profiles
+        .clone()
+        .with_workspace(None, Some("rynna"))
+        .unwrap()
+        .respond(None, &[], "hello")
+        .await
+        .unwrap();
+    let system = &requests.lock().unwrap()[0].messages[0].content;
+    assert!(system.contains("\"name\":\"rynna\""));
+    assert!(system.contains("/projects/shared"));
+    assert!(system.contains("\"starting_directory\":\"/projects/rynna\""));
+    assert_eq!(profiles.profiles(), vec![metadata]);
+
+    let error = profiles
+        .with_workspace(None, Some("missing"))
+        .err()
+        .expect("unknown workspaces must be rejected");
+    assert!(error.to_string().contains("workspace `missing`"));
+}
+
+#[tokio::test]
+async fn omitted_workspace_uses_the_profile_default_workspace_directory() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (mut metadata, _) = profile("local", "unused");
+    metadata.default_workspace_directory = "/projects/home".into();
+    let profiles = AgentProfiles::new(
+        "local",
+        [(
+            metadata,
+            Agent::new(Arc::new(RecordingProvider(requests.clone())), "policy"),
+        )],
+    )
+    .unwrap();
+
+    profiles
+        .with_workspace(None, None)
+        .unwrap()
+        .respond(None, &[], "hello")
+        .await
+        .unwrap();
+
+    let system = &requests.lock().unwrap()[0].messages[0].content;
+    assert!(system.contains("\"name\":null"));
+    assert!(system.contains("\"starting_directory\":\"/projects/home\""));
 }

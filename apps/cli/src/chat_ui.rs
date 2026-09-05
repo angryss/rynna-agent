@@ -785,7 +785,12 @@ impl Drop for TerminalSession {
     }
 }
 
-pub async fn run(profiles: &AgentProfiles, profile: &str, model: &str) -> Result<()> {
+pub async fn run(
+    profiles: &AgentProfiles,
+    profile: &str,
+    model: &str,
+    workspace: Option<&str>,
+) -> Result<()> {
     let mut session = TerminalSession::enter()?;
     let mut ui = ChatUi::new(profile, model);
     ui.picker.pairs = profiles
@@ -873,6 +878,7 @@ pub async fn run(profiles: &AgentProfiles, profile: &str, model: &str) -> Result
 
                         ui.busy = true;
                         let profiles = profiles.clone().with_memory_session(Some(memory_session))
+                            .with_workspace(Some(profile), workspace)?
                             .with_model_selection(Some(profile), selection.as_ref())?;
                         let profile = profile.to_owned();
                         let request_history = history.clone();

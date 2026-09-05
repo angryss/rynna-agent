@@ -432,6 +432,8 @@ pub struct RespondRequest {
     pub session_id: Option<uuid::Uuid>,
     #[serde(default)]
     pub profile: Option<String>,
+    #[serde(default)]
+    pub workspace: Option<String>,
     pub prompt: String,
     #[serde(default)]
     pub history: Vec<Message>,
@@ -454,8 +456,8 @@ pub async fn respond_with_agent(
     agent: &Agent,
     request: RespondRequest,
 ) -> Result<RespondResponse, String> {
-    if request.selection.is_some() {
-        return Err("model selection requires a profile".to_owned());
+    if request.selection.is_some() || request.workspace.is_some() {
+        return Err("model and workspace selection require a profile".to_owned());
     }
     let message = agent
         .clone()
@@ -473,6 +475,8 @@ pub async fn respond_with_profiles(
     let message = profiles
         .clone()
         .with_memory_session(request.session_id)
+        .with_workspace(request.profile.as_deref(), request.workspace.as_deref())
+        .map_err(|error| error.to_string())?
         .with_model_selection(request.profile.as_deref(), request.selection.as_ref())
         .map_err(|error| error.to_string())?
         .respond(
@@ -502,6 +506,8 @@ pub async fn respond_stream_with_profiles(
     let message = profiles
         .clone()
         .with_memory_session(request.session_id)
+        .with_workspace(request.profile.as_deref(), request.workspace.as_deref())
+        .map_err(|error| error.to_string())?
         .with_model_selection(request.profile.as_deref(), request.selection.as_ref())
         .map_err(|error| error.to_string())?
         .respond_stream(
@@ -672,12 +678,12 @@ pub fn create_saved_profile(
 #[doc(hidden)]
 pub fn update_saved_profile(
     catalog: &mut ProfileCatalog,
-    _runtime: &mut AgentProfiles,
+    runtime: &mut AgentProfiles,
     provider_settings: Option<&mut ProviderSettingsStore>,
     original_name: &str,
     profile: Profile,
 ) -> Result<Profile, String> {
-    match provider_settings {
+    let saved = match provider_settings {
         Some(provider_settings) => rynna_config::profile_update::update_profile_with_settings(
             catalog,
             provider_settings,
@@ -688,7 +694,17 @@ pub fn update_saved_profile(
         None => catalog
             .update_profile(original_name, profile)
             .map_err(|error| error.to_string()),
+    }?;
+    if saved.name == original_name && runtime.contains(original_name) {
+        runtime
+            .set_workspace_configuration(
+                original_name,
+                saved.default_workspace_directory.clone(),
+                saved.workspaces.clone(),
+            )
+            .map_err(|error| error.to_string())?;
     }
+    Ok(saved)
 }
 
 #[doc(hidden)]
@@ -1159,6 +1175,8 @@ fn configured_profiles(
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
+        default_workspace_directory: ".".into(),
+        workspaces: Vec::new(),
     };
     let openai_provider: Arc<dyn ModelProvider> =
         Arc::new(CodexAppServerProvider::with_selectable_home(

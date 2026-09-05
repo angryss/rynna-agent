@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { MemorySettingsPanel } from './components/memory-settings';
 import { ThemeToggle } from './components/theme-toggle';
 import { Typeahead } from './components/typeahead';
+import { WorkspaceSettings } from './components/workspace-settings';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
@@ -42,6 +43,14 @@ const PROVIDER_KINDS: readonly ConfiguredProvider['kind'][] = [
 
 function sortedProfiles(profiles: Profile[]): Profile[] {
   return [...profiles].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function normalizedProfile(profile: Profile): Profile {
+  return {
+    ...profile,
+    default_workspace_directory: profile.default_workspace_directory ?? '.',
+    workspaces: profile.workspaces ?? [],
+  };
 }
 
 
@@ -110,6 +119,7 @@ export function App({ client }: AppProps) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [configuredProfiles, setConfiguredProfiles] = useState<Profile[]>([]);
   const [chatSelection, setChatSelection] = useState<{ profile: string; value?: ModelSelection }>();
+  const [chatWorkspace, setChatWorkspace] = useState<{ profile: string; name?: string }>();
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const [selectedSettingsProfile, setSelectedSettingsProfile] = useState<string | null>(null);
   const [openAiAccount, setOpenAiAccount] = useState<OpenAiAccount | null>(null);
@@ -134,7 +144,7 @@ export function App({ client }: AppProps) {
   const [reuseExistingChatgpt, setReuseExistingChatgpt] = useState<boolean | null>(null);
   const [providerApiKey, setProviderApiKey] = useState('');
   const [savingProvider, setSavingProvider] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'profiles' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
+  const [settingsSection, setSettingsSection] = useState<'profiles' | 'workspaces' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
     client.createProfile || client.updateProfile || client.deleteProfile
       ? 'profiles'
       : client.listProviders ? 'provider-credentials' : client.getMemorySettings ? 'memory' : 'mcp',
@@ -164,8 +174,8 @@ export function App({ client }: AppProps) {
         if (!active) {
           return;
         }
-        setProfiles(catalog.profiles);
-        setConfiguredProfiles(catalog.configured_profiles ?? catalog.profiles);
+        setProfiles(catalog.profiles.map(normalizedProfile));
+        setConfiguredProfiles((catalog.configured_profiles ?? catalog.profiles).map(normalizedProfile));
         setCatalogProviderIds(catalog.provider_ids);
         setSelectedProfile(catalog.default_profile);
         setSelectedSettingsProfile(catalog.default_profile);
@@ -259,6 +269,8 @@ export function App({ client }: AppProps) {
   const selection = chatSelection?.profile === selectedProfile && activeProfile?.providers.some(pair =>
     pair.enabled !== false && pair.provider === chatSelection.value?.provider && pair.model === chatSelection.value?.model)
     ? chatSelection.value : undefined;
+  const workspace = chatWorkspace?.profile === selectedProfile && activeProfile?.workspaces.some(candidate => candidate.name === chatWorkspace.name)
+    ? chatWorkspace.name : undefined;
   const activeConfiguredProfile = configuredProfiles.find(
     (profile) => profile.name === selectedSettingsProfile,
   );
@@ -305,6 +317,7 @@ export function App({ client }: AppProps) {
 
   function selectProfile(name: string) {
     setChatSelection(undefined);
+    setChatWorkspace(undefined);
     setSelectedProfile(name);
     setAddingProfile(false);
     setMessages([]);
@@ -348,6 +361,8 @@ export function App({ client }: AppProps) {
       active_skills: profileSkills.split('\n').map((skill) => skill.trim()).filter(Boolean),
       mcp_servers: addingProfile ? [] : (activeConfiguredProfile?.mcp_servers ?? []),
       capabilities: addingProfile ? [] : (activeConfiguredProfile?.capabilities ?? []),
+      default_workspace_directory: addingProfile ? '.' : (activeConfiguredProfile?.default_workspace_directory ?? '.'),
+      workspaces: addingProfile ? [] : (activeConfiguredProfile?.workspaces ?? []),
     };
   }
 
@@ -635,6 +650,7 @@ export function App({ client }: AppProps) {
         session_id: sessionId.current,
         ...(selection ? { selection } : {}),
         ...(selectedProfile ? { profile: selectedProfile } : {}),
+        ...(workspace ? { workspace } : {}),
         prompt,
         history,
       }, (delta) => {
@@ -668,6 +684,26 @@ export function App({ client }: AppProps) {
                 options={sortedProfiles(profiles).map((profile) => profile.name)}
                 value={selectedProfile ?? ''}
               />
+            </label>
+          ) : null}
+          {view === 'chat' && activeProfile ? (
+            <label className="profile-picker" htmlFor="workspace">
+              <span>Workspace</span>
+              <select
+                disabled={pending}
+                id="workspace"
+                onChange={(event) => {
+                  const name = event.target.value || undefined;
+                  setChatWorkspace({ profile: activeProfile.name, name });
+                  setMessages([]);
+                  sessionId.current = null;
+                  setError(null);
+                }}
+                value={workspace ?? ''}
+              >
+                <option value="">Default workspace</option>
+                {activeProfile.workspaces.map(candidate => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}
+              </select>
             </label>
           ) : null}
           {client.connectOpenAi ? (
@@ -752,6 +788,9 @@ export function App({ client }: AppProps) {
           {activeProfile.capabilities.map((capability) => (
             <Badge key={`capability-${capability}`}>{capability} capability</Badge>
           ))}
+          <Badge>{workspace ?? 'Default workspace'} · {workspace
+            ? activeProfile.workspaces.find(candidate => candidate.name === workspace)?.default_directory
+            : activeProfile.default_workspace_directory}</Badge>
         </aside>
       ) : null}
 
@@ -768,6 +807,16 @@ export function App({ client }: AppProps) {
                   variant="ghost"
                 >
                   Profiles
+                </Button>
+              ) : null}
+              {client.updateProfile && configuredProfiles.length > 0 ? (
+                <Button
+                  aria-current={settingsSection === 'workspaces' ? 'page' : undefined}
+                  onClick={() => setSettingsSection('workspaces')}
+                  type="button"
+                  variant="ghost"
+                >
+                  Workspaces
                 </Button>
               ) : null}
               {client.listProviders ? (
@@ -805,6 +854,41 @@ export function App({ client }: AppProps) {
             </nav>
           </aside>
           <div className="settings-content">
+            {settingsSection === 'workspaces' && client.updateProfile ? (
+              <>
+                <label className="profile-picker" htmlFor="workspaces-profile">
+                  <span>Profile</span>
+                  <Typeahead
+                    id="workspaces-profile"
+                    onChange={selectSettingsProfile}
+                    options={sortedProfiles(configuredProfiles).map(profile => profile.name)}
+                    value={selectedSettingsProfile ?? ''}
+                  />
+                </label>
+                {activeConfiguredProfile ? (
+                  <WorkspaceSettings
+                    key={activeConfiguredProfile.name}
+                    client={client}
+                    onSaved={saved => {
+                      setConfiguredProfiles(current => current.map(profile => profile.name === saved.name ? saved : profile));
+                      setProfiles(current => current.map(profile => profile.name === saved.name ? {
+                        ...profile,
+                        default_workspace_directory: saved.default_workspace_directory,
+                        workspaces: saved.workspaces,
+                      } : profile));
+                      if (selectedProfile === saved.name) {
+                        if (chatWorkspace?.name && !saved.workspaces.some(candidate => candidate.name === chatWorkspace.name)) {
+                          setChatWorkspace(undefined);
+                        }
+                        setMessages([]);
+                        sessionId.current = null;
+                      }
+                    }}
+                    profile={activeConfiguredProfile}
+                  />
+                ) : <p>Select a profile to configure its workspaces.</p>}
+              </>
+            ) : null}
             {settingsSection === 'mcp' ? (
               <>
                 <label className="profile-picker" htmlFor="mcp-profile">

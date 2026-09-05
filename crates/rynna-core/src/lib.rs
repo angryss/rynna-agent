@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -1140,6 +1141,17 @@ pub struct ProfileProvider {
     pub is_default: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Workspace {
+    pub name: String,
+    pub directories: Vec<PathBuf>,
+    pub default_directory: PathBuf,
+}
+
+fn default_workspace_directory() -> PathBuf {
+    PathBuf::from(".")
+}
+
 const fn profile_provider_enabled() -> bool {
     true
 }
@@ -1154,6 +1166,10 @@ pub struct Profile {
     pub mcp_servers: Vec<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default = "default_workspace_directory")]
+    pub default_workspace_directory: PathBuf,
+    #[serde(default)]
+    pub workspaces: Vec<Workspace>,
 }
 
 #[derive(Debug, Error)]
@@ -1168,6 +1184,8 @@ pub enum ProfileError {
     UnknownProfile(String),
     #[error("the last profile cannot be deleted")]
     LastProfile,
+    #[error("workspace `{workspace}` is not defined for profile `{profile}`")]
+    UnknownWorkspace { profile: String, workspace: String },
 }
 
 #[derive(Debug, Error)]
@@ -1237,12 +1255,80 @@ impl AgentProfiles {
         Ok(())
     }
 
+    /// Update workspace metadata for subsequent requests without rebuilding providers or tools.
+    pub fn set_workspace_configuration(
+        &mut self,
+        profile: &str,
+        default_workspace_directory: PathBuf,
+        workspaces: Vec<Workspace>,
+    ) -> Result<(), ProfileError> {
+        let (metadata, _) = Arc::make_mut(&mut self.profiles)
+            .get_mut(profile)
+            .ok_or_else(|| ProfileError::UnknownProfile(profile.to_owned()))?;
+        metadata.default_workspace_directory = default_workspace_directory;
+        metadata.workspaces = workspaces;
+        Ok(())
+    }
+
     /// Assign a session to this request's snapshot without changing runtime profiles.
     pub fn with_memory_session(mut self, session_id: Option<uuid::Uuid>) -> Self {
         for (_, agent) in Arc::make_mut(&mut self.profiles).values_mut() {
             agent.memory_session = session_id;
         }
         self
+    }
+
+    /// Bind a request snapshot to a named workspace, or to the profile's implicit default
+    /// workspace when no name is supplied. Workspace paths are trusted profile configuration;
+    /// native tools remain bounded by their independently configured capabilities.
+    pub fn with_workspace(
+        mut self,
+        profile: Option<&str>,
+        workspace: Option<&str>,
+    ) -> Result<Self, ProfileError> {
+        let profile_name = profile.unwrap_or(&self.default_profile);
+        let (metadata, agent) = Arc::make_mut(&mut self.profiles)
+            .get_mut(profile_name)
+            .ok_or_else(|| ProfileError::UnknownProfile(profile_name.to_owned()))?;
+        let (workspace_name, directories, default_directory) = match workspace {
+            Some(workspace_name) => {
+                let selected = metadata
+                    .workspaces
+                    .iter()
+                    .find(|candidate| candidate.name == workspace_name)
+                    .ok_or_else(|| ProfileError::UnknownWorkspace {
+                        profile: profile_name.to_owned(),
+                        workspace: workspace_name.to_owned(),
+                    })?;
+                (
+                    Some(selected.name.as_str()),
+                    selected.directories.as_slice(),
+                    selected.default_directory.as_path(),
+                )
+            }
+            None => (
+                None,
+                std::slice::from_ref(&metadata.default_workspace_directory),
+                metadata.default_workspace_directory.as_path(),
+            ),
+        };
+        // The legacy/current-directory default is already the process context, so avoid
+        // changing provider payloads and prompt-cache keys for unchanged profiles.
+        if workspace_name.is_none() && default_directory == std::path::Path::new(".") {
+            return Ok(self);
+        }
+        let workspace_context = serde_json::json!({
+            "name": workspace_name,
+            "directories": directories,
+            "starting_directory": default_directory,
+        });
+        agent.system_prompt = format!(
+            "{}\n\nSession workspace (trusted profile configuration): {}\nTreat starting_directory as the current directory and the listed directories as this session's workspace. Native tools remain limited by their configured capabilities.",
+            agent.system_prompt, workspace_context
+        )
+        .into();
+        agent.managed_contexts = Arc::new(Mutex::new(ManagedContextStore::default()));
+        Ok(self)
     }
 
     /// Select only an enabled pair in this profile, on a request-local snapshot.
