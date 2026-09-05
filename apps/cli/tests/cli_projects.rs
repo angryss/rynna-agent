@@ -29,7 +29,7 @@ fn run(config: &std::path::Path, arguments: &[&str]) {
 }
 
 #[test]
-fn workspace_commands_create_update_list_and_delete_profile_owned_workspaces() {
+fn project_commands_create_update_list_and_delete_profile_owned_projects() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config.toml");
     write_config(&config);
@@ -37,7 +37,7 @@ fn workspace_commands_create_update_list_and_delete_profile_owned_workspaces() {
     run(
         &config,
         &[
-            "workspaces",
+            "projects",
             "create",
             "rynna",
             "--directory",
@@ -49,40 +49,40 @@ fn workspace_commands_create_update_list_and_delete_profile_owned_workspaces() {
     run(
         &config,
         &[
-            "workspaces",
+            "projects",
             "update",
             "rynna",
             "--default-directory",
             "/projects/shared",
         ],
     );
-    run(&config, &["workspaces", "set-default", "/projects/home"]);
+    run(&config, &["projects", "set-default", "/projects/home"]);
 
     let output = Command::cargo_bin("rynna")
         .unwrap()
         .arg("--config")
         .arg(&config)
-        .args(["workspaces", "list", "--output", "json"])
+        .args(["projects", "list", "--output", "json"])
         .output()
         .unwrap();
     assert!(output.status.success());
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["profile"], "local");
-    assert_eq!(value["default_workspace_directory"], "/projects/home");
-    assert_eq!(value["workspaces"][0]["name"], "rynna");
+    assert_eq!(value["default_project_directory"], "/projects/home");
+    assert_eq!(value["projects"][0]["name"], "rynna");
     assert_eq!(
-        value["workspaces"][0]["default_directory"],
+        value["projects"][0]["default_directory"],
         "/projects/shared"
     );
 
-    run(&config, &["workspaces", "delete", "rynna"]);
+    run(&config, &["projects", "delete", "rynna"]);
     let catalog = rynna_config::ProfileCatalog::load(&config).unwrap();
     assert!(
         catalog
             .resolve("local")
             .unwrap()
             .profile
-            .workspaces
+            .projects
             .is_empty()
     );
 }

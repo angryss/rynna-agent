@@ -190,15 +190,15 @@ select:disabled { opacity: .5; }
 .model-row strong { overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; text-overflow: ellipsis; }
 .model-row small { color: hsl(var(--muted-foreground)); }
 .default-model-control { display: flex; align-items: center; gap: .45rem; color: hsl(var(--muted-foreground)); font-size: .8rem; }
-.workspace-settings { display: grid; gap: 1rem; }
-.workspace-default-form { margin-top: 0; }
-.workspace-default-form button { justify-self: start; }
-.workspace-list { display: grid; border-top: 1px solid hsl(var(--border)); }
-.workspace-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem .25rem; border-bottom: 1px solid hsl(var(--border)); }
-.workspace-row h3, .workspace-row p { margin: 0; }
-.workspace-row p { margin-top: .25rem; color: hsl(var(--muted-foreground)); font-size: .82rem; }
-.workspace-row code { display: inline-block; margin-top: .45rem; color: hsl(var(--accent-foreground)); font-size: .78rem; overflow-wrap: anywhere; }
-.workspace-form { margin-top: 0; }
+.project-settings { display: grid; gap: 1rem; }
+.project-default-form { margin-top: 0; }
+.project-default-form button { justify-self: start; }
+.project-list { display: grid; border-top: 1px solid hsl(var(--border)); }
+.project-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem .25rem; border-bottom: 1px solid hsl(var(--border)); }
+.project-row h3, .project-row p { margin: 0; }
+.project-row p { margin-top: .25rem; color: hsl(var(--muted-foreground)); font-size: .82rem; }
+.project-row code { display: inline-block; margin-top: .45rem; color: hsl(var(--accent-foreground)); font-size: .78rem; overflow-wrap: anywhere; }
+.project-form { margin-top: 0; }
 
 .conversation { width: min(920px, 100%); min-height: 0; margin: 0 auto; display: grid; grid-template-rows: 1fr auto auto; padding: clamp(1rem, 4vw, 2.5rem); }
 .messages { display: flex; min-height: 15rem; flex-direction: column; justify-content: flex-end; gap: 1rem; padding-bottom: 2rem; }
@@ -248,7 +248,7 @@ select:disabled { opacity: .5; }
   .account-button { max-width: 10rem; }
   .settings-heading, .profile-provider-heading { align-items: flex-start; flex-direction: column; }
   .provider-card { align-items: flex-start; flex-direction: column; }
-  .workspace-row { align-items: flex-start; flex-direction: column; }
+  .project-row { align-items: flex-start; flex-direction: column; }
   .composer-row { align-items: stretch; flex-direction: column; }
   .composer button { align-self: flex-end; }
 }

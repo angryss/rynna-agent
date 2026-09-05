@@ -5,7 +5,7 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { MemorySettingsPanel } from './components/memory-settings';
 import { ThemeToggle } from './components/theme-toggle';
 import { Typeahead } from './components/typeahead';
-import { WorkspaceSettings } from './components/workspace-settings';
+import { ProjectSettings } from './components/project-settings';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
@@ -44,15 +44,6 @@ const PROVIDER_KINDS: readonly ConfiguredProvider['kind'][] = [
 function sortedProfiles(profiles: Profile[]): Profile[] {
   return [...profiles].sort((left, right) => left.name.localeCompare(right.name));
 }
-
-function normalizedProfile(profile: Profile): Profile {
-  return {
-    ...profile,
-    default_workspace_directory: profile.default_workspace_directory ?? '.',
-    workspaces: profile.workspaces ?? [],
-  };
-}
-
 
 function conversationHistory(messages: DisplayMessage[]): Message[] {
   return messages.filter((message): message is Message => message.role !== 'thinking');
@@ -119,7 +110,7 @@ export function App({ client }: AppProps) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [configuredProfiles, setConfiguredProfiles] = useState<Profile[]>([]);
   const [chatSelection, setChatSelection] = useState<{ profile: string; value?: ModelSelection }>();
-  const [chatWorkspace, setChatWorkspace] = useState<{ profile: string; name?: string }>();
+  const [chatProject, setChatProject] = useState<{ profile: string; name?: string }>();
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const [selectedSettingsProfile, setSelectedSettingsProfile] = useState<string | null>(null);
   const [openAiAccount, setOpenAiAccount] = useState<OpenAiAccount | null>(null);
@@ -144,7 +135,7 @@ export function App({ client }: AppProps) {
   const [reuseExistingChatgpt, setReuseExistingChatgpt] = useState<boolean | null>(null);
   const [providerApiKey, setProviderApiKey] = useState('');
   const [savingProvider, setSavingProvider] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'profiles' | 'workspaces' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
+  const [settingsSection, setSettingsSection] = useState<'profiles' | 'projects' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
     client.createProfile || client.updateProfile || client.deleteProfile
       ? 'profiles'
       : client.listProviders ? 'provider-credentials' : client.getMemorySettings ? 'memory' : 'mcp',
@@ -174,8 +165,8 @@ export function App({ client }: AppProps) {
         if (!active) {
           return;
         }
-        setProfiles(catalog.profiles.map(normalizedProfile));
-        setConfiguredProfiles((catalog.configured_profiles ?? catalog.profiles).map(normalizedProfile));
+        setProfiles(catalog.profiles);
+        setConfiguredProfiles(catalog.configured_profiles ?? catalog.profiles);
         setCatalogProviderIds(catalog.provider_ids);
         setSelectedProfile(catalog.default_profile);
         setSelectedSettingsProfile(catalog.default_profile);
@@ -269,8 +260,8 @@ export function App({ client }: AppProps) {
   const selection = chatSelection?.profile === selectedProfile && activeProfile?.providers.some(pair =>
     pair.enabled !== false && pair.provider === chatSelection.value?.provider && pair.model === chatSelection.value?.model)
     ? chatSelection.value : undefined;
-  const workspace = chatWorkspace?.profile === selectedProfile && activeProfile?.workspaces.some(candidate => candidate.name === chatWorkspace.name)
-    ? chatWorkspace.name : undefined;
+  const project = chatProject?.profile === selectedProfile && activeProfile?.projects.some(candidate => candidate.name === chatProject.name)
+    ? chatProject.name : undefined;
   const activeConfiguredProfile = configuredProfiles.find(
     (profile) => profile.name === selectedSettingsProfile,
   );
@@ -317,7 +308,7 @@ export function App({ client }: AppProps) {
 
   function selectProfile(name: string) {
     setChatSelection(undefined);
-    setChatWorkspace(undefined);
+    setChatProject(undefined);
     setSelectedProfile(name);
     setAddingProfile(false);
     setMessages([]);
@@ -361,8 +352,8 @@ export function App({ client }: AppProps) {
       active_skills: profileSkills.split('\n').map((skill) => skill.trim()).filter(Boolean),
       mcp_servers: addingProfile ? [] : (activeConfiguredProfile?.mcp_servers ?? []),
       capabilities: addingProfile ? [] : (activeConfiguredProfile?.capabilities ?? []),
-      default_workspace_directory: addingProfile ? '.' : (activeConfiguredProfile?.default_workspace_directory ?? '.'),
-      workspaces: addingProfile ? [] : (activeConfiguredProfile?.workspaces ?? []),
+      default_project_directory: addingProfile ? '.' : (activeConfiguredProfile?.default_project_directory ?? '.'),
+      projects: addingProfile ? [] : (activeConfiguredProfile?.projects ?? []),
     };
   }
 
@@ -650,7 +641,7 @@ export function App({ client }: AppProps) {
         session_id: sessionId.current,
         ...(selection ? { selection } : {}),
         ...(selectedProfile ? { profile: selectedProfile } : {}),
-        ...(workspace ? { workspace } : {}),
+        ...(project ? { project } : {}),
         prompt,
         history,
       }, (delta) => {
@@ -687,22 +678,22 @@ export function App({ client }: AppProps) {
             </label>
           ) : null}
           {view === 'chat' && activeProfile ? (
-            <label className="profile-picker" htmlFor="workspace">
-              <span>Workspace</span>
+            <label className="profile-picker" htmlFor="project">
+              <span>Project</span>
               <select
                 disabled={pending}
-                id="workspace"
+                id="project"
                 onChange={(event) => {
                   const name = event.target.value || undefined;
-                  setChatWorkspace({ profile: activeProfile.name, name });
+                  setChatProject({ profile: activeProfile.name, name });
                   setMessages([]);
                   sessionId.current = null;
                   setError(null);
                 }}
-                value={workspace ?? ''}
+                value={project ?? ''}
               >
-                <option value="">Default workspace</option>
-                {activeProfile.workspaces.map(candidate => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}
+                <option value="">Default project</option>
+                {activeProfile.projects.map(candidate => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}
               </select>
             </label>
           ) : null}
@@ -788,9 +779,9 @@ export function App({ client }: AppProps) {
           {activeProfile.capabilities.map((capability) => (
             <Badge key={`capability-${capability}`}>{capability} capability</Badge>
           ))}
-          <Badge>{workspace ?? 'Default workspace'} · {workspace
-            ? activeProfile.workspaces.find(candidate => candidate.name === workspace)?.default_directory
-            : activeProfile.default_workspace_directory}</Badge>
+          <Badge>{project ?? 'Default project'} · {project
+            ? activeProfile.projects.find(candidate => candidate.name === project)?.default_directory
+            : activeProfile.default_project_directory}</Badge>
         </aside>
       ) : null}
 
@@ -811,12 +802,12 @@ export function App({ client }: AppProps) {
               ) : null}
               {client.updateProfile && configuredProfiles.length > 0 ? (
                 <Button
-                  aria-current={settingsSection === 'workspaces' ? 'page' : undefined}
-                  onClick={() => setSettingsSection('workspaces')}
+                  aria-current={settingsSection === 'projects' ? 'page' : undefined}
+                  onClick={() => setSettingsSection('projects')}
                   type="button"
                   variant="ghost"
                 >
-                  Workspaces
+                  Projects
                 </Button>
               ) : null}
               {client.listProviders ? (
@@ -854,31 +845,31 @@ export function App({ client }: AppProps) {
             </nav>
           </aside>
           <div className="settings-content">
-            {settingsSection === 'workspaces' && client.updateProfile ? (
+            {settingsSection === 'projects' && client.updateProfile ? (
               <>
-                <label className="profile-picker" htmlFor="workspaces-profile">
+                <label className="profile-picker" htmlFor="projects-profile">
                   <span>Profile</span>
                   <Typeahead
-                    id="workspaces-profile"
+                    id="projects-profile"
                     onChange={selectSettingsProfile}
                     options={sortedProfiles(configuredProfiles).map(profile => profile.name)}
                     value={selectedSettingsProfile ?? ''}
                   />
                 </label>
                 {activeConfiguredProfile ? (
-                  <WorkspaceSettings
+                  <ProjectSettings
                     key={activeConfiguredProfile.name}
                     client={client}
                     onSaved={saved => {
                       setConfiguredProfiles(current => current.map(profile => profile.name === saved.name ? saved : profile));
                       setProfiles(current => current.map(profile => profile.name === saved.name ? {
                         ...profile,
-                        default_workspace_directory: saved.default_workspace_directory,
-                        workspaces: saved.workspaces,
+                        default_project_directory: saved.default_project_directory,
+                        projects: saved.projects,
                       } : profile));
                       if (selectedProfile === saved.name) {
-                        if (chatWorkspace?.name && !saved.workspaces.some(candidate => candidate.name === chatWorkspace.name)) {
-                          setChatWorkspace(undefined);
+                        if (chatProject?.name && !saved.projects.some(candidate => candidate.name === chatProject.name)) {
+                          setChatProject(undefined);
                         }
                         setMessages([]);
                         sessionId.current = null;
@@ -886,7 +877,7 @@ export function App({ client }: AppProps) {
                     }}
                     profile={activeConfiguredProfile}
                   />
-                ) : <p>Select a profile to configure its workspaces.</p>}
+                ) : <p>Select a profile to configure its projects.</p>}
               </>
             ) : null}
             {settingsSection === 'mcp' ? (

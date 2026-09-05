@@ -15,7 +15,7 @@ export interface RespondRequest {
   selection?: ModelSelection;
   session_id?: string;
   profile?: string;
-  workspace?: string;
+  project?: string;
   prompt: string;
   history: Message[];
 }
@@ -43,11 +43,11 @@ export interface Profile {
   active_skills: string[];
   mcp_servers: string[];
   capabilities: string[];
-  default_workspace_directory: string;
-  workspaces: Workspace[];
+  default_project_directory: string;
+  projects: Project[];
 }
 
-export interface Workspace {
+export interface Project {
   name: string;
   directories: string[];
   default_directory: string;

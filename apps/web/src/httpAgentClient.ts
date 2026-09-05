@@ -425,12 +425,15 @@ function isProfile(value: unknown): value is Profile {
       'capabilities' in value &&
       Array.isArray(value.capabilities) &&
       value.capabilities.every((capability) => typeof capability === 'string') &&
-      (!('default_workspace_directory' in value) || typeof value.default_workspace_directory === 'string') &&
-      (!('workspaces' in value) || Array.isArray(value.workspaces) && value.workspaces.every(isWorkspace)),
+      'default_project_directory' in value &&
+      typeof value.default_project_directory === 'string' &&
+      'projects' in value &&
+      Array.isArray(value.projects) &&
+      value.projects.every(isProject),
   );
 }
 
-function isWorkspace(value: unknown): boolean {
+function isProject(value: unknown): boolean {
   return Boolean(
     value && typeof value === 'object' &&
     'name' in value && typeof value.name === 'string' &&

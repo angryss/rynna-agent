@@ -19,6 +19,8 @@ function catalog() {
     active_skills: [],
     mcp_servers: [],
     capabilities: [],
+    default_project_directory: '.',
+    projects: [],
   }));
   return {
     default_profile: 'test',

@@ -10,7 +10,7 @@ use rynna_config::{
     ProfileCatalog, ProviderKind, ProviderSettingsStore, ResolvedCapability, ResolvedProfile,
     ResolvedProvider,
 };
-use rynna_core::{Agent, AgentProfiles, FallbackProvider, ModelProvider, Tool, Workspace};
+use rynna_core::{Agent, AgentProfiles, FallbackProvider, ModelProvider, Project, Tool};
 use rynna_provider_anthropic::{AnthropicMessagesProvider, ClaudeCodeProvider};
 use rynna_provider_openai::OpenAiCompatibleProvider;
 use rynna_tools_command::{CommandConfig, CommandTool};
@@ -37,9 +37,9 @@ struct Cli {
     /// Profile to use as the process default.
     #[arg(long, env = "RYNNA_PROFILE", global = true)]
     profile: Option<String>,
-    /// Named workspace to use for a chat or one-shot session. Omit for the profile's default workspace.
-    #[arg(long, env = "RYNNA_WORKSPACE", global = true)]
-    workspace: Option<String>,
+    /// Named project to use for a chat or one-shot session. Omit for the profile's default project.
+    #[arg(long, env = "RYNNA_PROJECT", global = true)]
+    project: Option<String>,
     /// Base URL for an OpenAI-compatible API, including any `/v1` prefix.
     #[arg(long, env = "RYNNA_API_BASE", global = true)]
     api_base: Option<String>,
@@ -84,21 +84,21 @@ enum Command {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
     },
-    /// Create, update, list, and delete workspaces for the selected profile.
-    Workspaces {
+    /// Create, update, list, and delete projects for the selected profile.
+    Projects {
         #[command(subcommand)]
-        command: WorkspaceCommand,
+        command: ProjectCommand,
     },
 }
 
 #[derive(Subcommand)]
-enum WorkspaceCommand {
-    /// List the selected profile's workspaces.
+enum ProjectCommand {
+    /// List the selected profile's projects.
     List {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
     },
-    /// Create a named workspace.
+    /// Create a named project.
     Create {
         name: String,
         #[arg(long = "directory", required = true)]
@@ -106,7 +106,7 @@ enum WorkspaceCommand {
         #[arg(long)]
         default_directory: Option<PathBuf>,
     },
-    /// Update a named workspace. Omitted fields keep their current values.
+    /// Update a named project. Omitted fields keep their current values.
     Update {
         name: String,
         #[arg(long)]
@@ -116,9 +116,9 @@ enum WorkspaceCommand {
         #[arg(long)]
         default_directory: Option<PathBuf>,
     },
-    /// Delete a named workspace.
+    /// Delete a named project.
     Delete { name: String },
-    /// Set the starting directory used by the implicit default workspace.
+    /// Set the starting directory used by the implicit default project.
     SetDefault { directory: PathBuf },
 }
 
@@ -164,8 +164,8 @@ async fn main() -> Result<()> {
     if let Command::Profiles { output } = command {
         return list_profiles(&catalog, &default_profile, cli.model.as_deref(), output);
     }
-    if let Command::Workspaces { command } = command {
-        return manage_workspaces(&mut catalog, &default_profile, command);
+    if let Command::Projects { command } = command {
+        return manage_projects(&mut catalog, &default_profile, command);
     }
     let include_all_profiles = matches!(&command, Command::Serve { .. });
     let mut profiles = configured_profiles(
@@ -202,55 +202,55 @@ async fn main() -> Result<()> {
             run_once(
                 &profiles,
                 &default_profile,
-                cli.workspace.as_deref(),
+                cli.project.as_deref(),
                 prompt,
                 output,
             )
             .await
         }
-        Command::Chat => chat(&profiles, &default_profile, cli.workspace.as_deref()).await,
+        Command::Chat => chat(&profiles, &default_profile, cli.project.as_deref()).await,
         Command::Serve { bind, web_dir } => {
             serve(profiles, bind, web_dir, provider_config, catalog).await
         }
         Command::Profiles { .. } => unreachable!("profiles returned before provider configuration"),
-        Command::Workspaces { .. } => {
-            unreachable!("workspaces returned before provider configuration")
+        Command::Projects { .. } => {
+            unreachable!("projects returned before provider configuration")
         }
     };
     rynna_core::flush_memory_writes().await;
     result
 }
 
-fn manage_workspaces(
+fn manage_projects(
     catalog: &mut ProfileCatalog,
     profile_name: &str,
-    command: WorkspaceCommand,
+    command: ProjectCommand,
 ) -> Result<()> {
     let mut profile = catalog
         .resolve(profile_name)
         .with_context(|| format!("failed to resolve profile `{profile_name}`"))?
         .profile;
     match command {
-        WorkspaceCommand::List { output } => match output {
+        ProjectCommand::List { output } => match output {
             OutputFormat::Json => println!(
                 "{}",
                 serde_json::to_string(&serde_json::json!({
                     "profile": profile.name,
-                    "default_workspace_directory": profile.default_workspace_directory,
-                    "workspaces": profile.workspaces,
+                    "default_project_directory": profile.default_project_directory,
+                    "projects": profile.projects,
                 }))?
             ),
             OutputFormat::Text => {
                 println!(
-                    "Default workspace\t{}",
-                    profile.default_workspace_directory.display()
+                    "Default project\t{}",
+                    profile.default_project_directory.display()
                 );
-                for workspace in &profile.workspaces {
+                for project in &profile.projects {
                     println!(
                         "{}\t{}\t{}",
-                        workspace.name,
-                        workspace.default_directory.display(),
-                        workspace
+                        project.name,
+                        project.default_directory.display(),
+                        project
                             .directories
                             .iter()
                             .map(|directory| directory.display().to_string())
@@ -260,65 +260,60 @@ fn manage_workspaces(
                 }
             }
         },
-        WorkspaceCommand::Create {
+        ProjectCommand::Create {
             name,
             directories,
             default_directory,
         } => {
             ensure!(
-                !profile
-                    .workspaces
-                    .iter()
-                    .any(|workspace| workspace.name == name),
-                "workspace `{name}` already exists for profile `{profile_name}`"
+                !profile.projects.iter().any(|project| project.name == name),
+                "project `{name}` already exists for profile `{profile_name}`"
             );
             let default_directory = default_directory
                 .or_else(|| directories.first().cloned())
-                .context("a workspace must contain at least one directory")?;
-            profile.workspaces.push(Workspace {
+                .context("a project must contain at least one directory")?;
+            profile.projects.push(Project {
                 name,
                 directories,
                 default_directory,
             });
             catalog.update_profile(profile_name, profile)?;
         }
-        WorkspaceCommand::Update {
+        ProjectCommand::Update {
             name,
             new_name,
             directories,
             default_directory,
         } => {
-            let workspace = profile
-                .workspaces
+            let project = profile
+                .projects
                 .iter_mut()
-                .find(|workspace| workspace.name == name)
+                .find(|project| project.name == name)
                 .with_context(|| {
-                    format!("workspace `{name}` is not defined for profile `{profile_name}`")
+                    format!("project `{name}` is not defined for profile `{profile_name}`")
                 })?;
             if let Some(new_name) = new_name {
-                workspace.name = new_name;
+                project.name = new_name;
             }
             if !directories.is_empty() {
-                workspace.directories = directories;
+                project.directories = directories;
             }
             if let Some(default_directory) = default_directory {
-                workspace.default_directory = default_directory;
+                project.default_directory = default_directory;
             }
             catalog.update_profile(profile_name, profile)?;
         }
-        WorkspaceCommand::Delete { name } => {
-            let original_len = profile.workspaces.len();
-            profile
-                .workspaces
-                .retain(|workspace| workspace.name != name);
+        ProjectCommand::Delete { name } => {
+            let original_len = profile.projects.len();
+            profile.projects.retain(|project| project.name != name);
             ensure!(
-                profile.workspaces.len() != original_len,
-                "workspace `{name}` is not defined for profile `{profile_name}`"
+                profile.projects.len() != original_len,
+                "project `{name}` is not defined for profile `{profile_name}`"
             );
             catalog.update_profile(profile_name, profile)?;
         }
-        WorkspaceCommand::SetDefault { directory } => {
-            profile.default_workspace_directory = directory;
+        ProjectCommand::SetDefault { directory } => {
+            profile.default_project_directory = directory;
             catalog.update_profile(profile_name, profile)?;
         }
     }
@@ -582,7 +577,7 @@ fn configured_tools(profile: &ResolvedProfile) -> Result<Vec<Arc<dyn Tool>>> {
     Ok(tools)
 }
 
-async fn chat(profiles: &AgentProfiles, profile: &str, workspace: Option<&str>) -> Result<()> {
+async fn chat(profiles: &AgentProfiles, profile: &str, project: Option<&str>) -> Result<()> {
     if io::stdin().is_terminal() && io::stdout().is_terminal() {
         let model = profiles
             .profiles()
@@ -595,7 +590,7 @@ async fn chat(profiles: &AgentProfiles, profile: &str, workspace: Option<&str>) 
                     .map(|provider| provider.model.clone())
             })
             .with_context(|| format!("profile `{profile}` is not configured"))?;
-        return chat_ui::run(profiles, profile, &model, workspace).await;
+        return chat_ui::run(profiles, profile, &model, project).await;
     }
 
     let profiles = profiles
@@ -635,7 +630,7 @@ async fn chat(profiles: &AgentProfiles, profile: &str, workspace: Option<&str>) 
         let message = profiles
             .clone()
             .with_model_selection(Some(profile), selection.as_ref())?
-            .with_workspace(Some(profile), workspace)?
+            .with_project(Some(profile), project)?
             .respond(Some(profile), &history, prompt)
             .await
             .map_err(sanitize_agent_error)?;
@@ -726,7 +721,7 @@ async fn wait_for_ctrl_c() {
 async fn run_once(
     profiles: &AgentProfiles,
     profile: &str,
-    workspace: Option<&str>,
+    project: Option<&str>,
     prompt: Option<String>,
     output: OutputFormat,
 ) -> Result<()> {
@@ -742,7 +737,7 @@ async fn run_once(
     };
     let message = profiles
         .clone()
-        .with_workspace(Some(profile), workspace)?
+        .with_project(Some(profile), project)?
         .respond(Some(profile), &[], &prompt)
         .await
         .map_err(sanitize_agent_error)?;

@@ -102,8 +102,8 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
             active_skills: vec![format!("{name}-skill")],
             mcp_servers: vec![format!("{name}-mcp")],
             capabilities: Vec::new(),
-            default_workspace_directory: ".".into(),
-            workspaces: Vec::new(),
+            default_project_directory: ".".into(),
+            projects: Vec::new(),
         },
         Agent::new(Arc::new(ReplyProvider(reply)), "You are Rynna."),
     )
@@ -249,13 +249,13 @@ async fn respond_endpoint_rejects_an_unknown_profile() {
 }
 
 #[tokio::test]
-async fn respond_endpoint_rejects_a_workspace_outside_the_selected_profile() {
+async fn respond_endpoint_rejects_a_project_outside_the_selected_profile() {
     let response = profiles_app()
         .oneshot(
             Request::post("/v1/respond")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"profile":"work","workspace":"missing","prompt":"Hello"}"#,
+                    r#"{"profile":"work","project":"missing","prompt":"Hello"}"#,
                 ))
                 .unwrap(),
         )
@@ -270,8 +270,26 @@ async fn respond_endpoint_rejects_a_workspace_outside_the_selected_profile() {
         value["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("workspace `missing`")
+            .contains("project `missing`")
     );
+}
+
+#[tokio::test]
+async fn respond_endpoint_rejects_the_retired_workspace_field() {
+    let response = test_app()
+        .oneshot(
+            Request::post("/v1/respond")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"workspace":"legacy","prompt":"Hello"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["error"]["code"], "invalid_request");
 }
 
 #[tokio::test]
@@ -874,7 +892,7 @@ model = "qwen3:8b"
 }
 
 #[tokio::test]
-async fn updated_workspace_metadata_is_available_to_subsequent_runtime_requests() {
+async fn updated_project_metadata_is_available_to_subsequent_runtime_requests() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("config.toml");
     std::fs::write(
@@ -908,8 +926,8 @@ model = "qwen3:8b"
                         "active_skills": [],
                         "mcp_servers": [],
                         "capabilities": [],
-                        "default_workspace_directory": "/projects/home",
-                        "workspaces": [{
+                        "default_project_directory": "/projects/home",
+                        "projects": [{
                             "name": "rynna",
                             "directories": ["/projects/rynna", "/projects/shared"],
                             "default_directory": "/projects/rynna"
@@ -928,7 +946,7 @@ model = "qwen3:8b"
             Request::post("/v1/respond")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"profile":"alpha","workspace":"rynna","prompt":"Hello"}"#,
+                    r#"{"profile":"alpha","project":"rynna","prompt":"Hello"}"#,
                 ))
                 .unwrap(),
         )
@@ -978,8 +996,8 @@ model = "qwen3:8b"
         active_skills: vec!["sensitive-skill".to_owned()],
         mcp_servers: Vec::new(),
         capabilities: vec!["sensitive-capability".to_owned()],
-        default_workspace_directory: ".".into(),
-        workspaces: Vec::new(),
+        default_project_directory: ".".into(),
+        projects: Vec::new(),
     };
     let profiles = AgentProfiles::new(
         "alpha",
@@ -1054,8 +1072,8 @@ model = "qwen3:8b"
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: vec!["runtime-capability".to_owned()],
-        default_workspace_directory: ".".into(),
-        workspaces: Vec::new(),
+        default_project_directory: ".".into(),
+        projects: Vec::new(),
     };
     let profiles = AgentProfiles::new(
         "alpha",
@@ -1334,8 +1352,8 @@ async fn non_streaming_response_releases_profiles_lock_while_provider_is_pending
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
-        default_workspace_directory: ".".into(),
-        workspaces: Vec::new(),
+        default_project_directory: ".".into(),
+        projects: Vec::new(),
     };
     let profiles = AgentProfiles::new(
         "alpha",
