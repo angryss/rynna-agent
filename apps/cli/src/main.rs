@@ -18,6 +18,7 @@ use rynna_tools_filesystem::{FileSystemConfig, FileSystemToolset};
 use tracing_subscriber::EnvFilter;
 
 mod chat_ui;
+mod model_picker;
 mod model_selection;
 mod provider_ui;
 
