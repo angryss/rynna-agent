@@ -2,7 +2,10 @@ use std::io::{self, Stdout};
 
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
+        KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -26,7 +29,7 @@ const MAX_COMPOSER_CONTENT_HEIGHT: u16 = 8;
 struct SlashCommand {
     name: &'static str,
     description: &'static str,
-    action: CommandAction,
+    action: SlashAction,
     aliases: &'static [SlashCommandAlias],
 }
 
@@ -40,11 +43,18 @@ struct SlashCommandAlias {
 struct SlashCommandMatch {
     name: &'static str,
     description: &'static str,
-    action: CommandAction,
+    action: SlashAction,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SlashAction {
+    Local(CommandAction),
+    Selection,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandAction {
+    Model,
     Clear,
     Help,
     Quit,
@@ -61,19 +71,37 @@ const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/clear",
         description: "Clear the conversation",
-        action: CommandAction::Clear,
+        action: SlashAction::Local(CommandAction::Clear),
         aliases: &[],
     },
     SlashCommand {
         name: "/help",
         description: "Show available commands",
-        action: CommandAction::Help,
+        action: SlashAction::Local(CommandAction::Help),
+        aliases: &[],
+    },
+    SlashCommand {
+        name: "/model",
+        description: "Open the model selector",
+        action: SlashAction::Local(CommandAction::Model),
+        aliases: &[],
+    },
+    SlashCommand {
+        name: "/provider",
+        description: "List providers or set <provider>",
+        action: SlashAction::Selection,
+        aliases: &[],
+    },
+    SlashCommand {
+        name: "/thinking",
+        description: "Set default|low|medium|high effort",
+        action: SlashAction::Selection,
         aliases: &[],
     },
     SlashCommand {
         name: "/quit",
         description: "Exit Rynna",
-        action: CommandAction::Quit,
+        action: SlashAction::Local(CommandAction::Quit),
         aliases: &[SlashCommandAlias {
             name: "/exit",
             description: "Alias for /quit",
@@ -105,6 +133,7 @@ struct ChatUi {
     busy: bool,
     scroll_from_bottom: u16,
     selected_command: usize,
+    picker: super::model_picker::ModelPicker,
 }
 
 impl ChatUi {
@@ -118,6 +147,7 @@ impl ChatUi {
             busy: false,
             scroll_from_bottom: 0,
             selected_command: 0,
+            picker: Default::default(),
         }
     }
 
@@ -175,6 +205,25 @@ impl ChatUi {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<InputAction> {
+        if self.picker.open {
+            return self.picker.key(key).map(InputAction::Selection);
+        }
+        if key.code == KeyCode::F(2) {
+            if !self.busy {
+                self.picker.show();
+            }
+            return None;
+        }
+        if key.code == KeyCode::Enter
+            && key.modifiers.is_empty()
+            && self.input.trim() == "/model"
+            && !self.busy
+        {
+            self.input.clear();
+            self.cursor = 0;
+            self.selected_command = 0;
+            return Some(InputAction::Command(CommandAction::Model));
+        }
         if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if let Some(message) = self
                 .messages
@@ -232,7 +281,10 @@ impl ChatUi {
                 self.input.clear();
                 self.cursor = 0;
                 self.selected_command = 0;
-                return Some(InputAction::Command(selected.action));
+                return Some(match selected.action {
+                    SlashAction::Local(action) => InputAction::Command(action),
+                    SlashAction::Selection => InputAction::Selection(selected.name.to_owned()),
+                });
             }
             if self.input.starts_with('/') {
                 let command = self.input.split_whitespace().next().unwrap_or_default();
@@ -484,6 +536,12 @@ fn command_suggestions(commands: &[SlashCommandMatch], selected_command: usize) 
 
 fn apply_command(ui: &mut ChatUi, history: &mut Vec<Message>, command: CommandAction) -> bool {
     match command {
+        CommandAction::Model => {
+            if !ui.busy {
+                ui.picker.show();
+            }
+            false
+        }
         CommandAction::Clear => {
             ui.messages.clear();
             ui.scroll_from_bottom = 0;
@@ -501,7 +559,6 @@ fn apply_command(ui: &mut ChatUi, history: &mut Vec<Message>, command: CommandAc
                         .map(|alias| format!("{} — {}", alias.name, alias.description)),
                 );
             }
-            help.push("/model — Select a provider and model\n/provider <provider> — Change provider\n/thinking default|low|medium|high — Set effort".to_owned());
             let help = help.join("\n");
             ui.push_message(MessageKind::Assistant, help);
             false
@@ -636,13 +693,14 @@ fn render(frame: &mut Frame<'_>, ui: &ChatUi) {
         .block(
             Block::default()
                 .borders(Borders::TOP | Borders::BOTTOM)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title_bottom(Line::from(ui.picker.label()).right_aligned()),
         );
     frame.render_widget(composer, layout.composer);
 
     let state = if ui.busy { "Thinking…" } else { "Ready" };
     let controls = if commands.is_empty() {
-        "  Enter send · /model select · Alt-Enter newline · Ctrl-T thinking · PgUp/PgDn scroll · Ctrl-C exit"
+        "  Enter send · F2 models · Alt-Enter newline · Ctrl-T thinking · PgUp/PgDn scroll · Ctrl-C exit"
     } else {
         "  ↑/↓ select · Tab complete · Enter run · Ctrl-C exit"
     };
@@ -659,7 +717,14 @@ fn render(frame: &mut Frame<'_>, ui: &ChatUi) {
     ]);
     frame.render_widget(Paragraph::new(status), layout.status);
 
-    if layout.composer.width > 4 {
+    if ui.picker.open {
+        ui.picker.draw(
+            frame,
+            super::model_picker::popup_area(frame.area(), layout.composer),
+        );
+    }
+
+    if !ui.picker.open && layout.composer.width > 4 {
         let x = layout
             .composer
             .x
@@ -691,15 +756,16 @@ impl TerminalSession {
     fn enter() -> Result<Self> {
         enable_raw_mode().context("failed to enable terminal raw mode")?;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
             let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
             return Err(error).context("failed to enter terminal screen");
         }
         let terminal = match Terminal::new(CrosstermBackend::new(stdout)) {
             Ok(terminal) => terminal,
             Err(error) => {
                 let _ = disable_raw_mode();
-                let _ = execute!(io::stdout(), LeaveAlternateScreen);
+                let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
                 return Err(error).context("failed to initialize terminal UI");
             }
         };
@@ -710,7 +776,11 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
 }
@@ -718,11 +788,17 @@ impl Drop for TerminalSession {
 pub async fn run(profiles: &AgentProfiles, profile: &str, model: &str) -> Result<()> {
     let mut session = TerminalSession::enter()?;
     let mut ui = ChatUi::new(profile, model);
+    ui.picker.pairs = profiles
+        .profiles()
+        .into_iter()
+        .find(|p| p.name == profile)
+        .map(|p| p.providers.into_iter().filter(|p| p.enabled).collect())
+        .unwrap_or_default();
     let mut history = Vec::<Message>::new();
     let mut selection = None;
     ui.push_message(
         MessageKind::Assistant,
-        "Use /model to select a provider and model; /thinking to set effort.",
+        "Click the model label or press F2 to choose a model and thinking level.",
     );
     let mut memory_session = uuid::Uuid::new_v4();
     let mut events = EventStream::new();
@@ -738,32 +814,44 @@ pub async fn run(profiles: &AgentProfiles, profile: &str, model: &str) -> Result
                 let event = maybe_event
                     .context("terminal event stream ended unexpectedly")?
                     .context("failed to read terminal input")?;
-                let Event::Key(key) = event else {
-                    continue;
+                let action = match event {
+                    Event::Mouse(mouse) if !ui.busy => {
+                        let size = session.terminal.size()?;
+                        let screen = Rect::new(0, 0, size.width, size.height);
+                        let layout = chat_layout_with_suggestions(screen, ui.command_matches().len(), composer_height(&ui, screen.width));
+                        if ui.picker.open {
+                            ui.picker.mouse(mouse, super::model_picker::popup_area(screen, layout.composer)).map(InputAction::Selection)
+                        } else {
+                            match mouse.kind {
+                                MouseEventKind::ScrollUp => ui.scroll_from_bottom = ui.scroll_from_bottom.saturating_add(5),
+                                MouseEventKind::ScrollDown => ui.scroll_from_bottom = ui.scroll_from_bottom.saturating_sub(5),
+                                _ => {}
+                            }
+                            let label_width = Line::from(ui.picker.label()).width().min(usize::from(screen.width)) as u16;
+                            if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                                && mouse.row == layout.composer.bottom().saturating_sub(1)
+                                && mouse.column >= screen.right().saturating_sub(label_width) {
+                                ui.picker.show();
+                            }
+                            None
+                        }
+                    }
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) { break; }
+                        match key.code {
+                            KeyCode::PageUp if !ui.picker.open => { ui.scroll_from_bottom = ui.scroll_from_bottom.saturating_add(5); None }
+                            KeyCode::PageDown if !ui.picker.open => { ui.scroll_from_bottom = ui.scroll_from_bottom.saturating_sub(5); None }
+                            _ => ui.handle_key(key),
+                        }
+                    }
+                    _ => None,
                 };
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                if key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    break;
-                }
-                match key.code {
-                    KeyCode::PageUp => {
-                        ui.scroll_from_bottom = ui.scroll_from_bottom.saturating_add(5);
-                    }
-                    KeyCode::PageDown => {
-                        ui.scroll_from_bottom = ui.scroll_from_bottom.saturating_sub(5);
-                    }
-                    _ => {
-                        let Some(action) = ui.handle_key(key) else {
-                            continue;
-                        };
+                if let Some(action) = action {
                         let prompt = match action {
                             InputAction::Selection(command) => {
                                 match super::model_selection::apply(profiles, profile, &mut selection, &command) {
                                     Ok(feedback) => {
+                                        ui.picker.selection = selection.clone();
                                         ui.model = super::sanitize_terminal_text(&super::model_selection::summary(selection.as_ref()));
                                         ui.push_message(MessageKind::Assistant, super::sanitize_terminal_text(&feedback));
                                     }
@@ -821,7 +909,6 @@ pub async fn run(profiles: &AgentProfiles, profile: &str, model: &str) -> Result
                             };
                             let _ = sender.send(ResponseEvent::Finished { prompt, result });
                         });
-                    }
                 }
             }
             Some(response) = response_rx.recv() => {
@@ -854,6 +941,109 @@ mod tests {
         ChatUi, CommandAction, CompletionDelta, InputAction, MAX_COMPOSER_CONTENT_HEIGHT, Message,
         MessageKind, apply_command, chat_layout, composer_cursor, composer_height, render,
     };
+
+    #[test]
+    fn selection_commands_complete_and_dispatch_without_becoming_prompts() {
+        for (prefix, command) in [("/p", "/provider"), ("/t", "/thinking")] {
+            for complete in [false, true] {
+                let mut ui = ChatUi::new("local", "small");
+                ui.input = prefix.into();
+                ui.cursor = ui.input.len();
+                if complete {
+                    ui.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+                    assert_eq!(ui.input, command);
+                }
+                assert_eq!(
+                    ui.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                    Some(InputAction::Selection(command.into()))
+                );
+                assert!(ui.input.is_empty());
+                assert!(ui.messages.is_empty());
+            }
+        }
+        for command in ["/provider cloud", "/thinking high", "/model 2"] {
+            let mut ui = ChatUi::new("local", "small");
+            ui.input = command.into();
+            ui.cursor = ui.input.len();
+            assert_eq!(
+                ui.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                Some(InputAction::Selection(command.into()))
+            );
+            assert!(ui.messages.is_empty());
+        }
+    }
+
+    #[test]
+    fn alt_enter_in_model_command_inserts_newline_without_opening_picker() {
+        let mut ui = ChatUi::new("local", "small");
+        ui.picker.pairs = vec![rynna_core::ProfileProvider {
+            provider: "local".into(),
+            model: "small".into(),
+            enabled: true,
+            is_default: true,
+        }];
+        ui.input = "/model".into();
+        ui.cursor = ui.input.len();
+        let action = ui.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert_eq!(action, None);
+        assert_eq!(ui.input, "/model\n");
+        assert_eq!(ui.cursor, ui.input.len());
+        assert!(!ui.picker.open);
+        assert!(ui.messages.is_empty());
+    }
+
+    #[test]
+    fn model_command_opens_picker_from_full_command_or_autocomplete() {
+        for input in ["/model", "/model ", "/m", "/mo"] {
+            let mut ui = ChatUi::new("local", "small");
+            ui.picker.pairs = vec![rynna_core::ProfileProvider {
+                provider: "local".into(),
+                model: "small".into(),
+                enabled: true,
+                is_default: true,
+            }];
+            ui.input = input.into();
+            ui.cursor = ui.input.len();
+            if input == "/m" {
+                ui.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+                assert_eq!(ui.input, "/model");
+            }
+            let action = ui.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert_eq!(action, Some(InputAction::Command(CommandAction::Model)));
+            let mut history = vec![Message::user("Previous question")];
+            assert!(!apply_command(&mut ui, &mut history, CommandAction::Model));
+            assert!(ui.picker.open);
+            assert!(ui.input.is_empty());
+            assert!(ui.messages.is_empty());
+            assert_eq!(history.len(), 1);
+        }
+    }
+
+    #[test]
+    fn picker_preserves_draft_and_blocks_opening_during_response() {
+        let mut ui = ChatUi::new("local", "small");
+        ui.picker.pairs = vec![rynna_core::ProfileProvider {
+            provider: "local".into(),
+            model: "small".into(),
+            enabled: true,
+            is_default: true,
+        }];
+        ui.input = "Unfinished prompt".into();
+        ui.cursor = 5;
+        ui.handle_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        assert!(ui.picker.open);
+        ui.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(
+            ui.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(InputAction::Selection("/model 1".into()))
+        );
+        assert_eq!(ui.input, "Unfinished prompt");
+        assert_eq!(ui.cursor, 5);
+        assert!(ui.messages.is_empty());
+        ui.busy = true;
+        ui.handle_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        assert!(!ui.picker.open);
+    }
 
     #[test]
     fn layout_keeps_the_composer_and_status_at_the_bottom() {
@@ -996,6 +1186,18 @@ mod tests {
         let screen = terminal.backend().to_string();
         assert!(screen.contains("/clear"), "{screen}");
         assert!(screen.contains("Clear the conversation"), "{screen}");
+        assert!(screen.contains("/provider"), "{screen}");
+        assert!(
+            screen.contains("List providers or set <provider>"),
+            "{screen}"
+        );
+        assert!(screen.contains("/thinking"), "{screen}");
+        assert!(
+            screen.contains("Set default|low|medium|high effort"),
+            "{screen}"
+        );
+        assert!(screen.contains("/model"), "{screen}");
+        assert!(screen.contains("Open the model selector"), "{screen}");
         assert!(screen.contains("/help"), "{screen}");
         assert!(screen.contains("Show available commands"), "{screen}");
         assert!(screen.contains("/quit"), "{screen}");
