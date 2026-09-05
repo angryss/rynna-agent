@@ -109,6 +109,8 @@ fn profile(name: &str) -> Profile {
         active_skills: vec![],
         mcp_servers: vec![],
         capabilities: vec![],
+        default_workspace_directory: ".".into(),
+        workspaces: vec![],
     }
 }
 

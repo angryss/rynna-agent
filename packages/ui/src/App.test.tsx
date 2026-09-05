@@ -12,6 +12,8 @@ function testProfile(name: string, overrides: Partial<Profile> = {}): Profile {
     active_skills: [],
     mcp_servers: [],
     capabilities: [],
+    default_workspace_directory: '.',
+    workspaces: [],
     ...overrides,
   };
 }
@@ -67,6 +69,45 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(vi.mocked(client.respond).mock.calls[1]![0].session_id).toBe(firstRequest.session_id);
 
+  });
+
+  it('selects a profile workspace and starts a new session when the workspace changes', async () => {
+    const respond = vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Done.' } });
+    const client: AgentClient = {
+      respond,
+      listProfiles: vi.fn().mockResolvedValue({
+        default_profile: 'work',
+        provider_ids: ['openai'],
+        profiles: [testProfile('work', {
+          default_workspace_directory: '/projects/home',
+          workspaces: [{
+            name: 'rynna',
+            directories: ['/projects/rynna', '/projects/shared'],
+            default_directory: '/projects/rynna',
+          }],
+        })],
+        configured_profiles: [],
+      }),
+    };
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await screen.findByRole('combobox', { name: 'Workspace' });
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Workspace' }), 'rynna');
+    await user.type(screen.getByLabelText('Message Rynna'), 'Inspect it');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({
+      profile: 'work',
+      workspace: 'rynna',
+      session_id: expect.any(String),
+    }), expect.any(Function));
+    const firstSession = respond.mock.calls[0]![0].session_id;
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Workspace' }), '');
+    await user.type(screen.getByLabelText('Message Rynna'), 'Start over');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(respond.mock.calls[1]![0]).not.toHaveProperty('workspace');
+    expect(respond.mock.calls[1]![0].session_id).not.toBe(firstSession);
   });
 
   it('submits the prompt when Enter is pressed in the composer', async () => {
@@ -1237,6 +1278,8 @@ describe('App', () => {
       active_skills: ['code-review', './skills/rust'],
       mcp_servers: [],
       capabilities: [],
+      default_workspace_directory: '.',
+      workspaces: [],
     });
     expect(await screen.findByRole('combobox', { name: 'Profile' })).toHaveValue('work');
 
@@ -1250,6 +1293,8 @@ describe('App', () => {
       active_skills: ['code-review', './skills/rust'],
       mcp_servers: [],
       capabilities: [],
+      default_workspace_directory: '.',
+      workspaces: [],
     });
 
     await user.click(screen.getByRole('button', { name: 'Delete profile' }));

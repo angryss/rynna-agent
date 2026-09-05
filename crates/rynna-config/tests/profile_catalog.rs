@@ -1140,7 +1140,83 @@ fn editable_profile(name: &str, model: &str) -> Profile {
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
+        default_workspace_directory: ".".into(),
+        workspaces: Vec::new(),
     }
+}
+
+#[test]
+fn parses_profile_workspaces_and_defaults_legacy_profiles_to_the_current_directory() {
+    let catalog = ProfileCatalog::from_toml(
+        r#"
+version = 1
+default_profile = "work"
+[providers.ollama]
+kind = "openai-compatible"
+api_base = "http://127.0.0.1:11434/v1"
+[profiles.work]
+provider = "ollama"
+model = "qwen3:8b"
+default_workspace_directory = "/projects/home"
+[[profiles.work.workspaces]]
+name = "rynna"
+directories = ["/projects/rynna", "/projects/shared"]
+default_directory = "/projects/rynna"
+"#,
+    )
+    .unwrap();
+    let profile = catalog.resolve("work").unwrap().profile;
+    assert_eq!(
+        profile.default_workspace_directory.to_string_lossy(),
+        "/projects/home"
+    );
+    assert_eq!(profile.workspaces[0].name, "rynna");
+    assert_eq!(profile.workspaces[0].directories.len(), 2);
+
+    let legacy = ProfileCatalog::from_toml(
+        r#"
+version = 1
+default_profile = "work"
+[providers.ollama]
+kind = "openai-compatible"
+api_base = "http://127.0.0.1:11434/v1"
+[profiles.work]
+provider = "ollama"
+model = "qwen3:8b"
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        legacy
+            .resolve("work")
+            .unwrap()
+            .profile
+            .default_workspace_directory
+            .to_string_lossy(),
+        "."
+    );
+}
+
+#[test]
+fn rejects_a_workspace_default_directory_outside_its_directory_list() {
+    let error = ProfileCatalog::from_toml(
+        r#"
+version = 1
+default_profile = "work"
+[providers.ollama]
+kind = "openai-compatible"
+api_base = "http://127.0.0.1:11434/v1"
+[profiles.work]
+provider = "ollama"
+model = "qwen3:8b"
+[[profiles.work.workspaces]]
+name = "rynna"
+directories = ["/projects/rynna"]
+default_directory = "/projects/other"
+"#,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("must be one of its directories"));
 }
 
 #[test]

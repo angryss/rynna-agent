@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -750,14 +751,20 @@ const MAX_MANAGED_CONTEXTS: usize = 16;
 
 #[derive(Default)]
 struct ManagedContextStore {
-    contexts: BTreeMap<String, Vec<Message>>,
+    contexts: BTreeMap<String, (ManagedContextScope, Vec<Message>)>,
     order: VecDeque<String>,
 }
 
+#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+struct ManagedContextScope {
+    workspace: Option<String>,
+    model: Option<(String, String, String)>,
+}
+
 impl ManagedContextStore {
-    fn insert(&mut self, messages: Vec<Message>) -> String {
+    fn insert(&mut self, scope: ManagedContextScope, messages: Vec<Message>) -> String {
         let token = uuid::Uuid::new_v4().to_string();
-        self.contexts.insert(token.clone(), messages);
+        self.contexts.insert(token.clone(), (scope, messages));
         self.order.push_back(token.clone());
         while self.order.len() > MAX_MANAGED_CONTEXTS {
             if let Some(expired) = self.order.pop_front() {
@@ -767,8 +774,16 @@ impl ManagedContextStore {
         token
     }
 
-    fn get(&self, token: &str) -> Option<&[Message]> {
-        self.contexts.get(token).map(Vec::as_slice)
+    fn get(&self, scope: &ManagedContextScope, token: &str) -> Option<&[Message]> {
+        self.contexts
+            .get(token)
+            .filter(|(stored_scope, _)| stored_scope == scope)
+            .map(|(_, messages)| messages.as_slice())
+    }
+
+    fn retain_scopes(&mut self, mut keep: impl FnMut(&ManagedContextScope) -> bool) {
+        self.contexts.retain(|_, (scope, _)| keep(scope));
+        self.order.retain(|token| self.contexts.contains_key(token));
     }
 }
 
@@ -788,6 +803,7 @@ pub struct Agent {
     system_prompt: Arc<str>,
     tools: Arc<BTreeMap<String, Arc<dyn Tool>>>,
     context_manager: Arc<dyn ContextManagement>,
+    managed_context_scope: ManagedContextScope,
     managed_contexts: Arc<Mutex<ManagedContextStore>>,
 }
 
@@ -806,6 +822,7 @@ impl Agent {
             system_prompt: system_prompt.into(),
             tools: Arc::new(BTreeMap::new()),
             context_manager: Arc::new(ThresholdContextManager::default()),
+            managed_context_scope: ManagedContextScope::default(),
             managed_contexts: Arc::new(Mutex::new(ManagedContextStore::default())),
             memory: None,
             memory_session: None,
@@ -835,6 +852,7 @@ impl Agent {
             system_prompt: system_prompt.into(),
             tools: Arc::new(indexed),
             context_manager: Arc::new(ThresholdContextManager::default()),
+            managed_context_scope: ManagedContextScope::default(),
             managed_contexts: Arc::new(Mutex::new(ManagedContextStore::default())),
             memory: None,
             memory_session: None,
@@ -929,7 +947,7 @@ impl Agent {
                             .managed_contexts
                             .lock()
                             .expect("managed context lock must not be poisoned")
-                            .get(token)
+                            .get(&self.managed_context_scope, token)
                             .map(<[Message]>::to_vec)
                             .ok_or(AgentError::InvalidHistory)?;
                         if managed.last().is_none_or(|last| {
@@ -1066,7 +1084,10 @@ impl Agent {
                             .managed_contexts
                             .lock()
                             .expect("managed context lock must not be poisoned")
-                            .insert(messages[start..].to_vec());
+                            .insert(
+                                self.managed_context_scope.clone(),
+                                messages[start..].to_vec(),
+                            );
                         final_message.provider_context = Some(ProviderContext::ManagedToken(token));
                     }
                     if let Some(memory) = &self.memory {
@@ -1140,6 +1161,17 @@ pub struct ProfileProvider {
     pub is_default: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Workspace {
+    pub name: String,
+    pub directories: Vec<PathBuf>,
+    pub default_directory: PathBuf,
+}
+
+fn default_workspace_directory() -> PathBuf {
+    PathBuf::from(".")
+}
+
 const fn profile_provider_enabled() -> bool {
     true
 }
@@ -1154,6 +1186,10 @@ pub struct Profile {
     pub mcp_servers: Vec<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default = "default_workspace_directory")]
+    pub default_workspace_directory: PathBuf,
+    #[serde(default)]
+    pub workspaces: Vec<Workspace>,
 }
 
 #[derive(Debug, Error)]
@@ -1168,6 +1204,8 @@ pub enum ProfileError {
     UnknownProfile(String),
     #[error("the last profile cannot be deleted")]
     LastProfile,
+    #[error("workspace `{workspace}` is not defined for profile `{profile}`")]
+    UnknownWorkspace { profile: String, workspace: String },
 }
 
 #[derive(Debug, Error)]
@@ -1237,12 +1275,98 @@ impl AgentProfiles {
         Ok(())
     }
 
+    /// Update workspace metadata for subsequent requests without rebuilding providers or tools.
+    pub fn set_workspace_configuration(
+        &mut self,
+        profile: &str,
+        default_workspace_directory: PathBuf,
+        workspaces: Vec<Workspace>,
+    ) -> Result<(), ProfileError> {
+        let (metadata, agent) = Arc::make_mut(&mut self.profiles)
+            .get_mut(profile)
+            .ok_or_else(|| ProfileError::UnknownProfile(profile.to_owned()))?;
+        let previous_default = metadata.default_workspace_directory.clone();
+        let previous_workspaces = metadata
+            .workspaces
+            .iter()
+            .map(|workspace| (workspace.name.clone(), workspace.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let next_workspaces = workspaces
+            .iter()
+            .map(|workspace| (workspace.name.clone(), workspace.clone()))
+            .collect::<BTreeMap<_, _>>();
+        metadata.default_workspace_directory = default_workspace_directory;
+        metadata.workspaces = workspaces;
+        agent
+            .managed_contexts
+            .lock()
+            .expect("managed context lock must not be poisoned")
+            .retain_scopes(|scope| match scope.workspace.as_ref() {
+                None => previous_default == metadata.default_workspace_directory,
+                Some(name) => previous_workspaces.get(name) == next_workspaces.get(name),
+            });
+        Ok(())
+    }
+
     /// Assign a session to this request's snapshot without changing runtime profiles.
     pub fn with_memory_session(mut self, session_id: Option<uuid::Uuid>) -> Self {
         for (_, agent) in Arc::make_mut(&mut self.profiles).values_mut() {
             agent.memory_session = session_id;
         }
         self
+    }
+
+    /// Bind a request snapshot to a named workspace, or to the profile's implicit default
+    /// workspace when no name is supplied. Workspace paths are trusted profile configuration;
+    /// native tools remain bounded by their independently configured capabilities.
+    pub fn with_workspace(
+        mut self,
+        profile: Option<&str>,
+        workspace: Option<&str>,
+    ) -> Result<Self, ProfileError> {
+        let profile_name = profile.unwrap_or(&self.default_profile);
+        let (metadata, agent) = Arc::make_mut(&mut self.profiles)
+            .get_mut(profile_name)
+            .ok_or_else(|| ProfileError::UnknownProfile(profile_name.to_owned()))?;
+        let (workspace_name, directories, default_directory) = match workspace {
+            Some(workspace_name) => {
+                let selected = metadata
+                    .workspaces
+                    .iter()
+                    .find(|candidate| candidate.name == workspace_name)
+                    .ok_or_else(|| ProfileError::UnknownWorkspace {
+                        profile: profile_name.to_owned(),
+                        workspace: workspace_name.to_owned(),
+                    })?;
+                (
+                    Some(selected.name.as_str()),
+                    selected.directories.as_slice(),
+                    selected.default_directory.as_path(),
+                )
+            }
+            None => (
+                None,
+                std::slice::from_ref(&metadata.default_workspace_directory),
+                metadata.default_workspace_directory.as_path(),
+            ),
+        };
+        // The legacy/current-directory default is already the process context, so avoid
+        // changing provider payloads and prompt-cache keys for unchanged profiles.
+        if workspace_name.is_none() && default_directory == std::path::Path::new(".") {
+            return Ok(self);
+        }
+        let workspace_context = serde_json::json!({
+            "name": workspace_name,
+            "directories": directories,
+            "starting_directory": default_directory,
+        });
+        agent.system_prompt = format!(
+            "{}\n\nSession workspace (trusted profile configuration): {}\nTreat starting_directory as the current directory and the listed directories as this session's workspace. Native tools remain limited by their configured capabilities.",
+            agent.system_prompt, workspace_context
+        )
+        .into();
+        agent.managed_context_scope.workspace = workspace_name.map(str::to_owned);
+        Ok(self)
     }
 
     /// Select only an enabled pair in this profile, on a request-local snapshot.
@@ -1280,8 +1404,13 @@ impl AgentProfiles {
             ThinkingLevel::Default => provider,
             level => provider.with_thinking(level)?,
         };
-        // Never reuse opaque provider continuations across model/effort selections.
-        agent.managed_contexts = Arc::new(Mutex::new(ManagedContextStore::default()));
+        // Keep provider continuations isolated by model and effort while preserving them across
+        // request-local snapshots that select the same conversation context.
+        agent.managed_context_scope.model = Some((
+            selection.provider.clone(),
+            selection.model.clone(),
+            selection.thinking.as_str().to_owned(),
+        ));
         Ok(self)
     }
 

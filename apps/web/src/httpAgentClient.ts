@@ -424,7 +424,19 @@ function isProfile(value: unknown): value is Profile {
       value.mcp_servers.every((server) => typeof server === 'string') &&
       'capabilities' in value &&
       Array.isArray(value.capabilities) &&
-      value.capabilities.every((capability) => typeof capability === 'string'),
+      value.capabilities.every((capability) => typeof capability === 'string') &&
+      (!('default_workspace_directory' in value) || typeof value.default_workspace_directory === 'string') &&
+      (!('workspaces' in value) || Array.isArray(value.workspaces) && value.workspaces.every(isWorkspace)),
+  );
+}
+
+function isWorkspace(value: unknown): boolean {
+  return Boolean(
+    value && typeof value === 'object' &&
+    'name' in value && typeof value.name === 'string' &&
+    'directories' in value && Array.isArray(value.directories) &&
+    value.directories.every((directory) => typeof directory === 'string') &&
+    'default_directory' in value && typeof value.default_directory === 'string',
   );
 }
 

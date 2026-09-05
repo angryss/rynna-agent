@@ -42,6 +42,7 @@ async fn desktop_command_delegates_to_the_shared_agent_core() {
             selection: None,
             session_id: None,
             profile: None,
+            workspace: None,
             prompt: "Continue".to_owned(),
             history: vec![Message::user("Start")],
         },
@@ -75,6 +76,8 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
             active_skills: vec![format!("{name}-skill")],
             mcp_servers: vec![format!("{name}-mcp")],
             capabilities: Vec::new(),
+            default_workspace_directory: ".".into(),
+            workspaces: Vec::new(),
         },
         Agent::new(Arc::new(FixedProvider(reply)), "Desktop policy"),
     )
@@ -98,6 +101,7 @@ async fn desktop_profile_commands_list_and_dispatch_profiles() {
             selection: None,
             session_id: None,
             profile: Some("work".to_owned()),
+            workspace: None,
             prompt: "Continue".to_owned(),
             history: Vec::new(),
         },
@@ -185,6 +189,8 @@ model = "qwen3:14b"
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
+        default_workspace_directory: ".".into(),
+        workspaces: Vec::new(),
     };
 
     create_saved_profile(&mut catalog, &mut runtime, new_profile.clone()).unwrap();
@@ -328,6 +334,8 @@ async fn desktop_non_streaming_response_releases_profiles_lock_while_provider_is
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
+        default_workspace_directory: ".".into(),
+        workspaces: Vec::new(),
     };
     let profiles = Arc::new(AsyncMutex::new(
         AgentProfiles::new(
@@ -344,6 +352,7 @@ async fn desktop_non_streaming_response_releases_profiles_lock_while_provider_is
                 selection: None,
                 session_id: None,
                 profile: None,
+                workspace: None,
                 prompt: "wait".to_owned(),
                 history: Vec::new(),
             },
@@ -394,6 +403,8 @@ async fn desktop_stream_command_forwards_typed_deltas() {
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
+        default_workspace_directory: ".".into(),
+        workspaces: Vec::new(),
     };
     let profiles = AgentProfiles::new(
         "local",
@@ -408,6 +419,7 @@ async fn desktop_stream_command_forwards_typed_deltas() {
             selection: None,
             session_id: None,
             profile: None,
+            workspace: None,
             prompt: "Continue".to_owned(),
             history: Vec::new(),
         },
@@ -758,6 +770,7 @@ max_output_bytes = 8192
             selection: None,
             session_id: None,
             profile: None,
+            workspace: None,
             prompt: "Inspect the host".to_owned(),
             history: Vec::new(),
         },
@@ -901,6 +914,7 @@ async fn desktop_response_modes_forward_memory_session_ids() {
         selection: None,
         session_id: Some(session_id),
         profile: None,
+        workspace: None,
         prompt: "hello".into(),
         history: vec![],
     };
@@ -958,6 +972,7 @@ model = "test"
                 selection: None,
                 session_id: None,
                 profile: None,
+                workspace: None,
                 prompt: "Review".into(),
                 history: vec![],
             },

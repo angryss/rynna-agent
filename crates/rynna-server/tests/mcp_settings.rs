@@ -34,6 +34,8 @@ fn app(path: &std::path::Path, model: Arc<Model>) -> Router {
         active_skills: vec![],
         mcp_servers: vec![],
         capabilities: vec![],
+        default_workspace_directory: ".".into(),
+        workspaces: vec![],
     };
     let profiles = AgentProfiles::new(
         "test",

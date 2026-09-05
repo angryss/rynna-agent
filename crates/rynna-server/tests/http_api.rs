@@ -102,6 +102,8 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
             active_skills: vec![format!("{name}-skill")],
             mcp_servers: vec![format!("{name}-mcp")],
             capabilities: Vec::new(),
+            default_workspace_directory: ".".into(),
+            workspaces: Vec::new(),
         },
         Agent::new(Arc::new(ReplyProvider(reply)), "You are Rynna."),
     )
@@ -243,6 +245,32 @@ async fn respond_endpoint_rejects_an_unknown_profile() {
                 "message": "profile `missing` is not defined"
             }
         })
+    );
+}
+
+#[tokio::test]
+async fn respond_endpoint_rejects_a_workspace_outside_the_selected_profile() {
+    let response = profiles_app()
+        .oneshot(
+            Request::post("/v1/respond")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"profile":"work","workspace":"missing","prompt":"Hello"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["error"]["code"], "invalid_request");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("workspace `missing`")
     );
 }
 
@@ -846,6 +874,70 @@ model = "qwen3:8b"
 }
 
 #[tokio::test]
+async fn updated_workspace_metadata_is_available_to_subsequent_runtime_requests() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+version = 1
+default_profile = "alpha"
+[providers.ollama]
+kind = "openai-compatible"
+api_base = "http://127.0.0.1:11434/v1"
+[profiles.alpha]
+provider = "ollama"
+model = "qwen3:8b"
+"#,
+    )
+    .unwrap();
+    let catalog = ProfileCatalog::load(&path).unwrap();
+    let profiles = AgentProfiles::new("alpha", vec![profile("alpha", "Alpha.")]).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let app = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog);
+
+    let updated = app
+        .clone()
+        .oneshot(local_provider_request(
+            Request::put("/v1/profiles/alpha")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "alpha",
+                        "providers": [{ "provider": "ollama", "model": "qwen3:8b" }],
+                        "active_skills": [],
+                        "mcp_servers": [],
+                        "capabilities": [],
+                        "default_workspace_directory": "/projects/home",
+                        "workspaces": [{
+                            "name": "rynna",
+                            "directories": ["/projects/rynna", "/projects/shared"],
+                            "default_directory": "/projects/rynna"
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::post("/v1/respond")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"profile":"alpha","workspace":"rynna","prompt":"Hello"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn created_profile_metadata_is_not_attached_to_an_existing_runtime_agent() {
     struct CountingProvider(AtomicUsize);
 
@@ -886,6 +978,8 @@ model = "qwen3:8b"
         active_skills: vec!["sensitive-skill".to_owned()],
         mcp_servers: Vec::new(),
         capabilities: vec!["sensitive-capability".to_owned()],
+        default_workspace_directory: ".".into(),
+        workspaces: Vec::new(),
     };
     let profiles = AgentProfiles::new(
         "alpha",
@@ -960,6 +1054,8 @@ model = "qwen3:8b"
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: vec!["runtime-capability".to_owned()],
+        default_workspace_directory: ".".into(),
+        workspaces: Vec::new(),
     };
     let profiles = AgentProfiles::new(
         "alpha",
@@ -1238,6 +1334,8 @@ async fn non_streaming_response_releases_profiles_lock_while_provider_is_pending
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
+        default_workspace_directory: ".".into(),
+        workspaces: Vec::new(),
     };
     let profiles = AgentProfiles::new(
         "alpha",
