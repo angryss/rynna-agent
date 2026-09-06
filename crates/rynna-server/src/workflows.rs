@@ -5,6 +5,21 @@ use rynna_core::{
     workflows::{Workflow, WorkflowMetadata},
 };
 use uuid::Uuid;
+// HTTP snapshots preserve progress metadata without publishing captured policies.
+#[derive(Serialize)]
+#[serde(transparent)]
+pub(super) struct RunResponse(Run);
+impl From<Run> for RunResponse {
+    fn from(mut run: Run) -> Self {
+        for step in &mut run.workflow.steps {
+            step.instructions.clear();
+        }
+        for helper in &mut run.helpers {
+            helper.instructions.clear();
+        }
+        Self(run)
+    }
+}
 #[derive(Deserialize)]
 pub(super) struct Scope {
     profile: String,
@@ -76,40 +91,51 @@ pub(super) async fn delete(
 pub(super) async fn start(
     State(state): State<AppState>,
     Json(request): Json<Start>,
-) -> Result<Json<Run>, ApiError> {
-    Ok(Json(state.workflows.start(request).await.map_err(error)?))
+) -> Result<Json<RunResponse>, ApiError> {
+    Ok(Json(
+        state.workflows.start(request).await.map_err(error)?.into(),
+    ))
 }
 pub(super) async fn runs(
     State(state): State<AppState>,
     Query(scope): Query<Scope>,
-) -> Result<Json<Vec<Run>>, ApiError> {
+) -> Result<Json<Vec<RunResponse>>, ApiError> {
     Ok(Json(
         state
             .workflows
             .list(&scope.profile, scope.session_id)
             .await
-            .map_err(error)?,
+            .map_err(error)?
+            .into_iter()
+            .map(RunResponse::from)
+            .collect(),
     ))
 }
 pub(super) async fn run(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<Uuid>,
     Query(scope): Query<Scope>,
-) -> Result<Json<Run>, ApiError> {
+) -> Result<Json<RunResponse>, ApiError> {
     Ok(Json(
         state
             .workflows
             .read(id, &scope.profile, scope.session_id)
             .await
-            .map_err(error)?,
+            .map_err(error)?
+            .into(),
     ))
 }
 pub(super) async fn control(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<Uuid>,
     Json(request): Json<Control>,
-) -> Result<Json<Run>, ApiError> {
+) -> Result<Json<RunResponse>, ApiError> {
     Ok(Json(
-        state.workflows.control(id, request).await.map_err(error)?,
+        state
+            .workflows
+            .control(id, request)
+            .await
+            .map_err(error)?
+            .into(),
     ))
 }

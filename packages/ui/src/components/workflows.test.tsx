@@ -39,3 +39,19 @@ it('restores an uncertain run by session and requires acknowledgement to resume'
   await userEvent.click(screen.getByRole('button', { name: 'Resume' }));
   expect(client.controlWorkflow).toHaveBeenCalledWith('run', { profile: 'work', session_id: 'session', expected_revision: 4, action: 'resume', acknowledge_uncertain: true });
 });
+
+it.each([
+  ['short multilingual context', '你好🙂 café', '你好🙂 café'],
+  ['ASCII suffix', 'a'.repeat(17000), 'a'.repeat(16000)],
+  ['CJK boundary', '界'.repeat(6000), '界'.repeat(5333)],
+  ['emoji boundary', '🙂'.repeat(5000) + 'x', '🙂'.repeat(3999) + 'x'],
+])('starts with a valid UTF-8 context suffix: %s', async (_, context, expected) => {
+  const client: AgentClient = { respond: vi.fn(), listWorkflows: vi.fn().mockResolvedValue(metadata), listWorkflowRuns: vi.fn().mockResolvedValue([]), startWorkflow: vi.fn().mockRejectedValue(new Error('response lost')) };
+  render(<WorkflowPanel client={client} profile="work" session="session" project={null} selection={{ provider: 'fake', model: 'fake', thinking: 'default' }} selected="rynna-default" context={context} onSelection={vi.fn()} onRun={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText('Goal'), { target: { value: 'Build' } });
+  fireEvent.change(screen.getByLabelText('Success criteria · one per line'), { target: { value: 'Tests pass' } });
+  await userEvent.click(screen.getByRole('button', { name: 'Start workflow' }));
+  const sent = vi.mocked(client.startWorkflow!).mock.calls[0]![0].initial_context;
+  expect(sent).toBe(expected);
+  expect(new TextEncoder().encode(sent).length).toBeLessThanOrEqual(16000);
+});

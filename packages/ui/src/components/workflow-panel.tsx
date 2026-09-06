@@ -4,6 +4,13 @@ import type { AgentClient, ModelSelection, WorkflowAction, WorkflowLimits, Workf
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
+function contextSuffix(context: string): string {
+  const bytes = new TextEncoder().encode(context);
+  let start = Math.max(0, bytes.length - 16000);
+  // Skip continuation bytes so the suffix starts at a complete UTF-8 character.
+  while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
+  return new TextDecoder().decode(bytes.subarray(start));
+}
 export const workflowTerminal = (run: WorkflowRun) => ['completed', 'failed', 'cancelled', 'budget_exhausted'].includes(run.status);
 interface Props { client: AgentClient; profile: string; session: string; project: string | null; selection: ModelSelection; selected?: string; context: string; savedRunId?: string; onSelection(id: string): void; onRun(run: WorkflowRun): void }
 export function WorkflowPanel(props: Props) {
@@ -49,7 +56,7 @@ export function WorkflowPanel(props: Props) {
     if (busy) return; setBusy(true); setError('');
     try {
       // Retain the exact request ID after a lost response. Polling can also recover by session.
-      request.current ??= { request_id: newSessionId(), session_id: session, profile, project, selection, workflow_id: selected, goal, criteria: criteria.split('\n').filter(v => v.trim()).map((text, i) => ({ id: `criterion-${i + 1}`, text })), limits, initial_context: latest.current.context.slice(-16000) };
+      request.current ??= { request_id: newSessionId(), session_id: session, profile, project, selection, workflow_id: selected, goal, criteria: criteria.split('\n').filter(v => v.trim()).map((text, i) => ({ id: `criterion-${i + 1}`, text })), limits, initial_context: contextSuffix(latest.current.context) };
       accept(await client.startWorkflow!(request.current));
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
