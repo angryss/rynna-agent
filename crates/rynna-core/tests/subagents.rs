@@ -419,3 +419,67 @@ async fn parent_and_helpers_share_one_tool_call_budget_per_response() {
         }
     }
 }
+
+#[tokio::test]
+async fn helpers_share_the_aggregate_result_byte_budget_across_short_summaries() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct LargeResult;
+    #[async_trait]
+    impl Tool for LargeResult {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition::new(
+                "large_result",
+                "Read a large result",
+                json!({"type":"object"}),
+            )
+        }
+        async fn execute(&self, _: Value) -> Result<Value, ToolError> {
+            Ok(json!("x".repeat(5 * 1024 * 1024)))
+        }
+    }
+    struct Summarizer(Arc<AtomicUsize>);
+    #[async_trait]
+    impl ModelProvider for Summarizer {
+        async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
+            let child = request.messages[0].content.contains("Subagent role:");
+            if request.messages.last().unwrap().role == rynna_core::Role::Tool {
+                if child {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                    return Ok(Completion::new(Message::assistant("short summary")));
+                }
+                return Ok(Completion::new(Message::assistant(
+                    request.messages.last().unwrap().content.clone(),
+                )));
+            }
+            let calls = if child {
+                vec![ToolCall::new("read", "large_result", json!({}))]
+            } else {
+                (0..2)
+                    .map(|i| {
+                        ToolCall::new(
+                            format!("delegate-{i}"),
+                            "delegate_task",
+                            json!({"subagent":"reviewer","task":"Summarize"}),
+                        )
+                    })
+                    .collect()
+            };
+            Ok(Completion::with_tool_calls(calls))
+        }
+    }
+    let summaries = Arc::new(AtomicUsize::new(0));
+    let agent = Agent::with_tools(
+        Arc::new(Summarizer(summaries.clone())),
+        "policy",
+        vec![Arc::new(LargeResult)],
+    )
+    .unwrap();
+    let profiles =
+        AgentProfiles::new("work", [(profile("work", vec![helper("reviewer")]), agent)]).unwrap();
+    for response in 1..=2 {
+        let reply = profiles.respond(None, &[], "Delegate twice").await.unwrap();
+        assert!(reply.content.contains("aggregate tool result byte limit"));
+        // The second large payload must never reach a model, even though the first was summarized.
+        assert_eq!(summaries.load(Ordering::SeqCst), response);
+    }
+}

@@ -827,10 +827,16 @@ pub use memory::{
     MemoryConversation, MemoryError, MemoryMessage, MemoryProvider, flush_memory_writes,
 };
 
+#[derive(Default)]
+struct ToolBudget {
+    calls: AtomicUsize,
+    result_bytes: AtomicUsize,
+}
+
 #[derive(Clone)]
 pub struct Agent {
     subagents: Arc<Vec<Subagent>>,
-    tool_call_budget: Option<Arc<AtomicUsize>>,
+    tool_budget: Option<Arc<ToolBudget>>,
     tool_source: Option<Arc<dyn ToolSource>>,
     memory: Option<Arc<dyn MemoryProvider>>,
     memory_session: Option<uuid::Uuid>,
@@ -866,7 +872,7 @@ impl Agent {
             retention_queue: memory::RetentionQueue::default(),
             tool_source: None,
             subagents: Arc::new(Vec::new()),
-            tool_call_budget: None,
+            tool_budget: None,
         }
     }
 
@@ -898,7 +904,7 @@ impl Agent {
             retention_queue: memory::RetentionQueue::default(),
             tool_source: None,
             subagents: Arc::new(Vec::new()),
-            tool_call_budget: None,
+            tool_budget: None,
         })
     }
 
@@ -1027,7 +1033,7 @@ impl Agent {
         messages.push(Message::user(input));
 
         // Independent responses start fresh; delegated loops share this response budget.
-        let tool_call_budget = self.tool_call_budget.clone().unwrap_or_default();
+        let tool_budget = self.tool_budget.clone().unwrap_or_default();
         let mut available_tools = self.tools.as_ref().clone();
         if self.provider.supports_external_tools()
             && let Some(source) = &self.tool_source
@@ -1047,7 +1053,7 @@ impl Agent {
             }
         }
         if self.provider.supports_external_tools() && !self.subagents.is_empty() {
-            let tool = subagents::delegation_tool(self, &available_tools, tool_call_budget.clone());
+            let tool = subagents::delegation_tool(self, &available_tools, tool_budget.clone());
             let name = tool.definition().name;
             if available_tools.insert(name.clone(), tool).is_some() {
                 return Err(AgentError::DuplicateTool(name));
@@ -1058,7 +1064,6 @@ impl Agent {
             .map(|tool| tool.definition())
             .collect::<Vec<_>>();
         let mut tool_calls_used = 0;
-        let mut tool_result_bytes = 0_usize;
         let mut final_answer_only = false;
         let tool_deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(MAX_TOOL_EXECUTION_SECONDS);
@@ -1171,7 +1176,8 @@ impl Agent {
             if turn + 1 == MAX_MODEL_TURNS {
                 return Err(AgentError::ToolLoopLimit(MAX_MODEL_TURNS));
             }
-            tool_call_budget
+            tool_budget
+                .calls
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                     used.checked_add(completion.message.tool_calls.len())
                         .filter(|total| *total <= MAX_TOOL_CALLS)
@@ -1194,12 +1200,13 @@ impl Agent {
                     None => serde_json::json!({"error": format!("unknown tool `{}`", call.name)}),
                 };
                 let result = result.to_string();
-                tool_result_bytes = tool_result_bytes
-                    .checked_add(result.len())
-                    .ok_or(AgentError::ToolResultByteLimit(MAX_TOOL_RESULT_BYTES))?;
-                if tool_result_bytes > MAX_TOOL_RESULT_BYTES {
-                    return Err(AgentError::ToolResultByteLimit(MAX_TOOL_RESULT_BYTES));
-                }
+                tool_budget
+                    .result_bytes
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                        used.checked_add(result.len())
+                            .filter(|total| *total <= MAX_TOOL_RESULT_BYTES)
+                    })
+                    .map_err(|_| AgentError::ToolResultByteLimit(MAX_TOOL_RESULT_BYTES))?;
                 messages.push(Message::tool(call.id, result));
             }
         }

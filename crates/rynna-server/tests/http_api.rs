@@ -1627,3 +1627,62 @@ model = "local"
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
+
+#[tokio::test]
+async fn public_profile_lists_redact_helper_instructions_but_local_admin_can_edit_them() {
+    let mut catalog = ProfileCatalog::built_in();
+    let mut configured = catalog.resolve("default").unwrap().profile;
+    configured.subagents = vec![rynna_core::Subagent {
+        name: "reviewer".into(),
+        description: "Review code".into(),
+        instructions: "private configured policy".into(),
+    }];
+    catalog
+        .update_profile("default", configured.clone())
+        .unwrap();
+    let mut runtime_metadata = configured;
+    runtime_metadata.subagents[0].instructions = "private runtime policy".into();
+    let profiles = AgentProfiles::new(
+        "default",
+        [(
+            runtime_metadata,
+            Agent::new(Arc::new(FixedProvider), "private parent policy"),
+        )],
+    )
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let app = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog);
+    for peer in [
+        None,
+        Some("203.0.113.10:42000"),
+        Some("127.0.0.1:42000"),
+        Some("[::1]:42000"),
+    ] {
+        let mut request = Request::get("/v1/profiles").body(Body::empty()).unwrap();
+        if let Some(peer) = peer {
+            request
+                .extensions_mut()
+                .insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+        }
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let local = peer.is_some_and(|peer| peer.parse::<SocketAddr>().unwrap().ip().is_loopback());
+        for (key, policy) in [
+            ("profiles", "private runtime policy"),
+            ("configured_profiles", "private configured policy"),
+        ] {
+            assert_eq!(body[key][0]["subagents"][0]["name"], "reviewer");
+            assert_eq!(body[key][0]["subagents"][0]["description"], "Review code");
+            assert_eq!(
+                body[key][0]["subagents"][0]["instructions"],
+                if local { policy } else { "" }
+            );
+        }
+        if !local {
+            assert!(!String::from_utf8_lossy(&bytes).contains("private"));
+        }
+    }
+}

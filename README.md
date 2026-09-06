@@ -239,9 +239,9 @@ In **Settings → Subagents**, select a profile and add helpers with a name, a d
 
 The parent model can call `delegate_task` with `subagent` and `task`. Each call runs a fresh helper conversation and returns its final answer to the parent. Helpers inherit the current model selection, profile policy and skills, selected project context, and permitted native/MCP tools. Include necessary context in the delegated task: earlier chat history and recalled memory are not copied, and helper exchanges are not retained to memory. Helpers share tool access, so they can modify the same permitted files as the parent.
 
-Delegation is one level deep and sequential; helpers cannot delegate to other helpers. Each helper uses the existing bounded model loop. Parent and helper tool calls share one 64-call budget per response, and the parent's 300-second aggregate deadline covers delegated work. Providers that disable external tools, including subscription adapters, do not expose delegation.
+Delegation is one level deep and sequential; helpers cannot delegate to other helpers. Each helper uses the existing bounded model loop. Parent and helpers share one 64-call budget and one 8 MiB tool-result byte budget per response, and the parent's 300-second aggregate deadline covers delegated work. Providers that disable external tools, including subscription adapters, do not expose delegation.
 
-Subagents are saved inline in `config.toml` and are available across CLI, HTTP and desktop:
+Subagents are saved inline in `config.toml` and are available across CLI, HTTP and desktop. Public HTTP profile lists redact helper instructions; loopback administrators receive the complete definitions for editing:
 
 ```toml
 [[profiles.local.subagents]]
