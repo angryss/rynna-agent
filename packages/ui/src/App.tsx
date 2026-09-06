@@ -362,6 +362,7 @@ export function App({ client }: AppProps) {
   }
 
   function resetConversation() {
+    setPending(false);
     setMessages([]);
     setInput('');
     sessionId.current = null;
@@ -373,21 +374,17 @@ export function App({ client }: AppProps) {
 
   async function removeSession(session: Session): Promise<boolean> {
     if (pending || deletingSession) return false;
-    if (workflowRunning) {
-      setError('Pause or finish the active workflow before deleting a session.');
-      return false;
-    }
     setDeletingSession(true);
     setError(null);
     try {
-      if (client.listWorkflowRuns) {
+      if ((session.workflow_id || session.workflow_run_id) && client.listWorkflowRuns) {
         const runs = await client.listWorkflowRuns(session.profile, session.id);
         if (runs.some(run => !workflowTerminal(run))) {
           throw new Error('Cancel or finish this session’s workflow before deleting it.');
         }
       }
-      const remaining = deleteSession(session.id, sessions);
-      setSessions(remaining);
+      const remaining = deleteSession(session.id, readSessions());
+      setSessions(current => mergeSessions(current, remaining).filter(candidate => !isSessionDeleted(candidate.id)));
       if (sessionId.current === session.id) resetConversation();
       return true;
     } catch (deleteError) {
@@ -789,7 +786,7 @@ export function App({ client }: AppProps) {
   }
 
   function runCommand(text: string) {
-    if (pending || workflowRunning) return;
+    if (pending || workflowRunning || deletingSession) return;
     const [name = '', ...parts] = text.trim().split(/\s+/);
     const argument = parts.join(' ');
     if (!slashCommands.some(command => command.name === name.toLowerCase())) {
@@ -891,7 +888,7 @@ export function App({ client }: AppProps) {
       setMessages(previousMessages);
       setInput(prompt);
     } finally {
-      setPending(false);
+      if (sessionId.current === currentSessionId) setPending(false);
     }
   }
 
@@ -1012,7 +1009,7 @@ export function App({ client }: AppProps) {
             ) : null}
             <section className="conversation" aria-label="Conversation">
               {activeProfile && client.startWorkflow && client.listWorkflowRuns ? <WorkflowPanel
-                key={`${activeProfile.name}:${workflowSession}`} client={client} profile={activeProfile.name} session={workflowSession}
+                key={`${activeProfile.name}:${workflowSession}`} disabled={deletingSession} client={client} profile={activeProfile.name} session={workflowSession}
                 savedRunId={sessions.find(s => s.id === workflowSession)?.workflow_run_id} project={project ?? null} selected={selectedWorkflow} context={conversationHistory(messages).map(m => `${m.role}: ${m.content}`).join('\n')}
                 selection={selection ?? { provider: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.provider ?? '', model: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.model ?? '', thinking: 'default' }}
                 onSelection={saveWorkflowSelection} onRun={receiveWorkflow} /> : null}
@@ -1059,7 +1056,7 @@ export function App({ client }: AppProps) {
                 <label htmlFor="prompt">Message Rynna</label>
                 <div className="composer-row">
                   <SlashCommandInput value={input} onChange={setInput} onCommand={runCommand}
-                    busy={pending || workflowRunning} />
+                    busy={pending || workflowRunning || deletingSession} />
                 </div>
                 <div className="composer-actions">
                   {activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
