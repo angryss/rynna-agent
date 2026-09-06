@@ -1434,3 +1434,99 @@ async fn both_http_response_modes_route_to_the_selected_pair() {
         "default"
     );
 }
+
+#[tokio::test]
+async fn mlx_provider_settings_persist_crud() {
+    let directory = tempfile::tempdir().unwrap();
+    let settings_path = directory.path().join("providers.toml");
+    let settings = ProviderSettingsStore::load(&settings_path).unwrap();
+    let profiles = AgentProfiles::new("local", vec![profile("local", "Local.")]).unwrap();
+    let app = router_with_profiles_and_provider_settings(profiles, settings);
+
+    let response = app
+        .clone()
+        .oneshot(local_provider_request(
+            Request::get("/v1/profiles/local/providers")
+                .body(Body::empty())
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap(),
+        serde_json::json!([])
+    );
+
+    let response = app
+        .clone()
+        .oneshot(local_provider_request(
+            Request::post("/v1/profiles/local/providers")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"kind":"openrouter"}"#))
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(local_provider_request(
+            Request::post("/v1/profiles/local/providers")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"kind":"mlx","api_base":"http://localhost:8000/v1"}"#,
+                ))
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(local_provider_request(
+            Request::put("/v1/profiles/local/providers/mlx")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"kind":"mlx","api_base":"http://localhost:8001/v1"}"#,
+                ))
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let reloaded = ProviderSettingsStore::load(&settings_path).unwrap();
+    assert_eq!(
+        serde_json::to_value(reloaded.list("local")).unwrap(),
+        serde_json::json!([
+            { "kind": "openrouter" },
+            {
+                "kind": "mlx",
+                "api_base": "http://localhost:8001/v1"
+            }
+        ])
+    );
+
+    let response = app
+        .oneshot(local_provider_request(
+            Request::delete("/v1/profiles/local/providers/mlx")
+                .body(Body::empty())
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        serde_json::to_value(
+            ProviderSettingsStore::load(&settings_path)
+                .unwrap()
+                .list("local")
+        )
+        .unwrap(),
+        serde_json::json!([{ "kind": "openrouter" }])
+    );
+}

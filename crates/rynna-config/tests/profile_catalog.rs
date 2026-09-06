@@ -1560,3 +1560,100 @@ providers = [
     assert_eq!(resolved.profile.providers[1].model, "override");
     assert!(resolved.profile.providers[1].is_default);
 }
+
+#[test]
+fn mlx_custom_models_round_trip_with_default_and_custom_endpoints() {
+    for endpoint in ["", "api_base = \"http://localhost:8080/v1\""] {
+        let source = format!(
+            r#"
+version = 1
+default_profile = "local"
+[providers.mlx]
+kind = "mlx"
+{endpoint}
+[profiles.local]
+provider = "mlx"
+model = "mlx-community/Qwen3.8-27B-8bit"
+"#
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, source).unwrap();
+        let mut catalog = ProfileCatalog::load(&path).unwrap();
+        let mut profile = catalog.resolve("local").unwrap().profile;
+        profile.providers.push(ProfileProvider {
+            provider: "mlx".to_owned(),
+            model: "/models/my-custom-model".to_owned(),
+            enabled: true,
+            is_default: false,
+        });
+        catalog.update_profile("local", profile).unwrap();
+        let resolved = ProfileCatalog::load(&path)
+            .unwrap()
+            .resolve("local")
+            .unwrap();
+        assert_eq!(resolved.providers[0].provider_kind, ProviderKind::Mlx);
+        assert_eq!(
+            resolved.providers[0].api_base,
+            if endpoint.is_empty() {
+                "http://127.0.0.1:8000/v1"
+            } else {
+                "http://localhost:8080/v1"
+            }
+        );
+        assert_eq!(
+            resolved.profile.providers[0].model,
+            "mlx-community/Qwen3.8-27B-8bit"
+        );
+        assert_eq!(
+            resolved.profile.providers[1].model,
+            "/models/my-custom-model"
+        );
+    }
+}
+
+#[test]
+fn built_in_catalog_accepts_custom_mlx_models_without_changing_ollama_default() {
+    let mut catalog = ProfileCatalog::built_in();
+    let mut profile = catalog.resolve("default").unwrap().profile;
+    profile.providers.push(ProfileProvider {
+        provider: "mlx".to_owned(),
+        model: "my-custom-mlx-model".to_owned(),
+        enabled: true,
+        is_default: false,
+    });
+    catalog.update_profile("default", profile).unwrap();
+    let resolved = catalog.resolve("default").unwrap();
+    assert_eq!(resolved.profile.providers[0].model, "qwen3:8b");
+    assert_eq!(resolved.providers[1].provider_kind, ProviderKind::Mlx);
+}
+
+#[test]
+fn mlx_settings_validate_urls_and_persist_per_profile() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("providers.toml");
+    let mut store = ProviderSettingsStore::load(&path).unwrap();
+    for url in [
+        "invalid",
+        "ftp://localhost",
+        "http://user:password@localhost:8000/v1",
+    ] {
+        assert!(
+            store
+                .add(
+                    "local",
+                    ConfiguredProvider::Mlx {
+                        api_base: url.to_owned()
+                    }
+                )
+                .is_err()
+        );
+    }
+    let provider = ConfiguredProvider::Mlx {
+        api_base: "http://localhost:8000/v1".to_owned(),
+    };
+    store.add("local", provider.clone()).unwrap();
+    let reloaded = ProviderSettingsStore::load(&path).unwrap();
+    assert_eq!(reloaded.list("local"), vec![provider]);
+    assert!(reloaded.list("other").is_empty());
+}

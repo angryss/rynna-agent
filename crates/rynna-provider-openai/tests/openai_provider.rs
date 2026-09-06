@@ -978,3 +978,40 @@ async fn selected_thinking_is_sent_in_chat_and_managed_responses() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn local_custom_model_names_are_sent_unchanged_without_authentication() {
+    for model in [
+        "qwen3:14b",
+        "mlx-community/Qwen3.8-27B-8bit",
+        "/models/my-model",
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"model": model}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"message": {"role": "assistant", "content": "Hello"}}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider =
+            OpenAiCompatibleProvider::new(format!("{}/v1", server.uri()), model, None).unwrap();
+        let result = provider
+            .complete(CompletionRequest {
+                messages: vec![Message::user("Hello")],
+                tools: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.message, Message::assistant("Hello"));
+        assert!(
+            !server.received_requests().await.unwrap()[0]
+                .headers
+                .contains_key("authorization")
+        );
+    }
+}

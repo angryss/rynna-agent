@@ -96,7 +96,52 @@ Open the terminal provider settings interface with:
 cargo run -p rynna-cli -- --configure-providers
 ```
 
-The TUI starts with an empty provider list and supports adding, editing, and deleting Ollama, OpenRouter, OpenAI, and Anthropic settings. Use `--provider-config <path>` to select a non-default provider settings file. OpenRouter reads `OPENROUTER_API_KEY` from the Rynna process environment. OpenAI can authenticate through an API key sent directly to Codex over stdin or through Codex's ChatGPT browser sign-in.
+The TUI starts with an empty provider list and supports adding, editing, and deleting Ollama, MLX, OpenRouter, OpenAI, and Anthropic settings. Use `--provider-config <path>` to select a non-default provider settings file. OpenRouter reads `OPENROUTER_API_KEY` from the Rynna process environment. OpenAI can authenticate through an API key sent directly to Codex over stdin or through Codex's ChatGPT browser sign-in.
+
+## Custom models and MLX
+
+In web or desktop **Settings → Models**, choose a profile and provider, enter the
+exact **Model name**, and click **Add model**. Names are not restricted to a
+built-in list: Ollama tags such as `my-model:latest`, Hugging Face IDs, and local
+model paths are accepted. New entries are enabled; use **Default** to make one
+preferred, or disable older entries. Duplicate names for the same provider are
+rejected. Restart Rynna to load saved changes into chat.
+
+For MLX LM on macOS, start your model server, for example:
+
+```bash
+mlx_lm.server --model mlx-community/Qwen3.8-27B-8bit --host 127.0.0.1 --port 8000
+```
+
+MLX uses the existing OpenAI-compatible Chat Completions adapter without an API
+key. New installations include an `mlx` provider at `http://127.0.0.1:8000/v1`
+available in Settings → Models. If you already have a `config.toml`, add this
+connection definition and restart to expose it in the provider picker:
+
+```toml
+[providers.mlx]
+kind = "mlx"
+api_base = "http://127.0.0.1:8000/v1" # optional for MLX; this is its default
+```
+
+Then add `mlx-community/Qwen3.8-27B-8bit` under that provider in Settings, or
+configure a profile directly:
+
+```toml
+[profiles.mlx]
+provider = "mlx"
+model = "mlx-community/Qwen3.8-27B-8bit"
+```
+
+Use any model name served by your MLX server; Rynna sends it unchanged. Start
+that profile with `rynna --profile mlx chat`, or use `--model <name>` for a CLI
+model override. See `rynna.example.toml` for a complete example.
+
+As with Ollama, the **Provider credentials** panel and terminal provider settings
+record profile-scoped connection readiness only. Runtime routing uses
+`[providers.*]` and `[profiles.*]` in `config.toml`; changing a port in provider
+settings does not change the runtime endpoint. Update `api_base` in the catalog
+and restart when your server moves.
 
 ## Web application
 

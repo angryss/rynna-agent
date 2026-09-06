@@ -660,6 +660,7 @@ describe('App', () => {
     await user.click(providerType);
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
       'Anthropic',
+      'MLX',
       'Ollama',
       'OpenAI',
       'OpenRouter',
@@ -1144,6 +1145,81 @@ describe('App', () => {
     await user.click(screen.getByRole('option', { name: 'beta' }));
 
     expect(listProviders).toHaveBeenCalledWith('beta');
+  });
+
+  it.each(['ollama', 'mlx'])('adds custom %s model names and rejects duplicates', async (provider) => {
+    const user = userEvent.setup();
+    const updateProfile = vi.fn().mockImplementation(async (_name: string, profile: Profile) => profile);
+    const profile = testProfile('alpha', {
+      providers: [{ provider: 'ollama', model: 'qwen3:8b', enabled: true, default: true }],
+    });
+    render(<App client={{
+      respond: vi.fn(), updateProfile,
+      listProfiles: vi.fn().mockResolvedValue({
+        default_profile: 'alpha', provider_ids: ['ollama', 'mlx'],
+        profiles: [profile], configured_profiles: [profile],
+      }),
+    }} />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Models' }));
+    await user.click(screen.getByRole('combobox', { name: 'Provider' }));
+    await user.click(screen.getByRole('option', { name: provider }));
+    const input = screen.getByLabelText('Model name');
+    const add = screen.getByRole('button', { name: 'Add model' });
+    expect(add).toBeDisabled();
+    await user.type(input, '   ');
+    expect(add).toBeDisabled();
+    await user.clear(input);
+    const model = provider === 'mlx' ? 'mlx-community/Qwen3.8-27B-8bit' : 'my-local-model:latest';
+    await user.type(input, ` ${model} `);
+    await user.click(add);
+    expect(updateProfile).toHaveBeenCalledWith('alpha', {
+      ...profile, providers: [...profile.providers, { provider, model, enabled: true, default: false }],
+    });
+    expect(await screen.findByRole('checkbox', { name: `Select ${model}` })).toBeInTheDocument();
+    expect(input).toHaveValue('');
+    await user.type(input, model);
+    await user.click(add);
+    expect(screen.getByRole('alert')).toHaveTextContent('already configured');
+    expect(updateProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the custom model draft when saving fails', async () => {
+    const user = userEvent.setup();
+    const profile = testProfile('alpha');
+    render(<App client={{
+      respond: vi.fn(), updateProfile: vi.fn().mockRejectedValue(new Error('Could not save')),
+      listProfiles: vi.fn().mockResolvedValue({
+        default_profile: 'alpha', provider_ids: ['ollama'],
+        profiles: [profile], configured_profiles: [profile],
+      }),
+    }} />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Models' }));
+    await user.type(screen.getByLabelText('Model name'), 'my-model');
+    await user.click(screen.getByRole('button', { name: 'Add model' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save');
+    expect(screen.getByLabelText('Model name')).toHaveValue('my-model');
+    expect(screen.queryByRole('checkbox', { name: 'Select my-model' })).not.toBeInTheDocument();
+  });
+
+  it('creates and edits MLX with its own default endpoint', async () => {
+    const user = userEvent.setup();
+    const createProvider = vi.fn().mockImplementation(async (input: { kind: 'mlx'; api_base: string }) => input);
+    const updateProvider = vi.fn().mockImplementation(async (input: { kind: 'mlx'; api_base: string }) => input);
+    render(<App client={{ respond: vi.fn(), createProvider, updateProvider, listProviders: vi.fn().mockResolvedValue([]) }} />);
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    await user.click(await screen.findByRole('button', { name: 'Add provider' }));
+    await user.click(screen.getByRole('combobox', { name: 'Provider type' }));
+    await user.click(screen.getByRole('option', { name: 'MLX' }));
+    expect(screen.getByLabelText('MLX API base URL')).toHaveValue('http://127.0.0.1:8000/v1');
+    await user.click(screen.getByRole('button', { name: 'Save provider' }));
+    expect(createProvider).toHaveBeenCalledWith({ kind: 'mlx', api_base: 'http://127.0.0.1:8000/v1' }, 'default');
+    await user.click(await screen.findByRole('button', { name: 'Edit MLX' }));
+    await user.clear(screen.getByLabelText('MLX API base URL'));
+    await user.type(screen.getByLabelText('MLX API base URL'), 'http://localhost:8001/v1');
+    await user.click(screen.getByRole('button', { name: 'Save provider' }));
+    expect(updateProvider).toHaveBeenCalledWith({ kind: 'mlx', api_base: 'http://localhost:8001/v1' }, 'default');
   });
 
   it('edits configured models without mutating the running profile snapshot', async () => {
