@@ -123,15 +123,15 @@ impl CodexAppServerProvider {
                 .env_remove("CODEX_HOME")
                 .env_remove("RYNNA_CODEX_HOME");
         }
-        let mut child = command
+        command
             .arg("app-server")
             .current_dir(workspace.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(provider_error)?;
+            .kill_on_drop(true);
+        let (mut child, _process_group) =
+            rynna_core::process::ProcessGroup::spawn(&mut command).map_err(provider_error)?;
         let mut stdin = child
             .stdin
             .take()

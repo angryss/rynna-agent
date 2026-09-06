@@ -1215,14 +1215,16 @@ async fn respond_stream(
         let mut on_delta = move |delta: &CompletionDelta| {
             let _ = delta_sender.send(StreamResponseEvent::from(delta));
         };
-        let result = profiles
-            .respond_stream(
+        let result = tokio::select! {
+            biased;
+            _ = sender.closed() => return,
+            result = profiles.respond_stream(
                 request.profile.as_deref(),
                 &request.history,
                 &request.prompt,
                 &mut on_delta,
-            )
-            .await;
+            ) => result,
+        };
         let event = match result {
             Ok(message) => StreamResponseEvent::Done { message },
             Err(error) => StreamResponseEvent::Error {

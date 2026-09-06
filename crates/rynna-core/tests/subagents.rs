@@ -483,3 +483,45 @@ async fn helpers_share_the_aggregate_result_byte_budget_across_short_summaries()
         assert_eq!(summaries.load(Ordering::SeqCst), response);
     }
 }
+
+#[tokio::test]
+async fn dropping_parent_response_drops_a_subagents_active_tool() {
+    struct PendingTool {
+        entered: tokio::sync::Notify,
+        dropped: Arc<tokio::sync::Notify>,
+    }
+    struct Dropped(Arc<tokio::sync::Notify>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+    #[async_trait]
+    impl Tool for PendingTool {
+        fn definition(&self) -> ToolDefinition {
+            ReadFile.definition()
+        }
+        async fn execute(&self, _: Value) -> Result<Value, ToolError> {
+            let _guard = Dropped(self.dropped.clone());
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+    }
+    let tool = Arc::new(PendingTool {
+        entered: tokio::sync::Notify::new(),
+        dropped: Arc::new(tokio::sync::Notify::new()),
+    });
+    let provider = Arc::new(provider(json!({"subagent":"reviewer","task":"Review"})));
+    let agent = Agent::with_tools(provider, "Parent", vec![tool.clone() as Arc<dyn Tool>]).unwrap();
+    let agents =
+        AgentProfiles::new("work", [(profile("work", vec![helper("reviewer")]), agent)]).unwrap();
+    let task = tokio::spawn(async move { agents.respond(Some("work"), &[], "Delegate").await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), tool.entered.notified())
+        .await
+        .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    tokio::time::timeout(std::time::Duration::from_secs(2), tool.dropped.notified())
+        .await
+        .expect("subagent tool outlived parent");
+}

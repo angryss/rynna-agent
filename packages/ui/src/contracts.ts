@@ -141,7 +141,7 @@ export interface AgentClient {
   saveMcpSettings?(settings: McpSettings, profile: string): Promise<McpSettings>;
   getMemorySettings?(profile: string): Promise<MemorySettings>;
   saveMemorySettings?(settings: MemorySettingsInput, profile: string): Promise<MemorySettings>;
-  respond(request: RespondRequest, onDelta?: CompletionDeltaHandler): Promise<RespondResponse>;
+  respond(request: RespondRequest, onDelta?: CompletionDeltaHandler, signal?: AbortSignal): Promise<RespondResponse>;
   listProfiles?(): Promise<ProfileCatalog>;
   createProfile?(profile: Profile): Promise<Profile>;
   updateProfile?(name: string, profile: Profile): Promise<Profile>;

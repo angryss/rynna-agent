@@ -248,6 +248,7 @@ pub struct Runner {
     store: Arc<dyn RunStore>,
     executor: Arc<dyn WorkflowExecutor>,
     runs: Mutex<BTreeMap<Uuid, Run>>,
+    cancellations: tokio::sync::watch::Sender<()>,
 }
 impl Runner {
     pub async fn open(
@@ -277,6 +278,7 @@ impl Runner {
             store,
             executor,
             runs: Mutex::new(runs),
+            cancellations: tokio::sync::watch::channel(()).0,
         });
         RUNNERS
             .get_or_init(Default::default)
@@ -501,10 +503,24 @@ impl Runner {
         }
         self.commit(&mut runs, run).await?;
         let result = runs[&id].clone();
+        if result.status == Status::Cancelling {
+            self.cancellations.send_replace(());
+        }
         if dispatch {
             self.spawn(id);
         }
         Ok(result)
+    }
+    async fn cancelled(&self, id: Uuid) {
+        let mut changes = self.cancellations.subscribe();
+        loop {
+            if self.runs.lock().await[&id].status == Status::Cancelling {
+                return;
+            }
+            if changes.changed().await.is_err() {
+                return;
+            }
+        }
     }
     pub async fn pause_all(self: &Arc<Self>) {
         let mut runs = self.runs.lock().await;
@@ -551,11 +567,14 @@ impl Runner {
                 (runs[&id].clone(), tools, seconds)
             };
             let started = Instant::now();
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(seconds),
-                self.executor.execute(&run, tools),
-            )
-            .await;
+            let result = tokio::select! {
+                biased;
+                _ = self.cancelled(id) => Ok(Err("step stopped".into())),
+                result = tokio::time::timeout(
+                    std::time::Duration::from_secs(seconds),
+                    self.executor.execute(&run, tools),
+                ) => result,
+            };
             let mut runs = self.runs.lock().await;
             let mut current = runs[&id].clone();
             current.in_flight = false;
@@ -629,6 +648,7 @@ impl Runner {
             // A control accepted before this commit wins, including verification completion.
             if runs[&id].status == Status::Cancelling {
                 current.status = Status::Cancelled;
+                current.reason = Some("Stopped by user.".into());
             } else if runs[&id].status == Status::Pausing {
                 current.status = Status::Paused;
             }
