@@ -313,7 +313,35 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
   });
 
-  it('blocks workflow starts and slash commands during deletion validation', async () => {
+  it('shows workflow setup without the chat composer and restores a chat draft when switching back', async () => {
+    const user = userEvent.setup();
+    render(<App client={workflowClient()} />);
+    await screen.findByRole('option', { name: 'Test workflow' });
+    await user.type(screen.getByLabelText('Message Rynna'), 'Keep this draft');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), 'workflow');
+    expect(screen.getByLabelText('Goal')).toBeInTheDocument();
+    expect(screen.getByRole('log')).toBeEmptyDOMElement();
+    expect(screen.queryByLabelText('Message Rynna')).not.toBeInTheDocument();
+    expect(screen.queryByText('What should we work through?')).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), '');
+    expect(screen.getByLabelText('Message Rynna')).toHaveValue('Keep this draft');
+    expect(screen.getByText('What should we work through?')).toBeInTheDocument();
+  });
+
+  it('keeps conversation history and workflow output visible without the ordinary composer', async () => {
+    writeSessions([savedSession('Active', { workflow_id: 'workflow', messages: [{ role: 'user', content: 'Earlier discussion' }] })]);
+    const run = { ...workflowRun('Active', 'running'), events: [{ id: 1, content: 'Implementation progress' }] };
+    const user = userEvent.setup();
+    render(<App client={workflowClient({ listWorkflowRuns: vi.fn().mockResolvedValue([run]) })} />);
+    await user.click(await screen.findByRole('button', { name: 'Active' }));
+    await screen.findByRole('button', { name: 'Pause' });
+    expect(screen.getByText('Earlier discussion')).toBeInTheDocument();
+    expect(screen.getByText('Implementation progress')).toBeInTheDocument();
+    expect(screen.getByLabelText('Steering')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Message Rynna')).not.toBeInTheDocument();
+  });
+
+  it('blocks workflow starts during deletion validation', async () => {
     writeSessions([savedSession('Workflow draft', { workflow_id: 'workflow' })]);
     const client = workflowClient();
     const user = userEvent.setup();
@@ -328,10 +356,10 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     const start = screen.getByRole('button', { name: 'Start workflow' });
     expect(start).toBeDisabled();
-    expect(screen.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Workflow' })).toBeDisabled();
     fireEvent.submit(start.closest('form')!);
     expect(client.startWorkflow).not.toHaveBeenCalled();
-    await user.type(screen.getByLabelText('Message Rynna'), '/new{Enter}');
+    expect(screen.queryByLabelText('Message Rynna')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Workflow draft' })).toHaveAttribute('aria-current', 'page');
     await act(async () => { finish([]); });
     expect(readSessions()).toEqual([]);

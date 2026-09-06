@@ -62,7 +62,7 @@ export function WorkflowPanel(props: Props) {
   }
   const canStart = !run || workflowTerminal(run);
   return <section className="workflow-panel" aria-label="Workflow">
-    <label>Conversation mode<select disabled={disabled} value={selected} onChange={e => { request.current = null; latest.current.onSelection(e.target.value); }}><option value="">Chat</option>{items.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
+    <label>Workflow<select disabled={disabled} value={selected} onChange={e => { request.current = null; latest.current.onSelection(e.target.value); }}><option value="">Chat</option>{items.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
     {selected && canStart && <form className="provider-form" onSubmit={e => { e.preventDefault(); void start(); }}>
       <label>Goal<Textarea required maxLength={8192} value={goal} onChange={e => { request.current = null; setGoal(e.target.value); }} /></label>
       <label>Success criteria · one per line<Textarea required value={criteria} onChange={e => { request.current = null; setCriteria(e.target.value); }} /></label>

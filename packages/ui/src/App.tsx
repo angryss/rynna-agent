@@ -741,6 +741,7 @@ export function App({ client }: AppProps) {
 
   const workflowSession = activeSessionId ?? workflowDraftId.current;
   const selectedWorkflow = sessions.find(s => s.id === workflowSession)?.workflow_id ?? '';
+  const workflowSelected = Boolean(activeProfile && client.startWorkflow && client.listWorkflowRuns && selectedWorkflow);
   function saveWorkflowSelection(id: string) {
     const now = new Date().toISOString();
     sessionId.current = workflowSession;
@@ -1013,9 +1014,11 @@ export function App({ client }: AppProps) {
                 savedRunId={sessions.find(s => s.id === workflowSession)?.workflow_run_id} project={project ?? null} selected={selectedWorkflow} context={conversationHistory(messages).map(m => `${m.role}: ${m.content}`).join('\n')}
                 selection={selection ?? { provider: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.provider ?? '', model: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.model ?? '', thinking: 'default' }}
                 onSelection={saveWorkflowSelection} onRun={receiveWorkflow} /> : null}
+              {workflowSelected && activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
+                onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
               <div className="messages" role="log" aria-live="polite">
                 {messages.length === 0 ? (
-                  <div className="empty-state">
+                  !workflowSelected && <div className="empty-state">
                     <p className="thread-mark" aria-hidden="true">A</p>
                     <h2>What should we work through?</h2>
                     <p>Ask Rynna to investigate, plan, or execute a development task.</p>
@@ -1052,7 +1055,7 @@ export function App({ client }: AppProps) {
               </div>
 
               {error ? <p className="request-error" role="alert">{error}</p> : null}
-              <form className="composer" onSubmit={submit}>
+              {!workflowSelected && <form className="composer" onSubmit={submit}>
                 <label htmlFor="prompt">Message Rynna</label>
                 <div className="composer-row">
                   <SlashCommandInput value={input} onChange={setInput} onCommand={runCommand}
@@ -1065,7 +1068,7 @@ export function App({ client }: AppProps) {
                     {workflowRunning ? 'Use workflow steering above' : pending ? 'Working…' : 'Send'}
                   </Button>
                 </div>
-              </form>
+              </form>}
             </section>
           </div>
         </div>
