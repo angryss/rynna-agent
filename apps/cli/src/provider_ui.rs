@@ -92,8 +92,7 @@ impl ProviderUi {
     }
 
     fn begin_add(&mut self) {
-        self.existing = false;
-        self.choice = [
+        let Some(choice) = [
             ProviderChoice::Ollama,
             ProviderChoice::Mlx,
             ProviderChoice::OpenRouter,
@@ -101,8 +100,11 @@ impl ProviderUi {
             ProviderChoice::Anthropic,
         ]
         .into_iter()
-        .find(|choice| !self.has(choice.id()))
-        .unwrap_or(ProviderChoice::Ollama);
+        .find(|choice| !self.has(choice.id())) else {
+            return;
+        };
+        self.existing = false;
+        self.choice = choice;
         self.authentication = OpenAiAuthentication::Chatgpt;
         self.input = if self.choice == ProviderChoice::Ollama {
             "http://127.0.0.1:11434/v1".to_owned()
@@ -248,7 +250,7 @@ fn run_loop(
         }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => break,
-            KeyCode::Char('a') if ui.providers.len() < 4 => ui.begin_add(),
+            KeyCode::Char('a') => ui.begin_add(),
             KeyCode::Char('e') | KeyCode::Enter => ui.begin_edit(),
             KeyCode::Char('d') => {
                 if let Some(provider) = ui.providers.get(ui.selected) {
@@ -668,6 +670,43 @@ mod tests {
         });
         ui.begin_add();
         assert_eq!(ui.choice.id(), "openrouter");
+    }
+
+    #[test]
+    fn provider_ui_can_add_any_fifth_provider_and_stops_when_all_are_configured() {
+        let providers = vec![
+            ConfiguredProvider::Ollama {
+                api_base: "http://localhost:11434/v1".to_owned(),
+            },
+            ConfiguredProvider::Mlx {
+                api_base: "http://localhost:8000/v1".to_owned(),
+            },
+            ConfiguredProvider::OpenRouter,
+            ConfiguredProvider::OpenAi {
+                authentication: rynna_config::OpenAiAuthentication::ApiKey,
+                reuse_existing: false,
+            },
+            ConfiguredProvider::Anthropic {
+                authentication: rynna_config::AnthropicAuthentication::ApiKey,
+            },
+        ];
+        for missing in &providers {
+            let mut ui = ProviderUi::new(
+                providers
+                    .iter()
+                    .filter(|provider| provider.id() != missing.id())
+                    .cloned()
+                    .collect(),
+            );
+            ui.begin_add();
+            assert!(ui.editing);
+            assert_eq!(ui.choice.id(), missing.id());
+
+            ui.providers.push(missing.clone());
+            ui.editing = false;
+            ui.begin_add();
+            assert!(!ui.editing);
+        }
     }
 
     #[test]
