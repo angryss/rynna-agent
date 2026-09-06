@@ -216,14 +216,17 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'New session' }));
     await user.type(screen.getByLabelText('Message Rynna'), 'Second chat');
     await user.click(screen.getByRole('button', { name: 'Send' }));
-    await user.click(screen.getByRole('button', { name: 'Delete session First chat' }));
+    await user.click(screen.getByRole('button', { name: 'More options for First chat' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(readSessions()).toHaveLength(2);
-    await user.click(screen.getByRole('button', { name: 'Delete session First chat' }));
+    await user.click(screen.getByRole('button', { name: 'More options for First chat' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(screen.queryByRole('button', { name: 'First chat' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Second chat' })).toHaveAttribute('aria-current', 'page');
-    await user.click(screen.getByRole('button', { name: 'Delete session Second chat' }));
+    await user.click(screen.getByRole('button', { name: 'More options for Second chat' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(readSessions()).toEqual([]);
     expect(within(screen.getByRole('log')).queryByText('Done.')).not.toBeInTheDocument();
@@ -251,7 +254,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }));
     await user.type(screen.getByLabelText('Message Rynna'), 'Continue');
     await user.click(screen.getByRole('button', { name: 'Send' }));
-    expect(screen.getByRole('button', { name: 'Delete session Saved chat' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'More options for Saved chat' })).toBeDisabled();
     const id = readSessions()[0]!.id;
     act(() => {
       deleteSession(id, readSessions());
@@ -283,7 +286,8 @@ describe('App', () => {
     const listWorkflowRuns = vi.fn().mockRejectedValue(new Error('Workflow storage unavailable'));
     const user = userEvent.setup();
     render(<App client={{ respond: vi.fn(), listWorkflowRuns }} />);
-    await user.click(screen.getByRole('button', { name: 'Delete session Ordinary chat' }));
+    await user.click(screen.getByRole('button', { name: 'More options for Ordinary chat' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(readSessions()).toEqual([]);
     expect(listWorkflowRuns).not.toHaveBeenCalled();
@@ -299,7 +303,8 @@ describe('App', () => {
     await user.click(await screen.findByRole('button', { name: 'Active' }));
     await screen.findByRole('button', { name: 'Pause' });
     for (const name of ['Ordinary', 'Finished']) {
-      await user.click(screen.getByRole('button', { name: `Delete session ${name}` }));
+      await user.click(screen.getByRole('button', { name: `More options for ${name}` }));
+      await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
       await user.click(screen.getByRole('button', { name: 'Delete' }));
       expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
     }
@@ -318,7 +323,8 @@ describe('App', () => {
     await user.type(screen.getByLabelText('Success criteria · one per line'), 'Tests pass');
     let finish!: (runs: WorkflowRun[]) => void;
     vi.mocked(client.listWorkflowRuns!).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
-    await user.click(screen.getByRole('button', { name: 'Delete session Workflow draft' }));
+    await user.click(screen.getByRole('button', { name: 'More options for Workflow draft' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     const start = screen.getByRole('button', { name: 'Start workflow' });
     expect(start).toBeDisabled();
@@ -340,7 +346,8 @@ describe('App', () => {
       listWorkflowRuns,
     }} />);
     const id = readSessions()[0]!.id;
-    await user.click(screen.getByRole('button', { name: 'Delete session Workflow chat' }));
+    await user.click(screen.getByRole('button', { name: 'More options for Workflow chat' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(listWorkflowRuns).toHaveBeenCalledWith('', id);
     expect(screen.getByRole('alert')).toHaveTextContent('Cancel or finish');
@@ -360,7 +367,8 @@ describe('App', () => {
     await user.type(screen.getByLabelText('Message Rynna'), 'Keep chat');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     const setter = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => { throw new Error('Storage full'); });
-    await user.click(screen.getByRole('button', { name: 'Delete session Keep chat' }));
+    await user.click(screen.getByRole('button', { name: 'More options for Keep chat' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(screen.getByRole('alert')).toHaveTextContent('Storage full');
     expect(screen.getByRole('button', { name: 'Keep chat' })).toBeInTheDocument();

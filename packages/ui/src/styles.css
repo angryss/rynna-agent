@@ -150,7 +150,7 @@ select:disabled { opacity: .5; }
 .session-project ul { display: grid; gap: .15rem; margin: 0; padding: 0; list-style: none; }
 .session-project li { min-width: 0; }
 .session-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
-.session-row > button.session-delete { display: flex; justify-content: center; width: 2.25rem; min-height: 2.25rem; padding: .45rem; }
+.session-row > button.session-more { display: flex; justify-content: center; width: 2.25rem; min-height: 2.25rem; padding: .45rem; }
 .session-delete-confirm { padding: .5rem; font-size: .8rem; }
 .session-delete-confirm p { margin: 0 0 .5rem; }
 .session-delete-confirm > div { display: flex; flex-wrap: wrap; gap: .4rem; }
@@ -162,6 +162,17 @@ select:disabled { opacity: .5; }
 .session-row > button svg { flex-shrink: 0; }
 .session-row > button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; }
 .session-row > button time { color: hsl(var(--muted-foreground)); font-size: .7rem; }
+
+.session-row > button.session-more { opacity: 0; pointer-events: none; }
+.session-row:hover > button.session-more,
+.session-row:focus-within > button.session-more,
+.session-row > button.session-more[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
+@media (hover: none) {
+  .session-row > button.session-more { opacity: 1; pointer-events: auto; }
+}
+.session-more-menu { position: fixed; z-index: 30; min-width: 10rem; max-width: calc(100vw - 1rem); padding: .3rem; border: 1px solid hsl(var(--border)); border-radius: .45rem; background: hsl(var(--card)); box-shadow: 0 .5rem 1.5rem hsl(0 0% 0% / .25); }
+.session-more-menu button { display: flex; align-items: center; gap: .6rem; width: 100%; padding: .55rem .65rem; border: 0; border-radius: .25rem; background: transparent; color: hsl(var(--destructive-foreground)); font: inherit; font-size: .85rem; text-align: left; cursor: pointer; }
+.session-more-menu button:hover, .session-more-menu button:focus-visible { background: hsl(var(--destructive) / .12); outline: 2px solid hsl(var(--ring)); outline-offset: -2px; }
 
 .settings-page { width: min(1120px, calc(100% - 2rem)); margin: 2rem auto; display: grid; grid-template-columns: 13rem minmax(0, 1fr); gap: 2rem; align-items: start; }
 .settings-sidebar { position: sticky; top: 6.5rem; padding: .25rem 1rem 1rem 0; border-right: 1px solid hsl(var(--border)); }
