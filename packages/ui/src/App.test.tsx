@@ -106,7 +106,7 @@ describe('App', () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await user.click(await screen.findByRole('button', { name: 'rynna', exact: true }));
+    await user.click(await screen.findByRole('button', { name: 'rynna' }));
     expect(screen.queryByRole('combobox', { name: 'Project' })).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Message Rynna'), 'Inspect it');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -117,7 +117,7 @@ describe('App', () => {
     }), expect.any(Function));
     const firstSession = respond.mock.calls[0]![0].session_id;
 
-    await user.click(screen.getByRole('button', { name: 'Default project', exact: true }));
+    await user.click(screen.getByRole('button', { name: 'Default project' }));
     await user.type(screen.getByLabelText('Message Rynna'), 'Start over');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(respond.mock.calls[1]![0]).not.toHaveProperty('project');
@@ -147,14 +147,14 @@ describe('App', () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await user.click(await screen.findByRole('button', { name: 'rynna', exact: true }));
+    await user.click(await screen.findByRole('button', { name: 'rynna' }));
     expect(screen.queryByRole('combobox', { name: 'Project' })).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Message Rynna'), 'Review Rynna changes');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(await screen.findByRole('button', { name: 'Review Rynna changes' })).toHaveAttribute('aria-current', 'page');
     const firstSession = respond.mock.calls[0]![0].session_id;
 
-    await user.click(screen.getByRole('button', { name: 'Default project', exact: true }));
+    await user.click(screen.getByRole('button', { name: 'Default project' }));
     expect(screen.queryByText('The project is healthy.')).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Message Rynna'), 'Plan something else');
     await user.click(screen.getByRole('button', { name: 'Send' }));
