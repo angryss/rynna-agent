@@ -22,7 +22,15 @@ import type {
   ProfileProvider,
   ProviderInput,
 } from './contracts';
-import { readSessions, sessionName, writeSessions, type Session } from './sessions';
+import {
+  mergeSessions,
+  readSessions,
+  reconcileProjectSessions,
+  sessionName,
+  sessionsFromStorageEvent,
+  writeSessions,
+  type Session,
+} from './sessions';
 
 export interface AppProps {
   client: AgentClient;
@@ -156,8 +164,18 @@ export function App({ client }: AppProps) {
   const providerMutationRevision = useRef(0);
 
   useEffect(() => {
-    writeSessions(sessions);
+    const merged = writeSessions(sessions);
+    if (merged.length !== sessions.length) setSessions(merged);
   }, [sessions]);
+
+  useEffect(() => {
+    const synchronizeSessions = (event: StorageEvent) => {
+      const incoming = sessionsFromStorageEvent(event);
+      if (incoming) setSessions(current => mergeSessions(current, incoming));
+    };
+    window.addEventListener('storage', synchronizeSessions);
+    return () => window.removeEventListener('storage', synchronizeSessions);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -999,6 +1017,12 @@ export function App({ client }: AppProps) {
                     key={activeConfiguredProfile.name}
                     client={client}
                     onSaved={saved => {
+                      setSessions(current => reconcileProjectSessions(
+                        current,
+                        saved.name,
+                        activeConfiguredProfile.projects.map(project => project.name),
+                        saved.projects.map(project => project.name),
+                      ));
                       setConfiguredProfiles(current => current.map(profile => profile.name === saved.name ? saved : profile));
                       setProfiles(current => current.map(profile => profile.name === saved.name ? {
                         ...profile,

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 import type { AgentClient, Profile } from './contracts';
+import { writeSessions } from './sessions';
 
 beforeEach(() => {
   const values = new Map<string, string>();
@@ -174,6 +175,49 @@ describe('App', () => {
         { role: 'assistant', content: 'The project is healthy.' },
       ],
     }), expect.any(Function));
+  });
+
+  it('keeps saved sessions accessible when their project is renamed', async () => {
+    const profile = testProfile('work', {
+      projects: [{
+        name: 'old-name',
+        directories: ['/projects/rynna'],
+        default_directory: '/projects/rynna',
+      }],
+    });
+    writeSessions([{
+      id: 'session-1',
+      name: 'Review the project',
+      profile: 'work',
+      project: 'old-name',
+      messages: [{ role: 'user', content: 'Review the project' }],
+      created_at: '2026-09-05T12:00:00.000Z',
+      updated_at: '2026-09-05T12:00:00.000Z',
+    }]);
+    const updateProfile = vi.fn(async (_name: string, saved: Profile) => saved);
+    const user = userEvent.setup();
+    render(<App client={{
+      respond: vi.fn(),
+      listProfiles: vi.fn().mockResolvedValue({
+        default_profile: 'work',
+        provider_ids: ['openai'],
+        profiles: [profile],
+        configured_profiles: [profile],
+      }),
+      updateProfile,
+    }} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Projects' }));
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    await user.clear(screen.getByLabelText('Name'));
+    await user.type(screen.getByLabelText('Name'), 'new-name');
+    await user.click(screen.getByRole('button', { name: 'Save project' }));
+    await user.click(screen.getByRole('button', { name: 'Back to chat' }));
+
+    await user.click(screen.getByRole('button', { name: 'Review the project' }));
+    expect(screen.getByRole('combobox', { name: 'Project' })).toHaveValue('new-name');
+    expect(within(screen.getByRole('log')).getByText('Review the project')).toBeInTheDocument();
   });
 
   it('submits the prompt when Enter is pressed in the composer', async () => {
