@@ -84,6 +84,7 @@ describe('TauriAgentClient', () => {
           capabilities: ['workspace'],
           default_project_directory: '.',
           projects: [],
+          subagents: [],
         },
       ],
       configured_profiles: [
@@ -98,6 +99,7 @@ describe('TauriAgentClient', () => {
           capabilities: ['workspace'],
           default_project_directory: '.',
           projects: [],
+          subagents: [],
         },
       ],
     });
@@ -141,6 +143,7 @@ describe('TauriAgentClient', () => {
       capabilities: [],
       default_project_directory: '.',
       projects: [],
+      subagents: [{ name: 'reviewer', description: 'Review code', instructions: 'Find bugs' }],
     };
     const invoke = vi
       .fn()

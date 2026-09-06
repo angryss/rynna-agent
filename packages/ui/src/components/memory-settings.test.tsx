@@ -21,6 +21,7 @@ function catalog() {
     capabilities: [],
     default_project_directory: '.',
     projects: [],
+    subagents: [],
   }));
   return {
     default_profile: 'test',

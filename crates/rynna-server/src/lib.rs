@@ -63,6 +63,7 @@ pub fn router(agent: Agent) -> Router {
         capabilities: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
+        subagents: Vec::new(),
     };
     let profiles = AgentProfiles::new("default", [(profile, agent)])
         .expect("the built-in server profile must be valid");
@@ -270,6 +271,7 @@ pub fn router_with_web(agent: Agent, web_dir: impl AsRef<Path>) -> Router {
         capabilities: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
+        subagents: Vec::new(),
     };
     let profiles = AgentProfiles::new("default", [(profile, agent)])
         .expect("the built-in server profile must be valid");
@@ -332,7 +334,10 @@ struct ProfilesResponse {
     configured_profiles: Vec<Profile>,
 }
 
-async fn list_profiles(State(state): State<AppState>) -> Result<Json<ProfilesResponse>, ApiError> {
+async fn list_profiles(
+    LoopbackClient(is_loopback): LoopbackClient,
+    State(state): State<AppState>,
+) -> Result<Json<ProfilesResponse>, ApiError> {
     let catalog_metadata = if let Some(catalog) = &state.catalog {
         let catalog = catalog.lock().await;
         Some((
@@ -349,7 +354,7 @@ async fn list_profiles(State(state): State<AppState>) -> Result<Json<ProfilesRes
     };
     let runtime = state.profiles.lock().await;
     let (provider_ids, catalog_profiles) = catalog_metadata.unwrap_or_default();
-    let configured_profiles = catalog_profiles.clone();
+    let mut configured_profiles = catalog_profiles.clone();
     let mut profiles = runtime.profiles();
     for profile in &mut profiles {
         profile.providers.retain(|provider| provider.enabled);
@@ -361,6 +366,14 @@ async fn list_profiles(State(state): State<AppState>) -> Result<Json<ProfilesRes
             .any(|candidate| candidate.name == profile.name)
         {
             profiles.push(profile);
+        }
+    }
+    if !is_loopback {
+        // Public discovery exposes helper metadata, not the private policy edited by admins.
+        for profile in profiles.iter_mut().chain(configured_profiles.iter_mut()) {
+            for helper in &mut profile.subagents {
+                helper.instructions.clear();
+            }
         }
     }
     profiles.sort_by(|left, right| left.name.cmp(&right.name));
@@ -473,6 +486,9 @@ async fn update_saved_profile(
                     saved.default_project_directory.clone(),
                     saved.projects.clone(),
                 )
+                .map_err(runtime_profile_error)?;
+            runtime
+                .set_subagents(&name, saved.subagents.clone())
                 .map_err(runtime_profile_error)?;
         }
     }

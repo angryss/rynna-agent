@@ -19,6 +19,7 @@ export type {
   OpenAiAccount,
   Profile,
   ProfileCatalog,
+  Subagent,
   ProviderInput,
   RespondRequest,
   RespondResponse,

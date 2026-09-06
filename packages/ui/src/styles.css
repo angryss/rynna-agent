@@ -222,6 +222,7 @@ select:disabled { opacity: .5; }
 .project-row p { margin-top: .25rem; color: hsl(var(--muted-foreground)); font-size: .82rem; }
 .project-row code { display: inline-block; margin-top: .45rem; color: hsl(var(--accent-foreground)); font-size: .78rem; overflow-wrap: anywhere; }
 .project-form { margin-top: 0; }
+.subagent-settings .project-row > div:first-child { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 
 .conversation { width: min(920px, 100%); min-height: 0; margin: 0 auto; display: grid; grid-template-rows: 1fr auto auto; padding: clamp(1rem, 4vw, 2.5rem); }
 .messages { display: flex; min-height: 15rem; flex-direction: column; justify-content: flex-end; gap: 1rem; padding-bottom: 2rem; }

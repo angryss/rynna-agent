@@ -14,6 +14,7 @@ const initialProfile: Profile = {
   capabilities: [],
   default_project_directory: '.',
   projects: [],
+  subagents: [],
 };
 
 it('updates the default directory and creates, edits, and deletes named projects', async () => {

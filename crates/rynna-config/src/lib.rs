@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fs2::FileExt;
-use rynna_core::{Profile, ProfileProvider, Project};
+use rynna_core::{Profile, ProfileProvider, Project, Subagent};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -762,6 +762,7 @@ impl ProfileCatalog {
                     capabilities: Vec::new(),
                     default_project_directory: default_project_directory(),
                     projects: Vec::new(),
+                    subagents: Vec::new(),
                 },
             )]),
             mcp_servers: BTreeMap::new(),
@@ -904,6 +905,7 @@ impl ProfileCatalog {
                 capabilities: profile.capabilities.clone(),
                 default_project_directory: profile.default_project_directory.clone(),
                 projects: profile.projects.clone(),
+                subagents: profile.subagents.clone(),
             },
         );
         self.apply_file(file)?;
@@ -1066,6 +1068,7 @@ impl ProfileCatalog {
                 capabilities: profile.capabilities.clone(),
                 default_project_directory: profile.default_project_directory.clone(),
                 projects: profile.projects.clone(),
+                subagents: profile.subagents.clone(),
             },
             providers,
             system_prompt: profile
@@ -1234,6 +1237,7 @@ impl ProfileCatalog {
                     profile: name.clone(),
                 });
             }
+            rynna_core::subagents::validate(&profile.subagents)?;
             ensure_unique("active skill", &profile.active_skills)?;
             ensure_unique("MCP server", &profile.mcp_servers)?;
             ensure_unique("capability", &profile.capabilities)?;
@@ -1383,6 +1387,8 @@ struct ProfileConfig {
     default_project_directory: PathBuf,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     projects: Vec<Project>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    subagents: Vec<Subagent>,
 }
 
 fn default_project_directory() -> PathBuf {
@@ -1454,6 +1460,8 @@ impl From<FileSystemCapabilityConfig> for FileSystemCapability {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error(transparent)]
+    InvalidSubagents(#[from] rynna_core::ProfileError),
     #[error("profile `{0}` is defined more than once")]
     DuplicateProfile(String),
     #[error("the last profile cannot be deleted")]

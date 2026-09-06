@@ -48,6 +48,12 @@ projects = [
 active_skills = [] # e.g. ["code-review", "./skills/rust"]
 capabilities = ["workspace"]
 
+# Helpers belong only to this profile and inherit its model, project and tools.
+[[profiles.local.subagents]]
+name = "reviewer"
+description = "Review code changes for correctness and missing tests."
+instructions = "Inspect the requested changes and report actionable issues with file references."
+
 # Use the exact Hugging Face ID or local model path served by mlx_lm.server.
 [profiles.mlx]
 provider = "mlx"

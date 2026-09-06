@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { MemorySettingsPanel } from './components/memory-settings';
 import { ThemeToggle } from './components/theme-toggle';
 import { Typeahead } from './components/typeahead';
+import { SubagentSettings } from './components/subagent-settings';
 import { ProjectSettings } from './components/project-settings';
 import { SessionSidebar } from './components/session-sidebar';
 import { Badge } from './components/ui/badge';
@@ -148,7 +149,7 @@ export function App({ client }: AppProps) {
   const [reuseExistingChatgpt, setReuseExistingChatgpt] = useState<boolean | null>(null);
   const [providerApiKey, setProviderApiKey] = useState('');
   const [savingProvider, setSavingProvider] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'profiles' | 'projects' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
+  const [settingsSection, setSettingsSection] = useState<'profiles' | 'projects' | 'subagents' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
     client.createProfile || client.updateProfile || client.deleteProfile
       ? 'profiles'
       : client.listProviders ? 'provider-credentials' : client.getMemorySettings ? 'memory' : 'mcp',
@@ -405,6 +406,7 @@ export function App({ client }: AppProps) {
       capabilities: addingProfile ? [] : (activeConfiguredProfile?.capabilities ?? []),
       default_project_directory: addingProfile ? '.' : (activeConfiguredProfile?.default_project_directory ?? '.'),
       projects: addingProfile ? [] : (activeConfiguredProfile?.projects ?? []),
+      subagents: addingProfile ? [] : (activeConfiguredProfile?.subagents ?? []),
     };
   }
 
@@ -992,6 +994,12 @@ export function App({ client }: AppProps) {
                   MCP servers
                 </Button>
               ) : null}
+              {client.updateProfile ? (
+                <Button aria-current={settingsSection === 'subagents' ? 'page' : undefined}
+                  onClick={() => setSettingsSection('subagents')} type="button" variant="ghost">
+                  Subagents
+                </Button>
+              ) : null}
               {client.getMemorySettings ? (
                 <Button aria-current={settingsSection === 'memory' ? 'page' : undefined}
                   onClick={() => setSettingsSection('memory')} type="button" variant="ghost">
@@ -1041,6 +1049,24 @@ export function App({ client }: AppProps) {
                     profile={activeConfiguredProfile}
                   />
                 ) : <p>Select a profile to configure its projects.</p>}
+              </>
+            ) : null}
+            {settingsSection === 'subagents' && client.updateProfile ? (
+              <>
+                <label className="profile-picker" htmlFor="subagents-profile">
+                  <span>Profile</span>
+                  <Typeahead id="subagents-profile" onChange={selectSettingsProfile}
+                    options={sortedProfiles(configuredProfiles).map(profile => profile.name)}
+                    value={selectedSettingsProfile ?? ''} />
+                </label>
+                {activeConfiguredProfile ? (
+                  <SubagentSettings key={activeConfiguredProfile.name} client={client}
+                    profile={activeConfiguredProfile}
+                    onSaved={saved => {
+                      setConfiguredProfiles(current => current.map(profile => profile.name === saved.name ? saved : profile));
+                      setProfiles(current => current.map(profile => profile.name === saved.name ? { ...profile, subagents: saved.subagents } : profile));
+                    }} />
+                ) : <p>Select a profile to configure its subagents.</p>}
               </>
             ) : null}
             {settingsSection === 'mcp' ? (

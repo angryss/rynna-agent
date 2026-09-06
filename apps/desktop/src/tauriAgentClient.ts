@@ -249,8 +249,17 @@ function isProfile(value: unknown): value is Profile {
       typeof value.default_project_directory === 'string' &&
       'projects' in value &&
       Array.isArray(value.projects) &&
-      value.projects.every(isProject),
+      value.projects.every(isProject) &&
+      'subagents' in value && Array.isArray(value.subagents) &&
+      value.subagents.every(isSubagent),
   );
+}
+
+function isSubagent(value: unknown): boolean {
+  return Boolean(value && typeof value === 'object' &&
+    'name' in value && typeof value.name === 'string' &&
+    'description' in value && typeof value.description === 'string' &&
+    'instructions' in value && typeof value.instructions === 'string');
 }
 
 function isProject(value: unknown): boolean {

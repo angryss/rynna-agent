@@ -819,13 +819,24 @@ impl ManagedContextStore {
     }
 }
 
+pub mod subagents;
+pub use subagents::Subagent;
+
 pub mod memory;
 pub use memory::{
     MemoryConversation, MemoryError, MemoryMessage, MemoryProvider, flush_memory_writes,
 };
 
+#[derive(Default)]
+struct ToolBudget {
+    calls: AtomicUsize,
+    result_bytes: AtomicUsize,
+}
+
 #[derive(Clone)]
 pub struct Agent {
+    subagents: Arc<Vec<Subagent>>,
+    tool_budget: Option<Arc<ToolBudget>>,
     tool_source: Option<Arc<dyn ToolSource>>,
     memory: Option<Arc<dyn MemoryProvider>>,
     memory_session: Option<uuid::Uuid>,
@@ -860,6 +871,8 @@ impl Agent {
             memory_session: None,
             retention_queue: memory::RetentionQueue::default(),
             tool_source: None,
+            subagents: Arc::new(Vec::new()),
+            tool_budget: None,
         }
     }
 
@@ -890,6 +903,8 @@ impl Agent {
             memory_session: None,
             retention_queue: memory::RetentionQueue::default(),
             tool_source: None,
+            subagents: Arc::new(Vec::new()),
+            tool_budget: None,
         })
     }
 
@@ -1017,6 +1032,8 @@ impl Agent {
         }
         messages.push(Message::user(input));
 
+        // Independent responses start fresh; delegated loops share this response budget.
+        let tool_budget = self.tool_budget.clone().unwrap_or_default();
         let mut available_tools = self.tools.as_ref().clone();
         if self.provider.supports_external_tools()
             && let Some(source) = &self.tool_source
@@ -1035,12 +1052,18 @@ impl Agent {
                 }
             }
         }
+        if self.provider.supports_external_tools() && !self.subagents.is_empty() {
+            let tool = subagents::delegation_tool(self, &available_tools, tool_budget.clone());
+            let name = tool.definition().name;
+            if available_tools.insert(name.clone(), tool).is_some() {
+                return Err(AgentError::DuplicateTool(name));
+            }
+        }
         let tools = available_tools
             .values()
             .map(|tool| tool.definition())
             .collect::<Vec<_>>();
         let mut tool_calls_used = 0;
-        let mut tool_result_bytes = 0_usize;
         let mut final_answer_only = false;
         let tool_deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(MAX_TOOL_EXECUTION_SECONDS);
@@ -1153,9 +1176,13 @@ impl Agent {
             if turn + 1 == MAX_MODEL_TURNS {
                 return Err(AgentError::ToolLoopLimit(MAX_MODEL_TURNS));
             }
-            if tool_calls_used + completion.message.tool_calls.len() > MAX_TOOL_CALLS {
-                return Err(AgentError::ToolCallLimit(MAX_TOOL_CALLS));
-            }
+            tool_budget
+                .calls
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                    used.checked_add(completion.message.tool_calls.len())
+                        .filter(|total| *total <= MAX_TOOL_CALLS)
+                })
+                .map_err(|_| AgentError::ToolCallLimit(MAX_TOOL_CALLS))?;
             tool_calls_used += completion.message.tool_calls.len();
 
             let tool_calls = completion.message.tool_calls.clone();
@@ -1173,12 +1200,13 @@ impl Agent {
                     None => serde_json::json!({"error": format!("unknown tool `{}`", call.name)}),
                 };
                 let result = result.to_string();
-                tool_result_bytes = tool_result_bytes
-                    .checked_add(result.len())
-                    .ok_or(AgentError::ToolResultByteLimit(MAX_TOOL_RESULT_BYTES))?;
-                if tool_result_bytes > MAX_TOOL_RESULT_BYTES {
-                    return Err(AgentError::ToolResultByteLimit(MAX_TOOL_RESULT_BYTES));
-                }
+                tool_budget
+                    .result_bytes
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                        used.checked_add(result.len())
+                            .filter(|total| *total <= MAX_TOOL_RESULT_BYTES)
+                    })
+                    .map_err(|_| AgentError::ToolResultByteLimit(MAX_TOOL_RESULT_BYTES))?;
                 messages.push(Message::tool(call.id, result));
             }
         }
@@ -1227,10 +1255,14 @@ pub struct Profile {
     pub default_project_directory: PathBuf,
     #[serde(default)]
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub subagents: Vec<Subagent>,
 }
 
 #[derive(Debug, Error)]
 pub enum ProfileError {
+    #[error("invalid subagents: {0}")]
+    InvalidSubagents(String),
     #[error("profile name must not be blank")]
     BlankName,
     #[error("profile `{0}` is defined more than once")]
@@ -1266,7 +1298,9 @@ impl AgentProfiles {
     ) -> Result<Self, ProfileError> {
         let default_profile = default_profile.into();
         let mut indexed = BTreeMap::new();
-        for (profile, agent) in profiles {
+        for (profile, mut agent) in profiles {
+            subagents::validate(&profile.subagents)?;
+            agent.subagents = Arc::new(profile.subagents.clone());
             if profile.name.trim().is_empty() {
                 return Err(ProfileError::BlankName);
             }
@@ -1283,6 +1317,21 @@ impl AgentProfiles {
             default_profile: default_profile.into(),
             profiles: Arc::new(indexed),
         })
+    }
+
+    /// Applies to subsequent requests; in-flight agents retain their original helpers.
+    pub fn set_subagents(
+        &mut self,
+        profile: &str,
+        subagents: Vec<Subagent>,
+    ) -> Result<(), ProfileError> {
+        subagents::validate(&subagents)?;
+        let (metadata, agent) = Arc::make_mut(&mut self.profiles)
+            .get_mut(profile)
+            .ok_or_else(|| ProfileError::UnknownProfile(profile.to_owned()))?;
+        metadata.subagents = subagents.clone();
+        agent.subagents = Arc::new(subagents);
+        Ok(())
     }
 
     /// Applies to subsequent requests; in-flight agents retain their original tools.
@@ -1478,10 +1527,12 @@ impl AgentProfiles {
         self.profiles.get(name).map(|(_, agent)| agent.clone())
     }
 
-    pub fn upsert(&mut self, profile: Profile, agent: Agent) -> Result<(), ProfileError> {
+    pub fn upsert(&mut self, profile: Profile, mut agent: Agent) -> Result<(), ProfileError> {
         if profile.name.trim().is_empty() {
             return Err(ProfileError::BlankName);
         }
+        subagents::validate(&profile.subagents)?;
+        agent.subagents = Arc::new(profile.subagents.clone());
         let mut indexed = (*self.profiles).clone();
         indexed.insert(profile.name.clone(), (profile, agent));
         self.profiles = Arc::new(indexed);
