@@ -89,7 +89,7 @@ impl CommandTool {
                 if !path.is_absolute() {
                     return Err(CommandConfigError::ProgramNotAbsolute { alias, path });
                 }
-                let executable = copy_executable(
+                let executable = prepare_executable(
                     &alias,
                     &path,
                     &program_directory.path().join(format!("program-{index}")),
@@ -134,7 +134,7 @@ fn open_working_directory(path: &PathBuf) -> Result<File, CommandConfigError> {
 }
 
 #[cfg(unix)]
-fn copy_executable(
+fn prepare_executable(
     alias: &str,
     path: &PathBuf,
     private_path: &PathBuf,
@@ -167,6 +167,14 @@ fn copy_executable(
             path: path.clone(),
         });
     }
+    // macOS platform executables may be terminated when run from a copied inode.
+    // The read-only root volume already protects their canonical paths from replacement.
+    #[cfg(target_os = "macos")]
+    if metadata.len() <= MAX_EXECUTABLE_BYTES
+        && let Some(system_path) = readonly_system_executable(&executable, path)
+    {
+        return Ok(system_path);
+    }
     let mut private = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -188,6 +196,32 @@ fn copy_executable(
         .set_permissions(std::fs::Permissions::from_mode(0o500))
         .map_err(CommandConfigError::ProgramCopy)?;
     Ok(private_path.clone())
+}
+
+#[cfg(target_os = "macos")]
+fn readonly_system_executable(executable: &File, path: &std::path::Path) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: executable retains a valid descriptor and filesystem has space for statfs.
+    if unsafe { libc::fstatfs(executable.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: a successful fstatfs initialized the output structure.
+    let filesystem = unsafe { filesystem.assume_init() };
+    let required = (libc::MNT_RDONLY | libc::MNT_ROOTFS) as u32;
+    if filesystem.f_flags & required != required {
+        return None;
+    }
+    let canonical = path.canonicalize().ok()?;
+    let opened = executable.metadata().ok()?;
+    let named = canonical.metadata().ok()?;
+    // A configured symlink may be mutable; retain only its immutable resolved target,
+    // and fail closed if resolution raced with replacement of that symlink.
+    if (opened.dev(), opened.ino()) != (named.dev(), named.ino()) {
+        return None;
+    }
+    Some(canonical)
 }
 
 #[derive(Deserialize)]
