@@ -181,6 +181,28 @@ The desktop frontend uses narrow Tauri commands and a typed IPC channel instead 
 
 The desktop app also exposes **Connect OpenAI**. Choose **Use ChatGPT subscription** to complete Codex's supported browser sign-in, or enter an OpenAI API key for usage-based API billing. When adding a ChatGPT-backed OpenAI provider later, Rynna checks the user's existing Codex account and asks whether to reuse those ChatGPT credentials or complete a new browser sign-in in Rynna's private Codex configuration directory. Rynna verifies reused credentials with `codex login status`, passes API keys to Codex over stdin, and never returns credentials through Tauri IPC. After connecting, select the `openai-account` profile to send prompts through that account. This account-backed profile does not receive Rynna tools. Its ephemeral Codex thread has no execution environment; shell, image, planning, and web-search tools are disabled, any tool lifecycle item aborts the response, and the model is instructed to answer only from the supplied conversation. The provider is pinned to the reviewed `codex-cli 0.149.1` protocol/tool surface; upgrading Codex requires an Rynna compatibility review and release.
 
+## Web and desktop slash commands
+
+Type `/` at the start of the chat composer to browse commands. Keep typing to filter,
+use ↑/↓ to select, Tab to complete, Enter to run, or click a command. Escape dismisses
+the menu without changing the draft; Shift+Enter and Alt+Enter still insert newlines.
+
+| Command | Action |
+| --- | --- |
+| `/new`, `/clear` | Start a fresh chat in the current project, keeping saved sessions. |
+| `/retry` | Resend the last user message with its preceding history, replacing the last exchange. |
+| `/title <name>` | Rename the current saved chat. |
+| `/save` | Export the visible user/assistant transcript as JSON. |
+| `/model` | Open the existing model and thinking-level picker. |
+| `/settings` | Open Settings for the current connection. |
+| `/help` | Show the command menu. |
+
+Desktop exports go to the system Downloads directory.
+
+Commands are handled by the shared UI. Unknown commands and invalid arguments show
+an error instead of being sent to the model. Commands are unavailable while a response
+or autonomous workflow is running. `/retry` sends a model request and can repeat tool actions.
+
 ## Configuration
 
 | Variable | Default | Purpose |

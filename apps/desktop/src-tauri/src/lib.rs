@@ -1116,6 +1116,16 @@ pub fn run() {
     ));
     let shutdown_host = workflow_host.clone();
     tauri::Builder::default()
+        .setup(|app| {
+            // WKWebView requires a download handler even for local transcript blobs.
+            tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
+                .on_download(|_, event| match event {
+                    tauri::webview::DownloadEvent::Requested { url, .. } => url.scheme() == "blob",
+                    _ => true,
+                })
+                .build()?;
+            Ok(())
+        })
         .manage(configured)
         .manage(catalog)
         .manage(workflow_host)

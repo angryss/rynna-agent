@@ -6,7 +6,8 @@ import type { ModelSelection, Profile } from '../contracts';
 const levels = ['default', 'low', 'medium', 'high'] as const;
 const levelNames = { default: 'Default', low: 'Low', medium: 'Med', high: 'High' };
 
-export function ModelSelector({ profile, selection, disabled, onChange }: {
+export function ModelSelector({ profile, selection, disabled, onChange, openRequest = 0 }: {
+  openRequest?: number;
   profile: Profile;
   selection?: ModelSelection;
   disabled: boolean;
@@ -15,6 +16,7 @@ export function ModelSelector({ profile, selection, disabled, onChange }: {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [position, setPosition] = useState({ top: 0, left: 0, maxHeight: 400, width: 360 });
+  const previousOpenRequest = useRef(openRequest);
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -32,6 +34,10 @@ export function ModelSelector({ profile, selection, disabled, onChange }: {
   }
 
   useEffect(() => { setOpen(false); }, [disabled, profile.name]);
+  useEffect(() => {
+    if (openRequest !== previousOpenRequest.current) { setQuery(''); setOpen(true); }
+    previousOpenRequest.current = openRequest;
+  }, [openRequest]);
 
   useLayoutEffect(() => {
     if (!visible) return;
