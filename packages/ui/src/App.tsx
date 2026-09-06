@@ -6,6 +6,7 @@ import { MemorySettingsPanel } from './components/memory-settings';
 import { ThemeToggle } from './components/theme-toggle';
 import { Typeahead } from './components/typeahead';
 import { ProjectSettings } from './components/project-settings';
+import { SessionSidebar } from './components/session-sidebar';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
@@ -21,6 +22,15 @@ import type {
   ProfileProvider,
   ProviderInput,
 } from './contracts';
+import {
+  mergeSessions,
+  readSessions,
+  reconcileProjectSessions,
+  sessionName,
+  sessionsFromStorageEvent,
+  writeSessions,
+  type Session,
+} from './sessions';
 
 export interface AppProps {
   client: AgentClient;
@@ -103,6 +113,8 @@ function newSessionId(): string {
 
 export function App({ client }: AppProps) {
   const sessionId = useRef<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<Session[]>(readSessions);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
   const [pending, setPending] = useState(false);
@@ -150,6 +162,20 @@ export function App({ client }: AppProps) {
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const openAiAccountRequest = useRef(0);
   const providerMutationRevision = useRef(0);
+
+  useEffect(() => {
+    const merged = writeSessions(sessions);
+    if (merged.length !== sessions.length) setSessions(merged);
+  }, [sessions]);
+
+  useEffect(() => {
+    const synchronizeSessions = (event: StorageEvent) => {
+      const incoming = sessionsFromStorageEvent(event);
+      if (incoming) setSessions(current => mergeSessions(current, incoming));
+    };
+    window.addEventListener('storage', synchronizeSessions);
+    return () => window.removeEventListener('storage', synchronizeSessions);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -313,6 +339,27 @@ export function App({ client }: AppProps) {
     setAddingProfile(false);
     setMessages([]);
     sessionId.current = null;
+    setActiveSessionId(null);
+    setError(null);
+  }
+
+  function startNewSession(projectName: string | undefined) {
+    setChatProject(selectedProfile ? { profile: selectedProfile, name: projectName } : undefined);
+    setMessages([]);
+    setInput('');
+    sessionId.current = null;
+    setActiveSessionId(null);
+    setError(null);
+  }
+
+  function selectSession(session: Session) {
+    setSelectedProfile(session.profile || null);
+    setChatProject(session.profile ? { profile: session.profile, name: session.project ?? undefined } : undefined);
+    setChatSelection(undefined);
+    setMessages(session.messages);
+    setInput('');
+    sessionId.current = session.id;
+    setActiveSessionId(session.id);
     setError(null);
   }
 
@@ -381,6 +428,11 @@ export function App({ client }: AppProps) {
         return [...withoutPrevious.filter((profile) => profile.name !== saved.name), saved];
       });
       setSelectedSettingsProfile(saved.name);
+      if (!addingProfile && selectedSettingsProfile && selectedSettingsProfile !== saved.name) {
+        setSessions(current => current.map(session => session.profile === selectedSettingsProfile
+          ? { ...session, profile: saved.name }
+          : session));
+      }
       setAddingProfile(false);
       setProfileName(saved.name);
       setProfileProviders(saved.providers.map((provider) => ({ ...provider })));
@@ -461,6 +513,7 @@ export function App({ client }: AppProps) {
         setSelectedProfile(profiles.find((profile) => profile.name !== selectedSettingsProfile)?.name ?? null);
         setMessages([]);
         sessionId.current = null;
+        setActiveSessionId(null);
       }
     } catch (profileError) {
       setError(
@@ -636,9 +689,10 @@ export function App({ client }: AppProps) {
     setMessages([...displayHistory, { role: 'user', content: prompt }]);
 
     try {
-      sessionId.current ??= newSessionId();
+      const currentSessionId = sessionId.current ?? newSessionId();
+      sessionId.current = currentSessionId;
       const response = await client.respond({
-        session_id: sessionId.current,
+        session_id: currentSessionId,
         ...(selection ? { selection } : {}),
         ...(selectedProfile ? { profile: selectedProfile } : {}),
         ...(project ? { project } : {}),
@@ -648,6 +702,22 @@ export function App({ client }: AppProps) {
         setMessages((current) => appendDelta(current, delta));
       });
       setMessages((current) => finalizeResponse(current, response.message));
+      const now = new Date().toISOString();
+      const visibleMessages = [...history, { role: 'user' as const, content: prompt }, response.message];
+      setSessions((current) => {
+        const existing = current.find(session => session.id === currentSessionId);
+        const saved: Session = {
+          id: currentSessionId,
+          name: existing?.name ?? sessionName(prompt),
+          profile: selectedProfile ?? '',
+          project: project ?? null,
+          messages: visibleMessages,
+          created_at: existing?.created_at ?? now,
+          updated_at: now,
+        };
+        return [saved, ...current.filter(session => session.id !== currentSessionId)];
+      });
+      setActiveSessionId(currentSessionId);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Rynna could not complete the request');
       setMessages(displayHistory);
@@ -685,10 +755,7 @@ export function App({ client }: AppProps) {
                 id="project"
                 onChange={(event) => {
                   const name = event.target.value || undefined;
-                  setChatProject({ profile: activeProfile.name, name });
-                  setMessages([]);
-                  sessionId.current = null;
-                  setError(null);
+                  startNewSession(name);
                 }}
                 value={project ?? ''}
               >
@@ -762,27 +829,116 @@ export function App({ client }: AppProps) {
         </section>
       ) : null}
 
-      {view === 'chat' && activeProfile ? (
-        <aside className="profile-summary" aria-label="Active profile">
-          {activeProfile.providers.filter((provider) => provider.enabled !== false).map((provider, index) => (
-            <span className="profile-provider-summary" key={`${provider.provider}-${provider.model}-${index}`}>
-              <strong>{provider.model}</strong>
-              <Badge>{provider.provider}</Badge>
-            </span>
-          ))}
-          {activeProfile.active_skills.map((skill) => (
-            <Badge key={`skill-${skill}`}>{skill} skill</Badge>
-          ))}
-          {activeProfile.mcp_servers.map((server) => (
-            <Badge key={`mcp-${server}`}>{server} MCP</Badge>
-          ))}
-          {activeProfile.capabilities.map((capability) => (
-            <Badge key={`capability-${capability}`}>{capability} capability</Badge>
-          ))}
-          <Badge>{project ?? 'Default project'} · {project
-            ? activeProfile.projects.find(candidate => candidate.name === project)?.default_directory
-            : activeProfile.default_project_directory}</Badge>
-        </aside>
+      {view === 'chat' ? (
+        <div className="chat-workspace">
+          <SessionSidebar
+            activeSessionId={activeSessionId}
+            disabled={pending}
+            onNewSession={() => startNewSession(project)}
+            onSelectSession={selectSession}
+            profile={selectedProfile ?? ''}
+            projects={activeProfile?.projects ?? []}
+            sessions={sessions}
+          />
+          <div className="chat-main">
+            {activeProfile ? (
+              <aside className="profile-summary" aria-label="Active profile">
+                {activeProfile.providers.filter((provider) => provider.enabled !== false).map((provider, index) => (
+                  <span className="profile-provider-summary" key={`${provider.provider}-${provider.model}-${index}`}>
+                    <strong>{provider.model}</strong>
+                    <Badge>{provider.provider}</Badge>
+                  </span>
+                ))}
+                {activeProfile.active_skills.map((skill) => (
+                  <Badge key={`skill-${skill}`}>{skill} skill</Badge>
+                ))}
+                {activeProfile.mcp_servers.map((server) => (
+                  <Badge key={`mcp-${server}`}>{server} MCP</Badge>
+                ))}
+                {activeProfile.capabilities.map((capability) => (
+                  <Badge key={`capability-${capability}`}>{capability} capability</Badge>
+                ))}
+                <Badge>{project ?? 'Default project'} · {project
+                  ? activeProfile.projects.find(candidate => candidate.name === project)?.default_directory
+                  : activeProfile.default_project_directory}</Badge>
+              </aside>
+            ) : null}
+            <section className="conversation" aria-label="Conversation">
+              <div className="messages" role="log" aria-live="polite">
+                {messages.length === 0 ? (
+                  <div className="empty-state">
+                    <p className="thread-mark" aria-hidden="true">A</p>
+                    <h2>What should we work through?</h2>
+                    <p>Ask Rynna to investigate, plan, or execute a development task.</p>
+                  </div>
+                ) : (
+                  messages.map((message, index) =>
+                    message.role === 'thinking' ? (
+                      <details
+                        className="thinking-block"
+                        key={`thinking-${index}`}
+                        open={message.expanded}
+                        onToggle={(event) => {
+                          const expanded = event.currentTarget.open;
+                          setMessages((current) =>
+                            current.map((candidate, candidateIndex) =>
+                              candidateIndex === index && candidate.role === 'thinking'
+                                ? { ...candidate, expanded }
+                                : candidate,
+                            ),
+                          );
+                        }}
+                      >
+                        <summary>Thinking</summary>
+                        <p>{message.content}</p>
+                      </details>
+                    ) : (
+                      <article className={`message message-${message.role}`} key={`${message.role}-${index}`}>
+                        <p className="message-role">{message.role === 'assistant' ? 'Rynna' : 'You'}</p>
+                        <p>{message.content}</p>
+                      </article>
+                    ),
+                  )
+                )}
+              </div>
+
+              {error ? <p className="request-error" role="alert">{error}</p> : null}
+              <form className="composer" onSubmit={submit}>
+                <label htmlFor="prompt">Message Rynna</label>
+                <div className="composer-row">
+                  <Textarea
+                    id="prompt"
+                    name="prompt"
+                    value={input}
+                    onChange={(event) => setInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === 'Enter' &&
+                        !event.shiftKey &&
+                        !event.altKey &&
+                        !event.ctrlKey &&
+                        !event.metaKey &&
+                        !event.nativeEvent.isComposing
+                      ) {
+                        event.preventDefault();
+                        event.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                    placeholder="Describe the task, constraints, and desired outcome…"
+                    rows={3}
+                  />
+                </div>
+                <div className="composer-actions">
+                  {activeProfile ? <ModelSelector profile={activeProfile} selection={selection} disabled={pending}
+                    onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
+                  <Button disabled={pending || !input.trim()} type="submit">
+                    {pending ? 'Working…' : 'Send'}
+                  </Button>
+                </div>
+              </form>
+            </section>
+          </div>
+        </div>
       ) : null}
 
       {view === 'settings' ? (
@@ -861,6 +1017,12 @@ export function App({ client }: AppProps) {
                     key={activeConfiguredProfile.name}
                     client={client}
                     onSaved={saved => {
+                      setSessions(current => reconcileProjectSessions(
+                        current,
+                        saved.name,
+                        activeConfiguredProfile.projects.map(project => project.name),
+                        saved.projects.map(project => project.name),
+                      ));
                       setConfiguredProfiles(current => current.map(profile => profile.name === saved.name ? saved : profile));
                       setProfiles(current => current.map(profile => profile.name === saved.name ? {
                         ...profile,
@@ -873,6 +1035,7 @@ export function App({ client }: AppProps) {
                         }
                         setMessages([]);
                         sessionId.current = null;
+                        setActiveSessionId(null);
                       }
                     }}
                     profile={activeConfiguredProfile}
@@ -1448,80 +1611,6 @@ export function App({ client }: AppProps) {
         </section>
       ) : null}
 
-      {view === 'chat' ? <section className="conversation" aria-label="Conversation">
-        <div className="messages" role="log" aria-live="polite">
-          {messages.length === 0 ? (
-            <div className="empty-state">
-              <p className="thread-mark" aria-hidden="true">A</p>
-              <h2>What should we work through?</h2>
-              <p>Ask Rynna to investigate, plan, or execute a development task.</p>
-            </div>
-          ) : (
-            messages.map((message, index) =>
-              message.role === 'thinking' ? (
-                <details
-                  className="thinking-block"
-                  key={`thinking-${index}`}
-                  open={message.expanded}
-                  onToggle={(event) => {
-                    const expanded = event.currentTarget.open;
-                    setMessages((current) =>
-                      current.map((candidate, candidateIndex) =>
-                        candidateIndex === index && candidate.role === 'thinking'
-                          ? { ...candidate, expanded }
-                          : candidate,
-                      ),
-                    );
-                  }}
-                >
-                  <summary>Thinking</summary>
-                  <p>{message.content}</p>
-                </details>
-              ) : (
-                <article className={`message message-${message.role}`} key={`${message.role}-${index}`}>
-                  <p className="message-role">{message.role === 'assistant' ? 'Rynna' : 'You'}</p>
-                  <p>{message.content}</p>
-                </article>
-              ),
-            )
-          )}
-        </div>
-
-        {error ? <p className="request-error" role="alert">{error}</p> : null}
-        <form className="composer" onSubmit={submit}>
-          <label htmlFor="prompt">Message Rynna</label>
-          <div className="composer-row">
-            <Textarea
-              id="prompt"
-              name="prompt"
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (
-                  event.key === 'Enter' &&
-                  !event.shiftKey &&
-                  !event.altKey &&
-                  !event.ctrlKey &&
-                  !event.metaKey &&
-                  !event.nativeEvent.isComposing
-                ) {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-              placeholder="Describe the task, constraints, and desired outcome…"
-              rows={3}
-            />
-          </div>
-          <div className="composer-actions">
-            {activeProfile ? <ModelSelector profile={activeProfile} selection={selection} disabled={pending}
-              onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
-            <Button disabled={pending || !input.trim()} type="submit">
-              {pending ? 'Working…' : 'Send'}
-            </Button>
-          </div>
-        </form>
-      </section> : null}
     </main>
   );
 }

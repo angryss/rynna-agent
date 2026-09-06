@@ -20,7 +20,7 @@ CLI interactive / run / serve ----------------------------+
 2. **Configuration** parses and validates the versioned TOML provider/profile catalog. It resolves safe profile metadata, provider inputs, and native capability settings but never reads provider credentials itself.
 3. **Adapters** implement model-provider, transport, cache-control translation, and tool concerns. Providers target OpenAI-compatible APIs, Anthropic's Messages API (SSE plus provider-neutral tool translation), and Claude Code's supported headless account interface for Claude subscription / usage bundle access. Official OpenAI requests receive a stable `prompt_cache_key`; Anthropic Messages requests enable automatic ephemeral prompt caching; Ollama keeps its ordered OpenAI-compatible prompt shape so Ollama's automatic prefix cache can reuse it without receiving unsupported OpenAI-only fields. Claude Code manages the subscription path's server caching. The account-backed path disables internal tools and rejects Rynna tools. Native adapters implement the core tool port for a canonical workspace filesystem and for bounded, explicitly mapped host programs.
 4. **Composition roots** choose concrete adapters for CLI, HTTP server, and Tauri desktop execution. They read the environment variables named by providers and apply legacy CLI/environment overrides to the selected default profile.
-5. **UI** depends on a small TypeScript client port. The web app implements it with HTTP; the desktop app implements it with Tauri IPC. Both fetch safe profile metadata and clear caller-owned history when a user switches profiles.
+5. **UI** depends on a small TypeScript client port. The web app implements it with HTTP; the desktop app implements it with Tauri IPC. Both fetch safe profile metadata. The shared UI owns local session persistence, keeping caller-visible transcripts and their session UUIDs in the browser or desktop webview and grouping them by profile-owned project.
 
 ## Operating modes
 
@@ -29,7 +29,7 @@ CLI interactive / run / serve ----------------------------+
 - `rynna serve`: long-lived HTTP and web process suitable for a VPS or local browser.
 - Rynna Desktop: native shell using the same core through narrow Tauri commands.
 
-The server is stateless in the initial bootstrap. Callers provide conversation history with each request, which keeps horizontal scaling possible and defers persistence policy to a later capability. Tool calls and tool results exist only inside one response run and are not accepted in caller-owned history.
+The server remains stateless. Callers provide conversation history with each request, which keeps horizontal scaling possible. Web and desktop persist that caller-owned history locally as named sessions; the server does not store it. Tool calls and tool results exist only inside one response run and are not accepted in caller-owned history.
 
 A server or desktop process composes every catalog profile into an `AgentProfiles` registry. Each request can select one profile; an omitted profile uses the process default. CLI chat and one-shot modes select one default profile through `--profile` or `RYNNA_PROFILE`.
 

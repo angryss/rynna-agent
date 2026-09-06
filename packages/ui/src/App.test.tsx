@@ -1,9 +1,23 @@
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 import type { AgentClient, Profile } from './contracts';
+import { writeSessions } from './sessions';
+
+beforeEach(() => {
+  const values = new Map<string, string>();
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => values.clear(),
+      getItem: (key: string) => values.get(key) ?? null,
+      removeItem: (key: string) => values.delete(key),
+      setItem: (key: string, value: string) => values.set(key, value),
+    },
+  });
+});
 
 function testProfile(name: string, overrides: Partial<Profile> = {}): Profile {
   return {
@@ -62,7 +76,7 @@ describe('App', () => {
       expect.any(Function),
     );
     expect(await screen.findByText('Follow the thread.')).toBeInTheDocument();
-    expect(screen.getByText('Help me plan this')).toBeInTheDocument();
+    expect(within(screen.getByRole('log')).getByText('Help me plan this')).toBeInTheDocument();
     const firstRequest = vi.mocked(client.respond).mock.calls[0]![0];
     expect(firstRequest.session_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     await user.type(screen.getByLabelText('Message Rynna'), 'Continue');
@@ -108,6 +122,102 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(respond.mock.calls[1]![0]).not.toHaveProperty('project');
     expect(respond.mock.calls[1]![0].session_id).not.toBe(firstSession);
+  });
+
+  it('persists named sessions under projects and restores them from the sidebar', async () => {
+    const respond = vi.fn()
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: 'The project is healthy.' } })
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: 'A fresh answer.' } })
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: 'Continuing.' } });
+    const client: AgentClient = {
+      respond,
+      listProfiles: vi.fn().mockResolvedValue({
+        default_profile: 'work',
+        provider_ids: ['openai'],
+        profiles: [testProfile('work', {
+          projects: [{
+            name: 'rynna',
+            directories: ['/projects/rynna'],
+            default_directory: '/projects/rynna',
+          }],
+        })],
+        configured_profiles: [],
+      }),
+    };
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await screen.findByRole('combobox', { name: 'Project' });
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), 'rynna');
+    await user.type(screen.getByLabelText('Message Rynna'), 'Review Rynna changes');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByRole('button', { name: 'Review Rynna changes' })).toHaveAttribute('aria-current', 'page');
+    const firstSession = respond.mock.calls[0]![0].session_id;
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), '');
+    expect(screen.queryByText('The project is healthy.')).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Message Rynna'), 'Plan something else');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByRole('button', { name: 'Plan something else' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Review Rynna changes' }));
+    expect(screen.getByText('The project is healthy.')).toBeInTheDocument();
+    expect(screen.queryByText('A fresh answer.')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Project' })).toHaveValue('rynna');
+
+    await user.type(screen.getByLabelText('Message Rynna'), 'Continue the review');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({
+      session_id: firstSession,
+      project: 'rynna',
+      history: [
+        { role: 'user', content: 'Review Rynna changes' },
+        { role: 'assistant', content: 'The project is healthy.' },
+      ],
+    }), expect.any(Function));
+  });
+
+  it('keeps saved sessions accessible when their project is renamed', async () => {
+    const profile = testProfile('work', {
+      projects: [{
+        name: 'old-name',
+        directories: ['/projects/rynna'],
+        default_directory: '/projects/rynna',
+      }],
+    });
+    writeSessions([{
+      id: 'session-1',
+      name: 'Review the project',
+      profile: 'work',
+      project: 'old-name',
+      messages: [{ role: 'user', content: 'Review the project' }],
+      created_at: '2026-09-05T12:00:00.000Z',
+      updated_at: '2026-09-05T12:00:00.000Z',
+    }]);
+    const updateProfile = vi.fn(async (_name: string, saved: Profile) => saved);
+    const user = userEvent.setup();
+    render(<App client={{
+      respond: vi.fn(),
+      listProfiles: vi.fn().mockResolvedValue({
+        default_profile: 'work',
+        provider_ids: ['openai'],
+        profiles: [profile],
+        configured_profiles: [profile],
+      }),
+      updateProfile,
+    }} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Projects' }));
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    await user.clear(screen.getByLabelText('Name'));
+    await user.type(screen.getByLabelText('Name'), 'new-name');
+    await user.click(screen.getByRole('button', { name: 'Save project' }));
+    await user.click(screen.getByRole('button', { name: 'Back to chat' }));
+
+    await user.click(screen.getByRole('button', { name: 'Review the project' }));
+    expect(screen.getByRole('combobox', { name: 'Project' })).toHaveValue('new-name');
+    expect(within(screen.getByRole('log')).getByText('Review the project')).toBeInTheDocument();
   });
 
   it('submits the prompt when Enter is pressed in the composer', async () => {
@@ -238,7 +348,7 @@ describe('App', () => {
       expect.any(Function),
     );
     expect(await screen.findByText('Recovered.')).toBeInTheDocument();
-    expect(screen.getAllByText('Retry this')).toHaveLength(1);
+    expect(within(screen.getByRole('log')).getAllByText('Retry this')).toHaveLength(1);
   });
 
   it('lists profiles and sends new conversations through the selected profile', async () => {
