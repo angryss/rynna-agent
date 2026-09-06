@@ -284,7 +284,7 @@ function isOpenAiAccount(value: unknown): value is OpenAiAccount {
 
 function isConfiguredProvider(value: unknown): value is ConfiguredProvider {
   if (!value || typeof value !== 'object' || !('kind' in value)) return false;
-  if (value.kind === 'ollama') {
+  if (value.kind === 'ollama' || value.kind === 'mlx') {
     return 'api_base' in value && typeof value.api_base === 'string';
   }
   if (value.kind === 'anthropic') {

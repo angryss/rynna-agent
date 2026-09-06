@@ -126,10 +126,27 @@ impl Tool for ReadFileTool {
 
 struct EmptyFinalThenAnswerProvider {
     requests: Mutex<Vec<CompletionRequest>>,
+    content_forwarded: Arc<AtomicUsize>,
 }
 
 #[async_trait]
 impl ModelProvider for EmptyFinalThenAnswerProvider {
+    async fn complete_stream(
+        &self,
+        request: CompletionRequest,
+        on_delta: &mut (dyn for<'delta> FnMut(&'delta CompletionDelta) + Send),
+    ) -> Result<Completion, ProviderError> {
+        let final_answer_only = request.tools.is_empty();
+        let completion = self.complete(request).await?;
+        if final_answer_only {
+            on_delta(&CompletionDelta::Content(
+                completion.message.content.clone(),
+            ));
+            assert_eq!(self.content_forwarded.load(Ordering::SeqCst), 1);
+        }
+        Ok(completion)
+    }
+
     async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
         let mut requests = self.requests.lock().unwrap();
         requests.push(request);
@@ -147,8 +164,10 @@ impl ModelProvider for EmptyFinalThenAnswerProvider {
 
 #[tokio::test]
 async fn respond_recovers_when_a_tool_turn_ends_with_an_empty_answer() {
+    let content_forwarded = Arc::new(AtomicUsize::new(0));
     let provider = Arc::new(EmptyFinalThenAnswerProvider {
         requests: Mutex::new(Vec::new()),
+        content_forwarded: Arc::clone(&content_forwarded),
     });
     let agent = Agent::with_tools(
         Arc::clone(&provider) as Arc<dyn ModelProvider>,
@@ -160,6 +179,9 @@ async fn respond_recovers_when_a_tool_turn_ends_with_an_empty_answer() {
 
     let reply = agent
         .respond_stream(&[], "What project is this?", &mut |delta| {
+            if matches!(delta, CompletionDelta::Content(_)) {
+                content_forwarded.fetch_add(1, Ordering::SeqCst);
+            }
             deltas.push(delta.clone())
         })
         .await
