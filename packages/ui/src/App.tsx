@@ -46,6 +46,7 @@ type DisplayMessage = Message | ThinkingMessage;
 
 const PROVIDER_KINDS: readonly ConfiguredProvider['kind'][] = [
   'anthropic',
+  'mlx',
   'ollama',
   'openai',
   'openrouter',
@@ -159,6 +160,8 @@ export function App({ client }: AppProps) {
   const [profileProviders, setProfileProviders] = useState<ProfileProvider[]>([]);
   const [catalogProviderIds, setCatalogProviderIds] = useState<string[]>([]);
   const [modelProvider, setModelProvider] = useState('');
+  const [customModel, setCustomModel] = useState('');
+  const [mlxApiBase, setMlxApiBase] = useState('http://127.0.0.1:8000/v1');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const openAiAccountRequest = useRef(0);
   const providerMutationRevision = useRef(0);
@@ -330,6 +333,7 @@ export function App({ client }: AppProps) {
       setModelProvider(providerIds[0] ?? '');
     }
     setSelectedModels([]);
+    setCustomModel('');
   }, [activeConfiguredProfile, catalogProviderIds, modelProvider]);
 
   function selectProfile(name: string) {
@@ -445,6 +449,20 @@ export function App({ client }: AppProps) {
     }
   }
 
+  async function addCustomModel(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const model = customModel.trim();
+    if (!activeConfiguredProfile || !modelProvider || !model || savingProfile) return;
+    if (activeConfiguredProfile.providers.some((entry) => entry.provider === modelProvider && entry.model === model)) {
+      setError('This model is already configured for this provider.');
+      return;
+    }
+    await saveModelSettings([
+      ...activeConfiguredProfile.providers,
+      { provider: modelProvider, model, enabled: true, default: false },
+    ]);
+  }
+
   async function saveModelSettings(nextProviders: ProfileProvider[]) {
     if (!client.updateProfile || !activeConfiguredProfile || savingProfile) return;
     setSavingProfile(true);
@@ -556,7 +574,7 @@ export function App({ client }: AppProps) {
   }
 
   function beginAddProvider() {
-    const availableKind = (['ollama', 'openai', 'openrouter', 'anthropic'] as const).find(
+    const availableKind = (['ollama', 'openai', 'openrouter', 'anthropic', 'mlx'] as const).find(
       (kind) => !providerSettings.some((provider) => provider.kind === kind),
     ) ?? 'ollama';
     setEditingProvider(availableKind);
@@ -566,6 +584,7 @@ export function App({ client }: AppProps) {
     setProviderTypeDirty(false);
     setActiveProviderKind(availableKind);
     setOllamaApiBase('http://127.0.0.1:11434/v1');
+    setMlxApiBase('http://127.0.0.1:8000/v1');
     setOpenAiAuthentication('chatgpt');
     setAnthropicAuthentication('subscription');
     setReuseExistingChatgpt(null);
@@ -580,6 +599,7 @@ export function App({ client }: AppProps) {
     setProviderTypeDirty(false);
     setActiveProviderKind(provider.kind);
     if (provider.kind === 'ollama') setOllamaApiBase(provider.api_base);
+    else if (provider.kind === 'mlx') setMlxApiBase(provider.api_base);
     else if (provider.kind === 'openai') setOpenAiAuthentication(provider.authentication);
     else if (provider.kind === 'anthropic') setAnthropicAuthentication(provider.authentication);
     setReuseExistingChatgpt(null);
@@ -615,6 +635,8 @@ export function App({ client }: AppProps) {
     const input: ProviderInput =
       providerKind === 'ollama'
         ? { kind: 'ollama', api_base: ollamaApiBase.trim() }
+        : providerKind === 'mlx'
+          ? { kind: 'mlx', api_base: mlxApiBase.trim() }
         : providerKind === 'openrouter'
           ? { kind: 'openrouter' }
         : providerKind === 'anthropic'
@@ -1214,7 +1236,7 @@ export function App({ client }: AppProps) {
                   <div>
                     <h3>{providerTitle(provider.kind)}</h3>
                     <p>
-                      {provider.kind === 'ollama'
+                      {provider.kind === 'ollama' || provider.kind === 'mlx'
                         ? provider.api_base
                         : provider.kind === 'openrouter'
                           ? 'API key via OPENROUTER_API_KEY'
@@ -1350,15 +1372,15 @@ export function App({ client }: AppProps) {
                   ) : null}
                 </div>
               )}
-              {providerKind === 'ollama' ? (
+              {providerKind === 'ollama' || providerKind === 'mlx' ? (
                 <>
-                  <label htmlFor="ollama-api-base">Ollama API base URL</label>
+                  <label htmlFor="local-api-base">{providerTitle(providerKind)} API base URL</label>
                   <Input
-                    id="ollama-api-base"
-                    onChange={(event) => setOllamaApiBase(event.target.value)}
+                    id="local-api-base"
+                    onChange={(event) => providerKind === 'mlx' ? setMlxApiBase(event.target.value) : setOllamaApiBase(event.target.value)}
                     required
                     type="url"
-                    value={ollamaApiBase}
+                    value={providerKind === 'mlx' ? mlxApiBase : ollamaApiBase}
                   />
                 </>
               ) : providerKind === 'openai' ? (
@@ -1485,7 +1507,7 @@ export function App({ client }: AppProps) {
                 <div>
                   <h2>Models</h2>
                   <p>Saved model changes take effect after restart. Chat uses the currently running models until then.</p>
-                  <p>Choose which supported models are available in chat for each profile.</p>
+                  <p>Add the exact model name your provider serves, then choose which models are available in chat.</p>
                 </div>
               </div>
               <div className="model-filters">
@@ -1510,6 +1532,22 @@ export function App({ client }: AppProps) {
                   />
                 </label>
               </div>
+              <form className="provider-form" onSubmit={(event) => void addCustomModel(event)}>
+                <label htmlFor="custom-model-name">Model name</label>
+                <Input
+                  id="custom-model-name"
+                  value={customModel}
+                  onChange={(event) => setCustomModel(event.target.value)}
+                  disabled={savingProfile || !modelProvider}
+                  placeholder={modelProvider === 'mlx' ? 'mlx-community/Qwen3.8-27B-8bit' : 'e.g. qwen3:14b'}
+                  required
+                />
+                <div className="provider-actions">
+                  <Button type="submit" disabled={savingProfile || !modelProvider || !customModel.trim()}>
+                    Add model
+                  </Button>
+                </div>
+              </form>
               <div className="model-toolbar" aria-label="Model bulk actions">
                 <div className="provider-actions">
                   <Button
@@ -1621,6 +1659,7 @@ function formatPlan(plan: string): string {
 
 function providerTitle(kind: ConfiguredProvider['kind']): string {
   if (kind === 'ollama') return 'Ollama';
+  if (kind === 'mlx') return 'MLX';
   if (kind === 'openai') return 'OpenAI';
   if (kind === 'openrouter') return 'OpenRouter';
   return 'Anthropic';

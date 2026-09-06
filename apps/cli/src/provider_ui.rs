@@ -28,6 +28,7 @@ use rynna_provider_anthropic::{
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ProviderChoice {
     Ollama,
+    Mlx,
     OpenRouter,
     OpenAi,
     Anthropic,
@@ -37,6 +38,7 @@ impl ProviderChoice {
     fn id(self) -> &'static str {
         match self {
             Self::Ollama => "ollama",
+            Self::Mlx => "mlx",
             Self::OpenRouter => "openrouter",
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
@@ -46,6 +48,7 @@ impl ProviderChoice {
     fn title(self) -> &'static str {
         match self {
             Self::Ollama => "Ollama",
+            Self::Mlx => "MLX",
             Self::OpenRouter => "OpenRouter",
             Self::OpenAi => "OpenAI",
             Self::Anthropic => "Anthropic",
@@ -54,7 +57,8 @@ impl ProviderChoice {
 
     fn toggle(self) -> Self {
         match self {
-            Self::Ollama => Self::OpenRouter,
+            Self::Ollama => Self::Mlx,
+            Self::Mlx => Self::OpenRouter,
             Self::OpenRouter => Self::OpenAi,
             Self::OpenAi => Self::Anthropic,
             Self::Anthropic => Self::Ollama,
@@ -91,6 +95,7 @@ impl ProviderUi {
         self.existing = false;
         self.choice = [
             ProviderChoice::Ollama,
+            ProviderChoice::Mlx,
             ProviderChoice::OpenRouter,
             ProviderChoice::OpenAi,
             ProviderChoice::Anthropic,
@@ -101,6 +106,8 @@ impl ProviderUi {
         self.authentication = OpenAiAuthentication::Chatgpt;
         self.input = if self.choice == ProviderChoice::Ollama {
             "http://127.0.0.1:11434/v1".to_owned()
+        } else if self.choice == ProviderChoice::Mlx {
+            rynna_config::DEFAULT_MLX_API_BASE.to_owned()
         } else {
             String::new()
         };
@@ -117,6 +124,10 @@ impl ProviderUi {
         match provider {
             ConfiguredProvider::Ollama { api_base } => {
                 self.choice = ProviderChoice::Ollama;
+                self.input = api_base.clone();
+            }
+            ConfiguredProvider::Mlx { api_base } => {
+                self.choice = ProviderChoice::Mlx;
                 self.input = api_base.clone();
             }
             ConfiguredProvider::OpenRouter => {
@@ -197,11 +208,13 @@ fn run_loop(
                 }
                 KeyCode::Left | KeyCode::Right if !ui.existing => {
                     let mut next = ui.choice.toggle();
-                    for _ in 0..4 {
+                    for _ in 0..5 {
                         if !ui.has(next.id()) {
                             ui.choice = next;
                             ui.input = if next == ProviderChoice::Ollama {
                                 "http://127.0.0.1:11434/v1".to_owned()
+                            } else if next == ProviderChoice::Mlx {
+                                rynna_config::DEFAULT_MLX_API_BASE.to_owned()
                             } else {
                                 String::new()
                             };
@@ -213,7 +226,7 @@ fn run_loop(
                 KeyCode::Tab
                     if !matches!(
                         ui.choice,
-                        ProviderChoice::Ollama | ProviderChoice::OpenRouter
+                        ProviderChoice::Ollama | ProviderChoice::Mlx | ProviderChoice::OpenRouter
                     ) =>
                 {
                     ui.authentication = match ui.authentication {
@@ -280,6 +293,9 @@ fn save_provider_with_terminal_suspended(
 fn save_provider(ui: &mut ProviderUi, store: &mut ProviderSettingsStore, profile: &str) {
     let provider = match ui.choice {
         ProviderChoice::Ollama => ConfiguredProvider::Ollama {
+            api_base: ui.input.trim().to_owned(),
+        },
+        ProviderChoice::Mlx => ConfiguredProvider::Mlx {
             api_base: ui.input.trim().to_owned(),
         },
         ProviderChoice::OpenRouter => ConfiguredProvider::OpenRouter,
@@ -482,6 +498,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, ui: &ProviderUi) {
             Line::from(format!("Provider: {}  (←/→ to change)", ui.choice.title())),
             Line::from(match ui.choice {
                 ProviderChoice::Ollama => "Ollama API base URL:".to_owned(),
+                ProviderChoice::Mlx => "MLX API base URL:".to_owned(),
                 ProviderChoice::OpenRouter => {
                     "Authentication: API key from OPENROUTER_API_KEY".to_owned()
                 }
@@ -506,7 +523,9 @@ fn draw(frame: &mut ratatui::Frame<'_>, ui: &ProviderUi) {
     } else {
         let items = ui.providers.iter().map(|provider| {
             let detail = match provider {
-                ConfiguredProvider::Ollama { api_base } => api_base.as_str(),
+                ConfiguredProvider::Ollama { api_base } | ConfiguredProvider::Mlx { api_base } => {
+                    api_base.as_str()
+                }
                 ConfiguredProvider::OpenRouter => "API key from OPENROUTER_API_KEY",
                 ConfiguredProvider::OpenAi {
                     authentication: OpenAiAuthentication::ApiKey,
@@ -557,6 +576,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, ui: &ProviderUi) {
 fn provider_title(provider: &ConfiguredProvider) -> &'static str {
     match provider {
         ConfiguredProvider::Ollama { .. } => "Ollama",
+        ConfiguredProvider::Mlx { .. } => "MLX",
         ConfiguredProvider::OpenRouter => "OpenRouter",
         ConfiguredProvider::OpenAi { .. } => "OpenAI",
         ConfiguredProvider::Anthropic { .. } => "Anthropic",
@@ -631,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_ui_starts_with_an_empty_list_and_advances_to_openrouter() {
+    fn provider_ui_starts_empty_and_offers_mlx_with_its_local_endpoint() {
         let mut ui = ProviderUi::new(Vec::new());
         assert!(ui.providers.is_empty());
         ui.begin_add();
@@ -639,6 +659,12 @@ mod tests {
 
         ui.providers.push(ConfiguredProvider::Ollama {
             api_base: "http://localhost:11434/v1".to_owned(),
+        });
+        ui.begin_add();
+        assert_eq!(ui.choice.id(), "mlx");
+        assert_eq!(ui.input, "http://127.0.0.1:8000/v1");
+        ui.providers.push(ConfiguredProvider::Mlx {
+            api_base: ui.input.clone(),
         });
         ui.begin_add();
         assert_eq!(ui.choice.id(), "openrouter");

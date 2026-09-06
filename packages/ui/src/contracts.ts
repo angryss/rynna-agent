@@ -71,12 +71,14 @@ export type ConnectOpenAiRequest =
 
 export type ConfiguredProvider =
   | { kind: 'ollama'; api_base: string }
+  | { kind: 'mlx'; api_base: string }
   | { kind: 'openrouter' }
   | { kind: 'openai'; authentication: 'api_key' | 'chatgpt'; reuse_existing?: boolean }
   | { kind: 'anthropic'; authentication: 'api_key' | 'subscription' };
 
 export type ProviderInput =
   | { kind: 'ollama'; api_base: string }
+  | { kind: 'mlx'; api_base: string }
   | { kind: 'openrouter' }
   | { kind: 'openai'; authentication: 'chatgpt'; reuse_existing?: boolean }
   | { kind: 'openai'; authentication: 'api_key'; api_key: string }

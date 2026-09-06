@@ -17,6 +17,7 @@ const MAX_COMMAND_TIMEOUT_SECONDS: u64 = 300;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 
 pub const DEFAULT_API_BASE: &str = "http://127.0.0.1:11434/v1";
+pub const DEFAULT_MLX_API_BASE: &str = "http://127.0.0.1:8000/v1";
 pub const DEFAULT_MODEL: &str = "qwen3:8b";
 pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_PROVIDER: &str = "ollama";
@@ -46,6 +47,9 @@ pub enum ConfiguredProvider {
     Ollama {
         api_base: String,
     },
+    Mlx {
+        api_base: String,
+    },
     #[serde(rename = "openrouter")]
     OpenRouter,
     #[serde(rename = "openai")]
@@ -63,6 +67,7 @@ impl ConfiguredProvider {
     pub fn id(&self) -> &'static str {
         match self {
             Self::Ollama { .. } => "ollama",
+            Self::Mlx { .. } => "mlx",
             Self::OpenRouter => "openrouter",
             Self::OpenAi { .. } => "openai",
             Self::Anthropic { .. } => "anthropic",
@@ -70,7 +75,7 @@ impl ConfiguredProvider {
     }
 
     fn validate(&self) -> Result<(), ProviderSettingsError> {
-        if let Self::Ollama { api_base } = self {
+        if let Self::Ollama { api_base } | Self::Mlx { api_base } = self {
             let url = Url::parse(api_base).map_err(ProviderSettingsError::InvalidOllamaUrl)?;
             if !matches!(url.scheme(), "http" | "https")
                 || !url.username().is_empty()
@@ -609,9 +614,9 @@ pub enum ProviderSettingsError {
     BlankProfile,
     #[error("provider settings for profile `{0}` are already configured")]
     ProfileAlreadyConfigured(String),
-    #[error("Ollama API base URL is invalid: {0}")]
+    #[error("Local provider API base URL is invalid: {0}")]
     InvalidOllamaUrl(url::ParseError),
-    #[error("Ollama API base URL must use HTTP or HTTPS and contain no credentials")]
+    #[error("Local provider API base URL must use HTTP or HTTPS and contain no credentials")]
     UnsafeOllamaUrl,
     #[error("failed to read provider settings at {}: {source}", path.display())]
     Read {
@@ -636,6 +641,8 @@ pub enum ProviderSettingsError {
 pub enum ProviderKind {
     #[serde(rename = "openai-compatible")]
     OpenAiCompatible,
+    #[serde(rename = "mlx")]
+    Mlx,
     #[serde(rename = "anthropic-messages")]
     AnthropicMessages,
     #[serde(rename = "claude-subscription")]
@@ -718,15 +725,26 @@ impl ProfileCatalog {
         Self {
             path: None,
             default_profile: DEFAULT_PROFILE.to_owned(),
-            providers: BTreeMap::from([(
-                DEFAULT_PROVIDER.to_owned(),
-                ProviderConfig {
-                    kind: ProviderKind::OpenAiCompatible,
-                    api_base: DEFAULT_API_BASE.to_owned(),
-                    api_key_env: None,
-                    claude_program: default_claude_program(),
-                },
-            )]),
+            providers: BTreeMap::from([
+                (
+                    DEFAULT_PROVIDER.to_owned(),
+                    ProviderConfig {
+                        kind: ProviderKind::OpenAiCompatible,
+                        api_base: DEFAULT_API_BASE.to_owned(),
+                        api_key_env: None,
+                        claude_program: default_claude_program(),
+                    },
+                ),
+                (
+                    "mlx".to_owned(),
+                    ProviderConfig {
+                        kind: ProviderKind::Mlx,
+                        api_base: DEFAULT_MLX_API_BASE.to_owned(),
+                        api_key_env: None,
+                        claude_program: default_claude_program(),
+                    },
+                ),
+            ]),
             profiles: BTreeMap::from([(
                 DEFAULT_PROFILE.to_owned(),
                 ProfileConfig {
@@ -1072,6 +1090,11 @@ impl ProfileCatalog {
     fn from_file(mut file: ConfigFile) -> Result<Self, ConfigError> {
         if file.version != CONFIG_VERSION {
             return Err(ConfigError::UnsupportedVersion(file.version));
+        }
+        for provider in file.providers.values_mut() {
+            if provider.kind == ProviderKind::Mlx && provider.api_base.is_empty() {
+                provider.api_base = DEFAULT_MLX_API_BASE.to_owned();
+            }
         }
         for profile in file.profiles.values_mut() {
             if profile.providers.is_empty()

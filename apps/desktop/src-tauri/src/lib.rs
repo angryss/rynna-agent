@@ -59,6 +59,9 @@ enum ProviderInput {
     Ollama {
         api_base: String,
     },
+    Mlx {
+        api_base: String,
+    },
     #[serde(rename = "openrouter")]
     OpenRouter,
     #[serde(rename = "openai")]
@@ -78,6 +81,7 @@ impl ProviderInput {
     fn kind(&self) -> &'static str {
         match self {
             Self::Ollama { .. } => "ollama",
+            Self::Mlx { .. } => "mlx",
             Self::OpenRouter => "openrouter",
             Self::OpenAi { .. } => "openai",
             Self::Anthropic { .. } => "anthropic",
@@ -778,6 +782,7 @@ async fn configured_provider_from_input(
 ) -> Result<ConfiguredProvider, String> {
     match input {
         ProviderInput::Ollama { api_base } => Ok(ConfiguredProvider::Ollama { api_base }),
+        ProviderInput::Mlx { api_base } => Ok(ConfiguredProvider::Mlx { api_base }),
         ProviderInput::OpenRouter => Ok(ConfiguredProvider::OpenRouter),
         ProviderInput::OpenAi {
             authentication,
@@ -1292,7 +1297,7 @@ fn configured_model_provider(
             .transpose()?,
     };
     let configured: Arc<dyn ModelProvider> = match provider.provider_kind {
-        ProviderKind::OpenAiCompatible => Arc::new(
+        ProviderKind::OpenAiCompatible | ProviderKind::Mlx => Arc::new(
             OpenAiCompatibleProvider::new(&provider.api_base, &provider.model, api_key)
                 .map_err(|error| error.to_string())?,
         ),

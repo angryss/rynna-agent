@@ -489,7 +489,7 @@ fn configured_provider(
             .transpose()?,
     };
     let configured: Arc<dyn ModelProvider> = match provider.provider_kind {
-        ProviderKind::OpenAiCompatible => Arc::new(
+        ProviderKind::OpenAiCompatible | ProviderKind::Mlx => Arc::new(
             OpenAiCompatibleProvider::new(&provider.api_base, &provider.model, api_key)
                 .with_context(|| {
                     format!(

@@ -7,6 +7,12 @@ default_profile = "local"
 kind = "openai-compatible"
 api_base = "http://127.0.0.1:11434/v1"
 
+# MLX LM serves OpenAI-compatible chat completions. The URL below is also
+# the default for kind = "mlx" when api_base is omitted.
+[providers.mlx]
+kind = "mlx"
+api_base = "http://127.0.0.1:8000/v1"
+
 [providers.work-openai]
 kind = "openai-compatible"
 api_base = "https://api.openai.com/v1"
@@ -40,6 +46,12 @@ projects = [
 ]
 # Enable installed Agent Skills by name or directory (see docs/skills.md).
 active_skills = [] # e.g. ["code-review", "./skills/rust"]
+capabilities = ["workspace"]
+
+# Use the exact Hugging Face ID or local model path served by mlx_lm.server.
+[profiles.mlx]
+provider = "mlx"
+model = "mlx-community/Qwen3.8-27B-8bit"
 capabilities = ["workspace"]
 
 [profiles.work]
