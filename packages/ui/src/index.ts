@@ -24,3 +24,5 @@ export type {
   RespondRequest,
   RespondResponse,
 } from './contracts';
+
+export type { Workflow, WorkflowStep, WorkflowMetadata, WorkflowLimits, WorkflowStart, WorkflowRun, WorkflowControl, WorkflowAction } from "./contracts";

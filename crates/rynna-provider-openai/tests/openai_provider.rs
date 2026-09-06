@@ -1015,3 +1015,23 @@ async fn local_custom_model_names_are_sent_unchanged_without_authentication() {
         );
     }
 }
+
+#[test]
+fn workflow_policy_tracks_endpoint_and_model_but_not_credentials() {
+    let first = OpenAiCompatibleProvider::new(
+        "http://localhost:8000/v1",
+        "model",
+        Some("old-secret".into()),
+    )
+    .unwrap();
+    let rotated = OpenAiCompatibleProvider::new(
+        "http://localhost:8000/v1",
+        "model",
+        Some("new-secret".into()),
+    )
+    .unwrap();
+    let moved = OpenAiCompatibleProvider::new("http://localhost:9000/v1", "model", None).unwrap();
+    assert_eq!(first.workflow_policy(), rotated.workflow_policy());
+    assert_ne!(first.workflow_policy(), moved.workflow_policy());
+    assert!(!first.workflow_policy().contains("secret"));
+}

@@ -227,3 +227,15 @@ describe('TauriAgentClient', () => {
     });
   });
 });
+
+it('uses the same scoped and revisioned workflow contracts through IPC', async () => {
+  const invoke = vi.fn().mockResolvedValue([]);
+  const client = new TauriAgentClient(invoke);
+  await client.listWorkflowRuns('work profile', 'session');
+  expect(invoke).toHaveBeenLastCalledWith('list_workflow_runs', { profile: 'work profile', sessionId: 'session' });
+  const control = { profile: 'work', session_id: 'session', expected_revision: 7, action: 'resume' as const, acknowledge_uncertain: true };
+  await client.controlWorkflow('run', control);
+  expect(invoke).toHaveBeenLastCalledWith('control_workflow', { id: 'run', request: control });
+  invoke.mockRejectedValueOnce(new Error('stale revision'));
+  await expect(client.controlWorkflow('run', control)).rejects.toThrow('stale revision');
+});

@@ -1,3 +1,4 @@
+import type { Workflow, WorkflowMetadata, WorkflowStart, WorkflowRun, WorkflowControl } from '@rynna/ui';
 import { isMcpSettings, isMemorySettings } from '@rynna/ui';
 import type {
   AgentClient,
@@ -33,6 +34,15 @@ export class HttpAgentClient implements AgentClient {
     this.providersEndpoint = endpoint.replace(/\/respond$/, '/providers');
     this.fetcher = fetcher;
   }
+
+  async listWorkflows(profile: string): Promise<WorkflowMetadata[]> { return await this.providerRequest(`${this.profilesEndpoint}/${encodeURIComponent(profile)}/workflows`, 'GET') as WorkflowMetadata[]; }
+  async readWorkflow(profile: string, id: string): Promise<Workflow> { return await this.providerRequest(`${this.profilesEndpoint}/${encodeURIComponent(profile)}/workflows/${encodeURIComponent(id)}`, 'GET') as Workflow; }
+  async saveWorkflow(profile: string, workflow: Workflow): Promise<Workflow> { return await this.providerRequest(`${this.profilesEndpoint}/${encodeURIComponent(profile)}/workflows`, 'POST', workflow) as Workflow; }
+  async deleteWorkflow(profile: string, id: string): Promise<void> { await this.providerRequest(`${this.profilesEndpoint}/${encodeURIComponent(profile)}/workflows/${encodeURIComponent(id)}`, 'DELETE'); }
+  async startWorkflow(request: WorkflowStart): Promise<WorkflowRun> { return await this.providerRequest(this.endpoint.replace(/\/respond$/, '/workflow-runs'), 'POST', request) as WorkflowRun; }
+  async readWorkflowRun(id: string, profile: string, session: string): Promise<WorkflowRun> { return await this.providerRequest(`${this.endpoint.replace(/\/respond$/, '/workflow-runs')}/${encodeURIComponent(id)}?${new URLSearchParams({ profile, session_id: session })}`, 'GET') as WorkflowRun; }
+  async listWorkflowRuns(profile: string, session: string): Promise<WorkflowRun[]> { return await this.providerRequest(`${this.endpoint.replace(/\/respond$/, '/workflow-runs')}?${new URLSearchParams({ profile, session_id: session })}`, 'GET') as WorkflowRun[]; }
+  async controlWorkflow(id: string, request: WorkflowControl): Promise<WorkflowRun> { return await this.providerRequest(`${this.endpoint.replace(/\/respond$/, '/workflow-runs')}/${encodeURIComponent(id)}`, 'POST', request) as WorkflowRun; }
 
   async getMcpSettings(profile: string): Promise<McpSettings> {
     const body = await this.providerRequest(`${this.profilesEndpoint}/${encodeURIComponent(profile)}/mcp`, 'GET');
@@ -112,13 +122,14 @@ export class HttpAgentClient implements AgentClient {
     return body;
   }
 
-  private async providerRequest(endpoint: string, method: string, body?: ProviderInput | MemorySettingsInput | McpSettings): Promise<unknown> {
+  private async providerRequest(endpoint: string, method: string, body?: ProviderInput | MemorySettingsInput | McpSettings | Workflow | WorkflowStart | WorkflowControl): Promise<unknown> {
     const response = await this.fetcher(endpoint, {
       method,
       ...(body
         ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
         : { headers: { accept: 'application/json' } }),
     });
+    if (response.status === 204) return undefined;
     let decoded: unknown;
     try {
       decoded = await response.json();

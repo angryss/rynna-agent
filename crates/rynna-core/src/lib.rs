@@ -203,11 +203,17 @@ impl ToolError {
 
 #[async_trait]
 pub trait ToolSource: Send + Sync {
+    fn workflow_policy(&self) -> String {
+        String::new()
+    }
     async fn discover(&self) -> Result<Vec<Arc<dyn Tool>>, ToolError>;
 }
 
 #[async_trait]
 pub trait Tool: Send + Sync {
+    fn workflow_policy(&self) -> String {
+        serde_json::to_string(&self.definition()).expect("tool definition")
+    }
     fn definition(&self) -> ToolDefinition;
     async fn execute(&self, arguments: serde_json::Value) -> Result<serde_json::Value, ToolError>;
 }
@@ -570,6 +576,10 @@ pub struct ModelSelection {
 
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
+    /// Non-secret endpoint/model policy used to detect workflow resume drift.
+    fn workflow_policy(&self) -> String {
+        String::new()
+    }
     /// Clone this adapter with a conversation-local thinking preference.
     fn with_thinking(
         &self,
@@ -640,6 +650,13 @@ impl FallbackProvider {
 
 #[async_trait]
 impl ModelProvider for FallbackProvider {
+    fn workflow_policy(&self) -> String {
+        self.providers
+            .iter()
+            .map(|p| p.workflow_policy())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
     fn supports_external_tools(&self) -> bool {
         self.providers.iter().all(|p| p.supports_external_tools())
     }
@@ -767,6 +784,8 @@ pub enum AgentError {
     DuplicateTool(String),
     #[error("agent exceeded the maximum of {0} model turns")]
     ToolLoopLimit(usize),
+    #[error("workflow context exceeds the model context allowance")]
+    WorkflowContextLimit,
     #[error("agent exceeded the maximum of {0} tool calls")]
     ToolCallLimit(usize),
     #[error("agent exceeded the {0}-byte aggregate tool result byte limit")]
@@ -820,6 +839,8 @@ impl ManagedContextStore {
 }
 
 pub mod subagents;
+pub mod workflow_runs;
+pub mod workflows;
 pub use subagents::Subagent;
 
 pub mod memory;
@@ -830,6 +851,7 @@ pub use memory::{
 #[derive(Default)]
 struct ToolBudget {
     calls: AtomicUsize,
+    ceiling: Option<usize>,
     result_bytes: AtomicUsize,
 }
 
@@ -1079,6 +1101,11 @@ impl Agent {
             let plan = self
                 .context_manager
                 .prepare(request, self.provider.server_compaction());
+            if tool_budget.ceiling.is_some()
+                && (plan.compacted || plan.server_compaction_threshold.is_some())
+            {
+                return Err(AgentError::WorkflowContextLimit);
+            }
             let completion = if tools.is_empty() {
                 if stream {
                     self.provider
@@ -1180,7 +1207,7 @@ impl Agent {
                 .calls
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                     used.checked_add(completion.message.tool_calls.len())
-                        .filter(|total| *total <= MAX_TOOL_CALLS)
+                        .filter(|total| *total <= tool_budget.ceiling.unwrap_or(MAX_TOOL_CALLS))
                 })
                 .map_err(|_| AgentError::ToolCallLimit(MAX_TOOL_CALLS))?;
             tool_calls_used += completion.message.tool_calls.len();

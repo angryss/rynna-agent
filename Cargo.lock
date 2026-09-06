@@ -4083,6 +4083,7 @@ dependencies = [
  "rynna-skills",
  "rynna-tools-command",
  "rynna-tools-filesystem",
+ "rynna-workflows",
  "serde",
  "serde_json",
  "tauri",
@@ -4169,6 +4170,7 @@ dependencies = [
  "rynna-mcp",
  "rynna-memory-hindsight",
  "rynna-provider-anthropic",
+ "rynna-workflows",
  "serde",
  "serde_json",
  "tempfile",
@@ -4227,6 +4229,20 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "rynna-workflows"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fs2",
+ "rynna-config",
+ "rynna-core",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

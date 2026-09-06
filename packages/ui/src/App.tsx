@@ -1,3 +1,7 @@
+import { newSessionId } from './sessions';
+import { WorkflowSettings } from './components/workflow-settings';
+import { WorkflowPanel } from './components/workflow-panel';
+import type { WorkflowRun } from './contracts';
 import { ModelSelector } from './components/model-selector';
 import { McpSettingsPanel } from './components/mcp-settings';
 import { FormEvent, useEffect, useRef, useState } from 'react';
@@ -104,20 +108,14 @@ function finalizeResponse(messages: DisplayMessage[], message: Message): Display
   return [...collapsed, message];
 }
 
-// getRandomValues also works on self-hosted HTTP pages where randomUUID is unavailable.
-function newSessionId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
 export function App({ client }: AppProps) {
   const sessionId = useRef<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>(readSessions);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const workflowDraftId = useRef(newSessionId());
+  const workflowEvents = useRef(new Set<string>());
+  const [workflowRunning, setWorkflowRunning] = useState(false);
   const [input, setInput] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,7 +147,7 @@ export function App({ client }: AppProps) {
   const [reuseExistingChatgpt, setReuseExistingChatgpt] = useState<boolean | null>(null);
   const [providerApiKey, setProviderApiKey] = useState('');
   const [savingProvider, setSavingProvider] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'profiles' | 'projects' | 'subagents' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
+  const [settingsSection, setSettingsSection] = useState<'workflows' | 'profiles' | 'projects' | 'subagents' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
     client.createProfile || client.updateProfile || client.deleteProfile
       ? 'profiles'
       : client.listProviders ? 'provider-credentials' : client.getMemorySettings ? 'memory' : 'mcp',
@@ -344,6 +342,8 @@ export function App({ client }: AppProps) {
     setAddingProfile(false);
     setMessages([]);
     sessionId.current = null;
+    workflowDraftId.current = newSessionId();
+    setWorkflowRunning(false);
     setActiveSessionId(null);
     setError(null);
   }
@@ -353,6 +353,8 @@ export function App({ client }: AppProps) {
     setMessages([]);
     setInput('');
     sessionId.current = null;
+    workflowDraftId.current = newSessionId();
+    setWorkflowRunning(false);
     setActiveSessionId(null);
     setError(null);
   }
@@ -364,6 +366,7 @@ export function App({ client }: AppProps) {
     setMessages(session.messages);
     setInput('');
     sessionId.current = session.id;
+    setWorkflowRunning(false);
     setActiveSessionId(session.id);
     setError(null);
   }
@@ -533,6 +536,8 @@ export function App({ client }: AppProps) {
         setSelectedProfile(profiles.find((profile) => profile.name !== selectedSettingsProfile)?.name ?? null);
         setMessages([]);
         sessionId.current = null;
+    workflowDraftId.current = newSessionId();
+    setWorkflowRunning(false);
         setActiveSessionId(null);
       }
     } catch (profileError) {
@@ -698,10 +703,41 @@ export function App({ client }: AppProps) {
     }
   }
 
+  const workflowSession = activeSessionId ?? workflowDraftId.current;
+  const selectedWorkflow = sessions.find(s => s.id === workflowSession)?.workflow_id ?? '';
+  function saveWorkflowSelection(id: string) {
+    const now = new Date().toISOString();
+    sessionId.current = workflowSession;
+    setActiveSessionId(workflowSession);
+    setSessions(current => {
+      const existing = current.find(s => s.id === workflowSession);
+      return [{ id: workflowSession, name: 'Workflow conversation', profile: selectedProfile ?? '', project: project ?? null,
+        messages: conversationHistory(messages), created_at: now, updated_at: now, ...existing, workflow_id: id }, ...current.filter(s => s.id !== workflowSession)];
+    });
+  }
+  function receiveWorkflow(run: WorkflowRun) {
+    setWorkflowRunning(['running', 'pausing', 'cancelling'].includes(run.status));
+    const saved = sessions.find(s => s.id === run.start.session_id);
+    const known = new Set(saved?.workflow_event_ids ?? []);
+    const events = run.events.filter(e => !known.has(`${run.id}:${e.id}`) && !workflowEvents.current.has(`${run.id}:${e.id}`));
+    if (!events.length && saved?.workflow_run_id === run.id) return;
+    events.forEach(e => workflowEvents.current.add(`${run.id}:${e.id}`));
+    const additions: Message[] = events.map(e => ({ role: 'assistant', content: e.content }));
+    if (additions.length) setMessages(current => [...current, ...additions]);
+    const now = new Date().toISOString();
+    setSessions(current => {
+      const existing = current.find(s => s.id === run.start.session_id);
+      const entry: Session = { id: run.start.session_id, profile: run.start.profile,
+        project: run.start.project, created_at: now, ...existing, name: existing?.name && existing.name !== 'Workflow conversation' ? existing.name : sessionName(run.start.goal), updated_at: now, workflow_run_id: run.id,
+        messages: [...(existing?.messages ?? []), ...additions], workflow_event_ids: [...(existing?.workflow_event_ids ?? []), ...events.map(e => `${run.id}:${e.id}`)] };
+      return [entry, ...current.filter(s => s.id !== entry.id)];
+    });
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const prompt = input.trim();
-    if (!prompt || pending) {
+    if (!prompt || pending || workflowRunning) {
       return;
     }
 
@@ -731,6 +767,7 @@ export function App({ client }: AppProps) {
       setSessions((current) => {
         const existing = current.find(session => session.id === currentSessionId);
         const saved: Session = {
+          ...existing,
           id: currentSessionId,
           name: existing?.name ?? sessionName(prompt),
           profile: selectedProfile ?? '',
@@ -866,6 +903,11 @@ export function App({ client }: AppProps) {
               </aside>
             ) : null}
             <section className="conversation" aria-label="Conversation">
+              {activeProfile && client.startWorkflow && client.listWorkflowRuns ? <WorkflowPanel
+                key={`${activeProfile.name}:${workflowSession}`} client={client} profile={activeProfile.name} session={workflowSession}
+                savedRunId={sessions.find(s => s.id === workflowSession)?.workflow_run_id} project={project ?? null} selected={selectedWorkflow} context={conversationHistory(messages).map(m => `${m.role}: ${m.content}`).join('\n')}
+                selection={selection ?? { provider: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.provider ?? '', model: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.model ?? '', thinking: 'default' }}
+                onSelection={saveWorkflowSelection} onRun={receiveWorkflow} /> : null}
               <div className="messages" role="log" aria-live="polite">
                 {messages.length === 0 ? (
                   <div className="empty-state">
@@ -933,8 +975,8 @@ export function App({ client }: AppProps) {
                 <div className="composer-actions">
                   {activeProfile ? <ModelSelector profile={activeProfile} selection={selection} disabled={pending}
                     onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
-                  <Button disabled={pending || !input.trim()} type="submit">
-                    {pending ? 'Working…' : 'Send'}
+                  <Button disabled={pending || workflowRunning || !input.trim()} type="submit">
+                    {workflowRunning ? 'Use workflow steering above' : pending ? 'Working…' : 'Send'}
                   </Button>
                 </div>
               </form>
@@ -1000,6 +1042,7 @@ export function App({ client }: AppProps) {
                   Subagents
                 </Button>
               ) : null}
+              {client.listWorkflows ? <Button aria-current={settingsSection === 'workflows' ? 'page' : undefined} onClick={() => setSettingsSection('workflows')} type="button" variant="ghost">Workflows</Button> : null}
               {client.getMemorySettings ? (
                 <Button aria-current={settingsSection === 'memory' ? 'page' : undefined}
                   onClick={() => setSettingsSection('memory')} type="button" variant="ghost">
@@ -1043,6 +1086,8 @@ export function App({ client }: AppProps) {
                         }
                         setMessages([]);
                         sessionId.current = null;
+    workflowDraftId.current = newSessionId();
+    setWorkflowRunning(false);
                         setActiveSessionId(null);
                       }
                     }}
@@ -1051,7 +1096,11 @@ export function App({ client }: AppProps) {
                 ) : <p>Select a profile to configure its projects.</p>}
               </>
             ) : null}
-            {settingsSection === 'subagents' && client.updateProfile ? (
+            {settingsSection === 'workflows' && client.listWorkflows ? <>
+              <label className="profile-picker">Profile<select value={selectedSettingsProfile ?? ''} onChange={e => selectSettingsProfile(e.target.value)}>{configuredProfiles.map(p => <option key={p.name}>{p.name}</option>)}</select></label>
+              {activeConfiguredProfile && <WorkflowSettings key={activeConfiguredProfile.name} client={client} profile={activeConfiguredProfile} />}
+            </> : null}
+            {settingsSection === 'subagents'  && client.updateProfile ? (
               <>
                 <label className="profile-picker" htmlFor="subagents-profile">
                   <span>Profile</span>

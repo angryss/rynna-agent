@@ -39,8 +39,11 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Duration, timeout};
 use tower_http::services::{ServeDir, ServeFile};
 
+mod workflows;
+
 #[derive(Clone)]
 struct AppState {
+    workflows: Arc<rynna_workflows::host::Host>,
     profiles: Arc<Mutex<AgentProfiles>>,
     catalog: Option<Arc<Mutex<ProfileCatalog>>>,
     provider_settings: Option<Arc<Mutex<ProviderSettingsStore>>>,
@@ -171,6 +174,26 @@ fn router_with_runtime(
             }
         }
     }
+    let profiles = Arc::new(Mutex::new(profiles));
+    let catalog = catalog.map(|c| Arc::new(Mutex::new(c)));
+    let run_path = std::env::var_os("RYNNA_WORKFLOW_STORE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            provider_settings
+                .as_ref()
+                .map(|s| s.memory_settings_path().with_file_name("workflow-runs"))
+                .unwrap_or_else(|| {
+                    codex_home
+                        .parent()
+                        .unwrap_or(&codex_home)
+                        .join("workflow-runs")
+                })
+        });
+    let workflows = Arc::new(rynna_workflows::host::Host::new(
+        profiles.clone(),
+        catalog.clone(),
+        run_path,
+    ));
     let provider_routes = Router::new()
         .route(
             "/v1/profiles/{profile}/mcp",
@@ -224,12 +247,29 @@ fn router_with_runtime(
             "/v1/respond/stream",
             post(respond_stream).fallback(api_method_not_allowed),
         )
+        .route(
+            "/v1/profiles/{profile}/workflows",
+            get(workflows::list).post(workflows::save),
+        )
+        .route(
+            "/v1/profiles/{profile}/workflows/{id}",
+            get(workflows::read).delete(workflows::delete),
+        )
+        .route(
+            "/v1/workflow-runs",
+            get(workflows::runs).post(workflows::start),
+        )
+        .route(
+            "/v1/workflow-runs/{id}",
+            get(workflows::run).post(workflows::control),
+        )
         .merge(provider_routes)
         .route("/v1", any(api_not_found))
         .route("/v1/{*path}", any(api_not_found))
         .with_state(AppState {
-            profiles: Arc::new(Mutex::new(profiles)),
-            catalog: catalog.map(|catalog| Arc::new(Mutex::new(catalog))),
+            profiles,
+            catalog,
+            workflows,
             provider_settings: provider_settings.map(|store| Arc::new(Mutex::new(store))),
             codex_program,
             codex_home,
@@ -462,7 +502,19 @@ async fn update_saved_profile(
     request: Result<Json<Profile>, JsonRejection>,
 ) -> Result<Json<Profile>, ApiError> {
     let Json(profile) = request.map_err(ApiError::from)?;
+    let _admission = state.workflows.admission.lock().await;
     let mut catalog = catalog_store(&state)?.lock().await;
+    let original = catalog.resolve(&name).map_err(catalog_error)?.profile;
+    if profile.name != name
+        || profile.projects != original.projects
+        || profile.default_project_directory != original.default_project_directory
+    {
+        state
+            .workflows
+            .ensure_profile_idle(&name)
+            .await
+            .map_err(workflows::error)?;
+    }
     let saved = if let Some(provider_settings) = &state.provider_settings {
         let mut provider_settings = provider_settings.lock().await;
         rynna_config::profile_update::update_profile_with_settings(
@@ -499,6 +551,7 @@ async fn delete_saved_profile(
     State(state): State<AppState>,
     AxumPath(name): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
+    let _admission = state.workflows.admission.lock().await;
     let mut catalog = catalog_store(&state)?.lock().await;
     {
         let runtime = state.profiles.lock().await;
@@ -510,6 +563,11 @@ async fn delete_saved_profile(
             });
         }
     }
+    state
+        .workflows
+        .ensure_profile_idle(&name)
+        .await
+        .map_err(workflows::error)?;
     catalog.delete_profile(&name).map_err(catalog_error)?;
     if let Some(provider_settings) = &state.provider_settings {
         let mut provider_settings = provider_settings.lock().await;
@@ -1073,6 +1131,11 @@ async fn respond(
     request: Result<Json<RespondRequest>, JsonRejection>,
 ) -> Result<Json<RespondResponse>, ApiError> {
     let Json(request) = request.map_err(ApiError::from)?;
+    let _lease = state
+        .workflows
+        .chat_lease(request.session_id)
+        .await
+        .map_err(workflows::error)?;
     let profiles = state
         .profiles
         .lock()
@@ -1125,6 +1188,11 @@ async fn respond_stream(
     request: Result<Json<RespondRequest>, JsonRejection>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let Json(request) = request.map_err(ApiError::from)?;
+    let lease = state
+        .workflows
+        .chat_lease(request.session_id)
+        .await
+        .map_err(workflows::error)?;
     let profiles = state
         .profiles
         .lock()
@@ -1142,6 +1210,7 @@ async fn respond_stream(
     let (sender, receiver) = mpsc::unbounded_channel();
 
     tokio::spawn(async move {
+        let _lease = lease;
         let delta_sender = sender.clone();
         let mut on_delta = move |delta: &CompletionDelta| {
             let _ = delta_sender.send(StreamResponseEvent::from(delta));
@@ -1183,7 +1252,9 @@ struct ApiError {
 impl From<AgentError> for ApiError {
     fn from(error: AgentError) -> Self {
         match error {
-            AgentError::BlankInput | AgentError::InvalidHistory => Self {
+            AgentError::BlankInput
+            | AgentError::InvalidHistory
+            | AgentError::WorkflowContextLimit => Self {
                 status: StatusCode::BAD_REQUEST,
                 code: "invalid_request",
                 message: error.to_string(),

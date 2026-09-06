@@ -431,3 +431,25 @@ executable resolution plus explicitly configured `env` values; model-provider
 credentials are not automatically inherited. Only configure programs and remote
 servers you trust. `env` values are stored in the private file and are visible in
 the editor; do not put that file in version control or serve it as a web asset.
+
+## Autonomous workflows
+
+Choose a workflow in a conversation, enter a goal, individual success criteria and finite limits, then select **Start workflow**. Existing conversations default to ordinary Chat. Settings → Workflows manages definitions in the selected profile; duplicate the read-only Rynna default to customize its plan → execute → verify process. Definitions contain 2–16 ordered steps, exactly one final verifier, and a repeat target pointing to an earlier work step. A step uses direct instructions or a named same-profile helper. IDs use 1–64 ASCII letters, digits, underscores or hyphens; profiles allow 32 custom workflows, descriptions allow 1024 bytes and instructions allow 32000 bytes. Revisions are assigned on save. Runs capture definitions and helpers so later edits affect future runs.
+
+Default and maximum limits are 50 step executions, 512 total tool calls (including delegated calls), and 1800 active seconds. Inner response limits still apply. Tool allowance and up to 300 active seconds are reserved before each attempt; a successful checkpoint refunds unused resources. Interrupted or failed attempts retain their reservation. Workflows require providers with externally managed, countable tools; subscription providers that run their own tools are rejected. Each step receives the goal, all criteria, steering and bounded prior results. Oversized contexts fail rather than silently dropping criteria.
+
+Verification must return JSON containing `results` (one per criterion, with `criterion_id`, `verdict`: `met|unmet|unknown`, `kind`: `test|artifact|qualitative`, `reference`, and a non-empty `excerpt`), `summary`, and `can_continue`. All criteria must be met with evidence to complete. Otherwise the runner repeats at the configured target, or blocks when input is missing or verification is malformed. Model judgments can be mistaken; inspect the recorded evidence.
+
+Pause/cancel stop new dispatch and let the current bounded step settle. Steering and optional criteria amendments are recorded after pausing; resume requires fresh verification. Profile/project destructive changes conflict with nonterminal runs. Ordinary chat conflicts while that session is running or stopping; paused conversations may discuss without implicitly steering the run.
+
+The HTTP and desktop hosts use private, atomic, versioned files in `rynna/workflow-runs` beneath the configuration directory. Set `RYNNA_WORKFLOW_STORE` to an explicit private directory to select another store. Only one process may own a store. Browser disconnects do not stop host execution. Desktop exit stops its host. Restart exposes interrupted runs as paused, and uncertain steps require acknowledgement because retry may repeat side effects. Budgets persist across restart. Corrupt/unknown record versions make workflow storage unavailable until repaired; files remain intact and ordinary chat remains available. No credentials, raw thinking or internal tool transcripts are stored by the runner; goal, visible output and evidence can still contain private project data.
+
+Stateful routes (under the same deployment trust boundary as conversation content):
+
+- `GET /v1/profiles/{profile}/workflows`: public selection metadata, without step instructions.
+- `GET /v1/profiles/{profile}/workflows/{id}`, `POST /v1/profiles/{profile}/workflows`, `DELETE /v1/profiles/{profile}/workflows/{id}`: loopback-only definition administration. POST creates or updates using the current revision.
+- `POST /v1/workflow-runs`: start with UUID `request_id` and `session_id`, `profile`, optional `project`, explicit model `selection`, `workflow_id`, `goal`, `criteria`, `limits`, and optional `initial_context`. Retries return the original run.
+- `GET /v1/workflow-runs?profile=...&session_id=...`: latest authoritative run for the conversation, bounded to one record. Historical runs remain readable at `GET /v1/workflow-runs/{id}?profile=...&session_id=...`.
+- `POST /v1/workflow-runs/{id}`: `profile`, `session_id`, `expected_revision`, and `action` (`pause`, `cancel`, `resume`, `steer`). Resume includes `acknowledge_uncertain`; steer includes `text` and optional replacement `criteria`. Stale revisions conflict. Poll snapshots every two seconds while observing a run; deduplicate visible outputs by run ID plus event ID.
+
+UUIDs identify runs and conversations; they are not authentication. Distributed workers, scheduling, nested/parallel workflows and CLI workflow commands are not included. Before rollback, pause/cancel runs and stop the host, retain run files, and back up the catalog. Restore the pre-workflow catalog if an older binary rejects its workflow fields; do not ask an older binary to resume new records.

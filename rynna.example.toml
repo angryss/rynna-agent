@@ -114,3 +114,23 @@ transport = "stdio"
 command = "docker"
 args = ["run", "--rm", "-i", "ghcr.io/github/github-mcp-server"]
 env = ["GITHUB_PERSONAL_ACCESS_TOKEN"]
+
+# Optional profile-owned workflow. The built-in rynna-default is always available.
+[[profiles.local.workflows]]
+id = "implement-review"
+name = "Implement and review"
+description = "Implement a goal and check every success criterion."
+revision = 1
+
+[[profiles.local.workflows.steps]]
+id = "implement"
+role = "work"
+executor = "instructions"
+instructions = "Implement the goal using the permitted tools and address verification feedback."
+
+[[profiles.local.workflows.steps]]
+id = "verify"
+role = "verify"
+executor = "instructions"
+instructions = "Check every criterion and return the requested structured evidence."
+repeat_target = "implement"

@@ -253,3 +253,18 @@ function jsonResponse(body: unknown): Response {
     headers: { 'content-type': 'application/json' },
   });
 }
+
+it('scopes workflow reads and controls and accepts successful deletion without JSON', async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response('[]'));
+  const client = new HttpAgentClient('/prefix/v1/respond', fetcher);
+  await client.listWorkflowRuns('work profile', 'session');
+  expect(fetcher).toHaveBeenLastCalledWith('/prefix/v1/workflow-runs?profile=work+profile&session_id=session', expect.objectContaining({ method: 'GET' }));
+  const control = { profile: 'work', session_id: 'session', expected_revision: 7, action: 'resume' as const, acknowledge_uncertain: true };
+  fetcher.mockResolvedValueOnce(new Response('{}'));
+  await client.controlWorkflow('run', control);
+  expect(fetcher).toHaveBeenLastCalledWith('/prefix/v1/workflow-runs/run', expect.objectContaining({ method: 'POST', body: JSON.stringify(control) }));
+  fetcher.mockResolvedValueOnce(new Response(null, { status: 204 }));
+  await expect(client.deleteWorkflow('work', 'custom')).resolves.toBeUndefined();
+  fetcher.mockResolvedValueOnce(new Response('{"error":{"message":"stale revision"}}', { status: 409 }));
+  await expect(client.controlWorkflow('run', control)).rejects.toThrow('stale revision');
+});

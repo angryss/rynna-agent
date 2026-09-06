@@ -33,6 +33,7 @@ use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant, timeout};
 
 mod codex_provider;
+mod workflows;
 pub use codex_provider::CodexAppServerProvider;
 
 const MAX_CODEX_MESSAGE_BYTES: usize = 1024 * 1024;
@@ -591,18 +592,22 @@ pub fn list_profiles(
 
 #[tauri::command]
 async fn respond(
-    profiles: State<'_, Mutex<AgentProfiles>>,
+    host: State<'_, Arc<rynna_workflows::host::Host>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
     request: RespondRequest,
 ) -> Result<RespondResponse, String> {
+    let _lease = host.chat_lease(request.session_id).await?;
     respond_with_locked_profiles(&profiles, request).await
 }
 
 #[tauri::command]
 async fn respond_stream(
-    profiles: State<'_, Mutex<AgentProfiles>>,
+    host: State<'_, Arc<rynna_workflows::host::Host>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
     request: RespondRequest,
     on_event: Channel<CompletionDeltaEvent>,
 ) -> Result<RespondResponse, String> {
+    let _lease = host.chat_lease(request.session_id).await?;
     let profiles = profiles.lock().await.clone();
     let mut on_delta = |delta: &CompletionDelta| {
         let _ = on_event.send(CompletionDeltaEvent::from(delta));
@@ -612,8 +617,8 @@ async fn respond_stream(
 
 #[tauri::command]
 async fn profiles(
-    catalog: State<'_, Mutex<ProfileCatalog>>,
-    profiles: State<'_, Mutex<AgentProfiles>>,
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
 ) -> Result<ProfilesResponse, String> {
     let catalog = catalog.lock().await;
     let profiles = profiles.lock().await;
@@ -622,8 +627,8 @@ async fn profiles(
 
 #[tauri::command]
 async fn create_profile(
-    catalog: State<'_, Mutex<ProfileCatalog>>,
-    profiles: State<'_, Mutex<AgentProfiles>>,
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
     profile: Profile,
 ) -> Result<Profile, String> {
     let mut catalog = catalog.lock().await;
@@ -633,13 +638,22 @@ async fn create_profile(
 
 #[tauri::command]
 async fn update_profile(
-    catalog: State<'_, Mutex<ProfileCatalog>>,
-    profiles: State<'_, Mutex<AgentProfiles>>,
+    host: State<'_, Arc<rynna_workflows::host::Host>>,
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
     name: String,
     profile: Profile,
 ) -> Result<Profile, String> {
+    let _admission = host.admission.lock().await;
     let mut catalog = catalog.lock().await;
+    let original = catalog.resolve(&name).map_err(|e| e.to_string())?.profile;
+    if profile.name != name
+        || profile.projects != original.projects
+        || profile.default_project_directory != original.default_project_directory
+    {
+        host.ensure_profile_idle(&name).await?;
+    }
     let mut runtime = profiles.lock().await;
     let mut provider_settings = provider_settings.lock().await;
     update_saved_profile(
@@ -653,11 +667,14 @@ async fn update_profile(
 
 #[tauri::command]
 async fn delete_profile(
-    catalog: State<'_, Mutex<ProfileCatalog>>,
-    profiles: State<'_, Mutex<AgentProfiles>>,
+    host: State<'_, Arc<rynna_workflows::host::Host>>,
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
     name: String,
 ) -> Result<(), String> {
+    let _admission = host.admission.lock().await;
+    host.ensure_profile_idle(&name).await?;
     let mut catalog = catalog.lock().await;
     let mut runtime = profiles.lock().await;
     let mut provider_settings = provider_settings.lock().await;
@@ -969,8 +986,8 @@ fn ensure_memory_profile(
 
 #[tauri::command]
 async fn get_mcp_settings(
-    catalog: State<'_, Mutex<ProfileCatalog>>,
-    profiles: State<'_, Mutex<AgentProfiles>>,
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
     profile: String,
 ) -> Result<McpSettings, String> {
@@ -985,9 +1002,9 @@ async fn get_mcp_settings(
 
 #[tauri::command]
 async fn save_mcp_settings(
-    catalog: State<'_, Mutex<ProfileCatalog>>,
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
-    profiles: State<'_, Mutex<AgentProfiles>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
     profile: String,
     settings: McpSettings,
 ) -> Result<McpSettings, String> {
@@ -1009,8 +1026,8 @@ async fn save_mcp_settings(
 
 #[tauri::command]
 async fn get_memory_settings(
-    catalog: State<'_, Mutex<ProfileCatalog>>,
-    profiles: State<'_, Mutex<AgentProfiles>>,
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
     profile: String,
 ) -> Result<MemorySettingsResponse, String> {
@@ -1026,9 +1043,9 @@ async fn get_memory_settings(
 
 #[tauri::command]
 async fn save_memory_settings(
-    catalog: State<'_, Mutex<ProfileCatalog>>,
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
-    profiles: State<'_, Mutex<AgentProfiles>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
     profile: String,
     settings: MemorySettings,
 ) -> Result<MemorySettingsResponse, String> {
@@ -1083,13 +1100,37 @@ pub fn run() {
             .expect("existing profile");
     }
 
+    let configured = Arc::new(Mutex::new(configured));
+    let catalog = Arc::new(Mutex::new(catalog));
+    let path = env::var_os("RYNNA_WORKFLOW_STORE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            provider_settings
+                .memory_settings_path()
+                .with_file_name("workflow-runs")
+        });
+    let workflow_host = Arc::new(rynna_workflows::host::Host::new(
+        configured.clone(),
+        Some(catalog.clone()),
+        path,
+    ));
+    let shutdown_host = workflow_host.clone();
     tauri::Builder::default()
-        .manage(Mutex::new(configured))
-        .manage(Mutex::new(catalog))
+        .manage(configured)
+        .manage(catalog)
+        .manage(workflow_host)
         .manage(credential_selection)
         .manage(Mutex::new(provider_settings))
         .manage(OpenAiAuthenticationLock::default())
         .invoke_handler(tauri::generate_handler![
+            workflows::list_workflows,
+            workflows::read_workflow,
+            workflows::save_workflow,
+            workflows::delete_workflow,
+            workflows::start_workflow,
+            workflows::list_workflow_runs,
+            workflows::read_workflow_run,
+            workflows::control_workflow,
             respond,
             respond_stream,
             profiles,
@@ -1110,8 +1151,10 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Rynna desktop application")
-        .run(|_, event| {
+        .run(move |_, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                tauri::async_runtime::block_on(shutdown_host.shutdown());
+                tauri::async_runtime::block_on(rynna_core::workflow_runs::shutdown_workflows());
                 tauri::async_runtime::block_on(rynna_core::flush_memory_writes());
             }
         });

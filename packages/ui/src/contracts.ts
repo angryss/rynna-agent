@@ -129,6 +129,14 @@ export function isMcpSettings(value: unknown): value is McpSettings {
 }
 
 export interface AgentClient {
+  listWorkflows?(profile: string): Promise<WorkflowMetadata[]>;
+  readWorkflow?(profile: string, id: string): Promise<Workflow>;
+  saveWorkflow?(profile: string, workflow: Workflow): Promise<Workflow>;
+  deleteWorkflow?(profile: string, id: string): Promise<void>;
+  startWorkflow?(request: WorkflowStart): Promise<WorkflowRun>;
+  readWorkflowRun?(id: string, profile: string, session: string): Promise<WorkflowRun>;
+  listWorkflowRuns?(profile: string, session: string): Promise<WorkflowRun[]>;
+  controlWorkflow?(id: string, request: WorkflowControl): Promise<WorkflowRun>;
   getMcpSettings?(profile: string): Promise<McpSettings>;
   saveMcpSettings?(settings: McpSettings, profile: string): Promise<McpSettings>;
   getMemorySettings?(profile: string): Promise<MemorySettings>;
@@ -146,3 +154,18 @@ export interface AgentClient {
   updateProvider?(provider: ProviderInput, profile: string): Promise<ConfiguredProvider>;
   deleteProvider?(kind: ConfiguredProvider['kind'], profile: string): Promise<void>;
 }
+
+export interface WorkflowStep { id: string; role: 'work' | 'verify'; executor: 'instructions' | 'subagent'; instructions: string; helper?: string; repeat_target?: string }
+export interface Workflow { id: string; name: string; description: string; revision: number; steps: WorkflowStep[] }
+export interface WorkflowMetadata { id: string; name: string; description: string; revision: number; read_only: boolean }
+export interface WorkflowLimits { steps: number; tool_calls: number; active_seconds: number }
+export interface WorkflowCriterion { id: string; text: string }
+export interface WorkflowStart { request_id: string; session_id: string; profile: string; project: string | null; selection: ModelSelection; workflow_id: string; goal: string; criteria: WorkflowCriterion[]; limits: WorkflowLimits; initial_context: string }
+export type WorkflowStatus = 'running' | 'pausing' | 'cancelling' | 'paused' | 'blocked' | 'completed' | 'failed' | 'cancelled' | 'budget_exhausted';
+export interface WorkflowRun {
+  id: string; start: WorkflowStart; workflow: Workflow; cursor: number; status: WorkflowStatus; reason: string | null; revision: number; consumed: WorkflowLimits; uncertain: boolean;
+  events: { id: number; step_id: string; content: string }[];
+  verification: { summary: string; results: { criterion_id: string; verdict: 'met' | 'unmet' | 'unknown'; kind: 'test' | 'artifact' | 'qualitative'; reference: string; excerpt: string }[] } | null;
+}
+export type WorkflowAction = { action: 'pause' | 'cancel' } | { action: 'resume'; acknowledge_uncertain: boolean } | { action: 'steer'; text: string; criteria: WorkflowCriterion[] | null };
+export type WorkflowControl = WorkflowAction & { profile: string; session_id: string; expected_revision: number };
