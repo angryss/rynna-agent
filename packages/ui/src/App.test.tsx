@@ -320,6 +320,7 @@ describe('App', () => {
     await user.type(screen.getByLabelText('Message Rynna'), 'Keep this draft');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), 'workflow');
     expect(screen.getByLabelText('Goal')).toBeInTheDocument();
+    expect(screen.getByRole('log')).toBeEmptyDOMElement();
     expect(screen.queryByLabelText('Message Rynna')).not.toBeInTheDocument();
     expect(screen.queryByText('What should we work through?')).not.toBeInTheDocument();
     await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), '');

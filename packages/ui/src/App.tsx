@@ -1016,9 +1016,9 @@ export function App({ client }: AppProps) {
                 onSelection={saveWorkflowSelection} onRun={receiveWorkflow} /> : null}
               {workflowSelected && activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
                 onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
-              {(!workflowSelected || messages.length > 0) && <div className="messages" role="log" aria-live="polite">
+              <div className="messages" role="log" aria-live="polite">
                 {messages.length === 0 ? (
-                  <div className="empty-state">
+                  !workflowSelected && <div className="empty-state">
                     <p className="thread-mark" aria-hidden="true">A</p>
                     <h2>What should we work through?</h2>
                     <p>Ask Rynna to investigate, plan, or execute a development task.</p>
@@ -1052,7 +1052,7 @@ export function App({ client }: AppProps) {
                     ),
                   )
                 )}
-              </div>}
+              </div>
 
               {error ? <p className="request-error" role="alert">{error}</p> : null}
               {!workflowSelected && <form className="composer" onSubmit={submit}>
