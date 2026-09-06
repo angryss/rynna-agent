@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  deleteSession,
   readSessions,
   reconcileProjectSessions,
   sessionName,
@@ -76,6 +77,35 @@ describe('sessions', () => {
 
     expect(writeSessions([local], storage)).toEqual([local, stored]);
     expect(readSessions(storage)).toEqual([local, stored]);
+  });
+
+  it('keeps deleted sessions out of reloads and stale window saves while preserving other sessions', () => {
+    const first: Session = {
+      id: 'delete-me', name: 'Delete me', profile: 'work', project: null,
+      messages: [{ role: 'user', content: 'Private transcript' }],
+      created_at: '2026-09-05T12:00:00.000Z', updated_at: '2026-09-05T12:00:00.000Z',
+    };
+    const second = { ...first, id: 'keep-me', name: 'Keep me', profile: 'personal' };
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    writeSessions([first, second], storage);
+    expect(deleteSession(first.id, [first], storage)).toEqual([second]);
+    expect(readSessions(storage)).toEqual([second]);
+    expect(JSON.parse(values.get('rynna-sessions-v1')!)).toEqual([second]);
+    expect(writeSessions([first, second], storage)).toEqual([second]);
+    deleteSession(second.id, [first, second], storage);
+    expect(writeSessions([first, second], storage)).toEqual([]);
+    expect(readSessions(storage)).toEqual([]);
+  });
+
+  it('reports deletion failure when its durable marker cannot be saved', () => {
+    expect(() => deleteSession('session-1', [], {
+      getItem: () => null,
+      setItem: () => { throw new Error('Storage full'); },
+    })).toThrow('Storage full');
   });
 
   it('moves sessions with renamed or deleted projects without losing history', () => {

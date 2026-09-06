@@ -1,7 +1,7 @@
 import { SlashCommandInput, slashCommands } from './components/slash-command-input';
 import { newSessionId } from './sessions';
 import { WorkflowSettings } from './components/workflow-settings';
-import { WorkflowPanel } from './components/workflow-panel';
+import { WorkflowPanel, workflowTerminal } from './components/workflow-panel';
 import type { WorkflowRun } from './contracts';
 import { ModelSelector } from './components/model-selector';
 import { McpSettingsPanel } from './components/mcp-settings';
@@ -29,6 +29,8 @@ import type {
   ProviderInput,
 } from './contracts';
 import {
+  deleteSession,
+  isSessionDeleted,
   mergeSessions,
   readSessions,
   reconcileProjectSessions,
@@ -112,6 +114,7 @@ function finalizeResponse(messages: DisplayMessage[], message: Message): Display
 export function App({ client }: AppProps) {
   const sessionId = useRef<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [deletingSession, setDeletingSession] = useState(false);
   const [sessions, setSessions] = useState<Session[]>(readSessions);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const workflowDraftId = useRef(newSessionId());
@@ -169,13 +172,16 @@ export function App({ client }: AppProps) {
 
   useEffect(() => {
     const merged = writeSessions(sessions);
-    if (merged.length !== sessions.length) setSessions(merged);
+    if (merged.length !== sessions.length || merged.some((session, index) => session.id !== sessions[index]?.id)) setSessions(merged);
   }, [sessions]);
 
   useEffect(() => {
     const synchronizeSessions = (event: StorageEvent) => {
       const incoming = sessionsFromStorageEvent(event);
-      if (incoming) setSessions(current => mergeSessions(current, incoming));
+      if (incoming) {
+        setSessions(current => mergeSessions(current, incoming).filter(session => !isSessionDeleted(session.id)));
+        if (sessionId.current && isSessionDeleted(sessionId.current)) resetConversation();
+      }
     };
     window.addEventListener('storage', synchronizeSessions);
     return () => window.removeEventListener('storage', synchronizeSessions);
@@ -352,6 +358,11 @@ export function App({ client }: AppProps) {
 
   function startNewSession(projectName: string | undefined) {
     setChatProject(selectedProfile ? { profile: selectedProfile, name: projectName } : undefined);
+    resetConversation();
+  }
+
+  function resetConversation() {
+    setPending(false);
     setMessages([]);
     setInput('');
     sessionId.current = null;
@@ -359,6 +370,29 @@ export function App({ client }: AppProps) {
     setWorkflowRunning(false);
     setActiveSessionId(null);
     setError(null);
+  }
+
+  async function removeSession(session: Session): Promise<boolean> {
+    if (pending || deletingSession) return false;
+    setDeletingSession(true);
+    setError(null);
+    try {
+      if ((session.workflow_id || session.workflow_run_id) && client.listWorkflowRuns) {
+        const runs = await client.listWorkflowRuns(session.profile, session.id);
+        if (runs.some(run => !workflowTerminal(run))) {
+          throw new Error('Cancel or finish this session’s workflow before deleting it.');
+        }
+      }
+      const remaining = deleteSession(session.id, readSessions());
+      setSessions(current => mergeSessions(current, remaining).filter(candidate => !isSessionDeleted(candidate.id)));
+      if (sessionId.current === session.id) resetConversation();
+      return true;
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Rynna could not delete the session');
+      return false;
+    } finally {
+      setDeletingSession(false);
+    }
   }
 
   function selectSession(session: Session) {
@@ -718,6 +752,7 @@ export function App({ client }: AppProps) {
     });
   }
   function receiveWorkflow(run: WorkflowRun) {
+    if (isSessionDeleted(run.start.session_id)) return;
     setWorkflowRunning(['running', 'pausing', 'cancelling'].includes(run.status));
     const saved = sessions.find(s => s.id === run.start.session_id);
     const known = new Set(saved?.workflow_event_ids ?? []);
@@ -739,7 +774,7 @@ export function App({ client }: AppProps) {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const prompt = input.trim();
-    if (!prompt || pending || workflowRunning) {
+    if (!prompt || pending || workflowRunning || deletingSession) {
       return;
     }
 
@@ -751,7 +786,7 @@ export function App({ client }: AppProps) {
   }
 
   function runCommand(text: string) {
-    if (pending || workflowRunning) return;
+    if (pending || workflowRunning || deletingSession) return;
     const [name = '', ...parts] = text.trim().split(/\s+/);
     const argument = parts.join(' ');
     if (!slashCommands.some(command => command.name === name.toLowerCase())) {
@@ -815,9 +850,9 @@ export function App({ client }: AppProps) {
     setPending(true);
     setMessages([...displayHistory, { role: 'user', content: prompt }]);
 
+    const currentSessionId = sessionId.current ?? newSessionId();
+    sessionId.current = currentSessionId;
     try {
-      const currentSessionId = sessionId.current ?? newSessionId();
-      sessionId.current = currentSessionId;
       const response = await client.respond({
         session_id: currentSessionId,
         ...(selection ? { selection } : {}),
@@ -826,8 +861,9 @@ export function App({ client }: AppProps) {
         prompt,
         history,
       }, (delta) => {
-        setMessages((current) => appendDelta(current, delta));
+        if (sessionId.current === currentSessionId) setMessages((current) => appendDelta(current, delta));
       });
+      if (sessionId.current !== currentSessionId || isSessionDeleted(currentSessionId)) return;
       setMessages((current) => finalizeResponse(current, response.message));
       const now = new Date().toISOString();
       const visibleMessages = [...history, { role: 'user' as const, content: prompt }, response.message];
@@ -847,11 +883,12 @@ export function App({ client }: AppProps) {
       });
       setActiveSessionId(currentSessionId);
     } catch (requestError) {
+      if (sessionId.current !== currentSessionId) return;
       setError(requestError instanceof Error ? requestError.message : 'Rynna could not complete the request');
       setMessages(previousMessages);
       setInput(prompt);
     } finally {
-      setPending(false);
+      if (sessionId.current === currentSessionId) setPending(false);
     }
   }
 
@@ -867,7 +904,7 @@ export function App({ client }: AppProps) {
             <label className="profile-picker" htmlFor="profile">
               <span>Profile</span>
               <Typeahead
-                disabled={pending}
+                disabled={pending || deletingSession}
                 id="profile"
                 onChange={selectProfile}
                 options={sortedProfiles(profiles).map((profile) => profile.name)}
@@ -944,10 +981,11 @@ export function App({ client }: AppProps) {
         <div className="chat-workspace">
           <SessionSidebar
             activeSessionId={activeSessionId}
-            disabled={pending}
+            disabled={pending || deletingSession}
             onNewSession={() => startNewSession(project)}
             onSelectProject={startNewSession}
             onSelectSession={selectSession}
+            onDeleteSession={removeSession}
             profile={selectedProfile ?? ''}
             projects={activeProfile?.projects ?? []}
             sessions={sessions}
@@ -971,7 +1009,7 @@ export function App({ client }: AppProps) {
             ) : null}
             <section className="conversation" aria-label="Conversation">
               {activeProfile && client.startWorkflow && client.listWorkflowRuns ? <WorkflowPanel
-                key={`${activeProfile.name}:${workflowSession}`} client={client} profile={activeProfile.name} session={workflowSession}
+                key={`${activeProfile.name}:${workflowSession}`} disabled={deletingSession} client={client} profile={activeProfile.name} session={workflowSession}
                 savedRunId={sessions.find(s => s.id === workflowSession)?.workflow_run_id} project={project ?? null} selected={selectedWorkflow} context={conversationHistory(messages).map(m => `${m.role}: ${m.content}`).join('\n')}
                 selection={selection ?? { provider: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.provider ?? '', model: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.model ?? '', thinking: 'default' }}
                 onSelection={saveWorkflowSelection} onRun={receiveWorkflow} /> : null}
@@ -1018,12 +1056,12 @@ export function App({ client }: AppProps) {
                 <label htmlFor="prompt">Message Rynna</label>
                 <div className="composer-row">
                   <SlashCommandInput value={input} onChange={setInput} onCommand={runCommand}
-                    busy={pending || workflowRunning} />
+                    busy={pending || workflowRunning || deletingSession} />
                 </div>
                 <div className="composer-actions">
-                  {activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending}
+                  {activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
                     onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
-                  <Button disabled={pending || workflowRunning || !input.trim()} type="submit">
+                  <Button disabled={pending || workflowRunning || deletingSession || !input.trim()} type="submit">
                     {workflowRunning ? 'Use workflow steering above' : pending ? 'Working…' : 'Send'}
                   </Button>
                 </div>

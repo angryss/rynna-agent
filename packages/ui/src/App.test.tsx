@@ -1,10 +1,10 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
-import type { AgentClient, Profile } from './contracts';
-import { writeSessions } from './sessions';
+import type { AgentClient, Profile, WorkflowRun } from './contracts';
+import { deleteSession, readSessions, writeSessions, type Session } from './sessions';
 
 beforeEach(() => {
   const values = new Map<string, string>();
@@ -31,6 +31,26 @@ function testProfile(name: string, overrides: Partial<Profile> = {}): Profile {
     subagents: [],
     ...overrides,
   };
+}
+
+function savedSession(name: string, overrides: Partial<Session> = {}): Session {
+  return { id: name, name, profile: 'work', project: null, messages: [],
+    created_at: '2026-09-06T12:00:00.000Z', updated_at: '2026-09-06T12:00:00.000Z', ...overrides };
+}
+
+function workflowRun(session: string, status: WorkflowRun['status']): WorkflowRun {
+  return { id: `run-${session}`, status, cursor: 0, reason: null, revision: 1, uncertain: false,
+    workflow: { id: 'workflow', name: 'Test workflow', description: '', revision: 1, steps: [] },
+    start: { request_id: 'request', session_id: session, profile: 'work', project: null,
+      selection: { provider: 'fake', model: 'fake', thinking: 'default' }, workflow_id: 'workflow',
+      goal: 'Finish the task', criteria: [], limits: { steps: 50, tool_calls: 512, active_seconds: 1800 }, initial_context: '' },
+    consumed: { steps: 0, tool_calls: 0, active_seconds: 0 }, events: [], verification: null };
+}
+
+function workflowClient(overrides: Partial<AgentClient> = {}): AgentClient {
+  return { respond: vi.fn(), startWorkflow: vi.fn(), listWorkflowRuns: vi.fn().mockResolvedValue([]),
+    listWorkflows: vi.fn().mockResolvedValue([{ id: 'workflow', name: 'Test workflow', description: '', revision: 1, read_only: true }]),
+    listProfiles: vi.fn().mockResolvedValue({ default_profile: 'work', provider_ids: [], configured_profiles: [], profiles: [testProfile('work')] }), ...overrides };
 }
 
 describe('App', () => {
@@ -176,6 +196,176 @@ describe('App', () => {
         { role: 'assistant', content: 'The project is healthy.' },
       ],
     }), expect.any(Function));
+  });
+
+  it('confirms deletion, preserves other chats, and resets the active session in its project', async () => {
+    const respond = vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Done.' } });
+    const client: AgentClient = {
+      respond,
+      listProfiles: vi.fn().mockResolvedValue({
+        default_profile: 'work', provider_ids: [], configured_profiles: [],
+        profiles: [testProfile('work', { projects: [{ name: 'rynna', directories: ['/rynna'], default_directory: '/rynna' }] })],
+      }),
+    };
+    const user = userEvent.setup();
+    const rendered = render(<App client={client} />);
+    await user.click(await screen.findByRole('button', { name: 'rynna' }));
+    await user.type(screen.getByLabelText('Message Rynna'), 'First chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    const firstId = respond.mock.calls[0]![0].session_id;
+    await user.click(screen.getByRole('button', { name: 'New session' }));
+    await user.type(screen.getByLabelText('Message Rynna'), 'Second chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.click(screen.getByRole('button', { name: 'Delete session First chat' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(readSessions()).toHaveLength(2);
+    await user.click(screen.getByRole('button', { name: 'Delete session First chat' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(screen.queryByRole('button', { name: 'First chat' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Second chat' })).toHaveAttribute('aria-current', 'page');
+    await user.click(screen.getByRole('button', { name: 'Delete session Second chat' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(readSessions()).toEqual([]);
+    expect(within(screen.getByRole('log')).queryByText('Done.')).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Message Rynna'), 'Fresh chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(respond.mock.calls[2]![0]).toMatchObject({ project: 'rynna', history: [] });
+    expect(respond.mock.calls[2]![0].session_id).not.toBe(firstId);
+    rendered.unmount();
+    render(<App client={client} />);
+    expect(await screen.findByRole('button', { name: 'Fresh chat' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Second chat' })).not.toBeInTheDocument();
+  });
+
+  it.each(['resolve', 'reject'])('releases a remotely deleted request without letting its late %s unlock a new request', async (outcome) => {
+    let finish!: (value: { message: { role: 'assistant'; content: string } }) => void;
+    let fail!: (error: Error) => void;
+    let finishNew!: typeof finish;
+    const respond = vi.fn()
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: 'First answer' } })
+      .mockImplementationOnce(() => new Promise((resolve, reject) => { finish = resolve; fail = reject; }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishNew = resolve; }));
+    const user = userEvent.setup();
+    render(<App client={{ respond }} />);
+    await user.type(screen.getByLabelText('Message Rynna'), 'Saved chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.type(screen.getByLabelText('Message Rynna'), 'Continue');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(screen.getByRole('button', { name: 'Delete session Saved chat' })).toBeDisabled();
+    const id = readSessions()[0]!.id;
+    act(() => {
+      deleteSession(id, readSessions());
+      window.dispatchEvent(new StorageEvent('storage', { key: `rynna-deleted-session-v1:${id}`, newValue: 'true' }));
+    });
+    expect(screen.getByRole('button', { name: 'New session' })).toBeEnabled();
+    await user.type(screen.getByLabelText('Message Rynna'), 'Fresh request');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(respond).toHaveBeenCalledTimes(3);
+    expect(respond.mock.calls[2]![0]).toMatchObject({ prompt: 'Fresh request', history: [] });
+    expect(respond.mock.calls[2]![0].session_id).not.toBe(id);
+    await act(async () => {
+      if (outcome === 'resolve') finish({ message: { role: 'assistant', content: 'Late answer' } });
+      else fail(new Error('Late failure'));
+    });
+    expect(screen.getByRole('button', { name: 'Working…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'New session' })).toBeDisabled();
+    expect(screen.queryByText('Late answer')).not.toBeInTheDocument();
+    expect(screen.queryByText('Late failure')).not.toBeInTheDocument();
+    expect(screen.queryByText('First answer')).not.toBeInTheDocument();
+    expect(readSessions()).toEqual([]);
+    await act(async () => { finishNew({ message: { role: 'assistant', content: 'Fresh answer' } }); });
+    expect(screen.getByRole('button', { name: 'New session' })).toBeEnabled();
+    expect(readSessions().map(session => session.name)).toEqual(['Fresh request']);
+  });
+
+  it('deletes ordinary history even when workflow storage is unavailable', async () => {
+    writeSessions([savedSession('Ordinary chat', { profile: '' })]);
+    const listWorkflowRuns = vi.fn().mockRejectedValue(new Error('Workflow storage unavailable'));
+    const user = userEvent.setup();
+    render(<App client={{ respond: vi.fn(), listWorkflowRuns }} />);
+    await user.click(screen.getByRole('button', { name: 'Delete session Ordinary chat' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(readSessions()).toEqual([]);
+    expect(listWorkflowRuns).not.toHaveBeenCalled();
+  });
+
+  it('deletes unrelated ordinary and terminal sessions while the active workflow runs', async () => {
+    writeSessions([savedSession('Active', { workflow_id: 'workflow' }), savedSession('Ordinary'),
+      savedSession('Finished', { workflow_run_id: 'run-Finished' })]);
+    const client = workflowClient({ listWorkflowRuns: vi.fn(async (_profile, id) =>
+      id === 'Active' ? [workflowRun(id, 'running')] : id === 'Finished' ? [workflowRun(id, 'completed')] : []) });
+    const user = userEvent.setup();
+    render(<App client={client} />);
+    await user.click(await screen.findByRole('button', { name: 'Active' }));
+    await screen.findByRole('button', { name: 'Pause' });
+    for (const name of ['Ordinary', 'Finished']) {
+      await user.click(screen.getByRole('button', { name: `Delete session ${name}` }));
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+    expect(readSessions().map(session => session.id)).toEqual(['Active']);
+    expect(screen.getByRole('button', { name: 'Active' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
+  });
+
+  it('blocks workflow starts and slash commands during deletion validation', async () => {
+    writeSessions([savedSession('Workflow draft', { workflow_id: 'workflow' })]);
+    const client = workflowClient();
+    const user = userEvent.setup();
+    render(<App client={client} />);
+    await user.click(await screen.findByRole('button', { name: 'Workflow draft' }));
+    await user.type(await screen.findByLabelText('Goal'), 'Complete the task');
+    await user.type(screen.getByLabelText('Success criteria · one per line'), 'Tests pass');
+    let finish!: (runs: WorkflowRun[]) => void;
+    vi.mocked(client.listWorkflowRuns!).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await user.click(screen.getByRole('button', { name: 'Delete session Workflow draft' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    const start = screen.getByRole('button', { name: 'Start workflow' });
+    expect(start).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled();
+    fireEvent.submit(start.closest('form')!);
+    expect(client.startWorkflow).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText('Message Rynna'), '/new{Enter}');
+    expect(screen.getByRole('button', { name: 'Workflow draft' })).toHaveAttribute('aria-current', 'page');
+    await act(async () => { finish([]); });
+    expect(readSessions()).toEqual([]);
+  });
+
+  it('requires unfinished workflows to finish or cancel before session deletion', async () => {
+    const listWorkflowRuns = vi.fn().mockResolvedValue([{ status: 'paused' } as WorkflowRun]);
+    writeSessions([savedSession('Workflow chat', { profile: '', workflow_id: 'workflow' })]);
+    const user = userEvent.setup();
+    render(<App client={{
+      respond: vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Workflow history' } }),
+      listWorkflowRuns,
+    }} />);
+    const id = readSessions()[0]!.id;
+    await user.click(screen.getByRole('button', { name: 'Delete session Workflow chat' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(listWorkflowRuns).toHaveBeenCalledWith('', id);
+    expect(screen.getByRole('alert')).toHaveTextContent('Cancel or finish');
+    expect(readSessions()).toHaveLength(1);
+    listWorkflowRuns.mockRejectedValueOnce(new Error('Workflow storage unavailable'));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Workflow storage unavailable');
+    expect(readSessions()).toHaveLength(1);
+    listWorkflowRuns.mockResolvedValue([{ status: 'cancelled' } as WorkflowRun]);
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(readSessions()).toEqual([]);
+  });
+
+  it('keeps a session when persistent deletion fails', async () => {
+    const user = userEvent.setup();
+    render(<App client={{ respond: vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Kept answer' } }) }} />);
+    await user.type(screen.getByLabelText('Message Rynna'), 'Keep chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    const setter = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => { throw new Error('Storage full'); });
+    await user.click(screen.getByRole('button', { name: 'Delete session Keep chat' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Storage full');
+    expect(screen.getByRole('button', { name: 'Keep chat' })).toBeInTheDocument();
+    expect(readSessions()).toHaveLength(1);
+    setter.mockRestore();
   });
 
   it('keeps saved sessions accessible when their project is renamed', async () => {

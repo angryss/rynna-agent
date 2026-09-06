@@ -1,4 +1,5 @@
-import { Folder, MessageSquare, Plus } from 'lucide-react';
+import { useState } from 'react';
+import { Folder, MessageSquare, Plus, Trash2 } from 'lucide-react';
 
 import type { Project } from '../contracts';
 import type { Session } from '../sessions';
@@ -8,6 +9,7 @@ interface SessionSidebarProps {
   activeSessionId: string | null;
   disabled: boolean;
   onNewSession: () => void;
+  onDeleteSession: (session: Session) => Promise<boolean>;
   onSelectProject: (project?: string) => void;
   onSelectSession: (session: Session) => void;
   profile: string;
@@ -19,12 +21,14 @@ export function SessionSidebar({
   activeSessionId,
   disabled,
   onNewSession,
+  onDeleteSession,
   onSelectProject,
   onSelectSession,
   profile,
   projects,
   sessions,
 }: SessionSidebarProps) {
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const profileSessions = sessions
     .filter(session => session.profile === profile)
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
@@ -69,18 +73,41 @@ export function SessionSidebar({
                 <ul>
                   {groupSessions.map(session => (
                     <li key={session.id}>
-                      <button
-                        aria-label={session.name}
-                        aria-current={session.id === activeSessionId ? 'page' : undefined}
-                        disabled={disabled}
-                        onClick={() => onSelectSession(session)}
-                        title={session.name}
-                        type="button"
-                      >
-                        <MessageSquare aria-hidden="true" size={13} />
-                        <span>{session.name}</span>
-                        <time dateTime={session.updated_at}>{relativeTime(session.updated_at)}</time>
-                      </button>
+                      <div className="session-row">
+                        <button
+                          aria-label={session.name}
+                          aria-current={session.id === activeSessionId ? 'page' : undefined}
+                          disabled={disabled}
+                          onClick={() => onSelectSession(session)}
+                          title={session.name}
+                          type="button"
+                        >
+                          <MessageSquare aria-hidden="true" size={13} />
+                          <span>{session.name}</span>
+                          <time dateTime={session.updated_at}>{relativeTime(session.updated_at)}</time>
+                        </button>
+                        <button
+                          aria-label={`Delete session ${session.name}`}
+                          className="session-delete"
+                          disabled={disabled}
+                          onClick={() => setConfirmDelete(session.id)}
+                          title="Delete session"
+                          type="button"
+                        >
+                          <Trash2 aria-hidden="true" size={14} />
+                        </button>
+                      </div>
+                      {confirmDelete === session.id && (
+                        <div className="session-delete-confirm" role="group" aria-label={`Delete ${session.name}?`}>
+                          <p>Delete this session from saved history? This cannot be undone.</p>
+                          <div>
+                            <Button disabled={disabled} size="sm" type="button" variant="outline" onClick={() => setConfirmDelete(null)}>Cancel</Button>
+                            <Button disabled={disabled} size="sm" type="button" variant="destructive" onClick={async () => {
+                              if (await onDeleteSession(session)) setConfirmDelete(null);
+                            }}>Delete</Button>
+                          </div>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
