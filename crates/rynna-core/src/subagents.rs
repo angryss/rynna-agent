@@ -50,11 +50,13 @@ pub fn validate(subagents: &[Subagent]) -> Result<(), ProfileError> {
 pub(crate) fn delegation_tool(
     parent: &Agent,
     tools: &BTreeMap<String, Arc<dyn Tool>>,
+    tool_call_budget: Arc<AtomicUsize>,
 ) -> Arc<dyn Tool> {
     // Snapshot the selected provider, policy/project/skills, and already-discovered tools.
     // Constructing a fresh Agent leaves history, memory and further delegation disabled.
     let mut child = Agent::new(parent.provider.clone(), parent.system_prompt.clone());
     child.tools = Arc::new(tools.clone());
+    child.tool_call_budget = Some(tool_call_budget);
     Arc::new(Delegate {
         child,
         helpers: parent.subagents.clone(),

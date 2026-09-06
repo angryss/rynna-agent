@@ -830,6 +830,7 @@ pub use memory::{
 #[derive(Clone)]
 pub struct Agent {
     subagents: Arc<Vec<Subagent>>,
+    tool_call_budget: Option<Arc<AtomicUsize>>,
     tool_source: Option<Arc<dyn ToolSource>>,
     memory: Option<Arc<dyn MemoryProvider>>,
     memory_session: Option<uuid::Uuid>,
@@ -865,6 +866,7 @@ impl Agent {
             retention_queue: memory::RetentionQueue::default(),
             tool_source: None,
             subagents: Arc::new(Vec::new()),
+            tool_call_budget: None,
         }
     }
 
@@ -896,6 +898,7 @@ impl Agent {
             retention_queue: memory::RetentionQueue::default(),
             tool_source: None,
             subagents: Arc::new(Vec::new()),
+            tool_call_budget: None,
         })
     }
 
@@ -1023,6 +1026,8 @@ impl Agent {
         }
         messages.push(Message::user(input));
 
+        // Independent responses start fresh; delegated loops share this response budget.
+        let tool_call_budget = self.tool_call_budget.clone().unwrap_or_default();
         let mut available_tools = self.tools.as_ref().clone();
         if self.provider.supports_external_tools()
             && let Some(source) = &self.tool_source
@@ -1042,7 +1047,7 @@ impl Agent {
             }
         }
         if self.provider.supports_external_tools() && !self.subagents.is_empty() {
-            let tool = subagents::delegation_tool(self, &available_tools);
+            let tool = subagents::delegation_tool(self, &available_tools, tool_call_budget.clone());
             let name = tool.definition().name;
             if available_tools.insert(name.clone(), tool).is_some() {
                 return Err(AgentError::DuplicateTool(name));
@@ -1166,9 +1171,12 @@ impl Agent {
             if turn + 1 == MAX_MODEL_TURNS {
                 return Err(AgentError::ToolLoopLimit(MAX_MODEL_TURNS));
             }
-            if tool_calls_used + completion.message.tool_calls.len() > MAX_TOOL_CALLS {
-                return Err(AgentError::ToolCallLimit(MAX_TOOL_CALLS));
-            }
+            tool_call_budget
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                    used.checked_add(completion.message.tool_calls.len())
+                        .filter(|total| *total <= MAX_TOOL_CALLS)
+                })
+                .map_err(|_| AgentError::ToolCallLimit(MAX_TOOL_CALLS))?;
             tool_calls_used += completion.message.tool_calls.len();
 
             let tool_calls = completion.message.tool_calls.clone();

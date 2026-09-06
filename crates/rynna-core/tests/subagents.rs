@@ -350,3 +350,72 @@ async fn helpers_use_the_request_selected_model_without_memory_hooks() {
     assert_eq!(memory.recalls.load(Ordering::SeqCst), 1);
     assert_eq!(memory.retains.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn parent_and_helpers_share_one_tool_call_budget_per_response() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct SideEffect(Arc<AtomicUsize>);
+    #[async_trait]
+    impl Tool for SideEffect {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition::new(
+                "side_effect",
+                "Count an operation",
+                json!({"type":"object"}),
+            )
+        }
+        async fn execute(&self, _: Value) -> Result<Value, ToolError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({"done":true}))
+        }
+    }
+    struct ManyCalls(usize);
+    #[async_trait]
+    impl ModelProvider for ManyCalls {
+        async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
+            let child = request.messages[0].content.contains("Subagent role:");
+            if request.messages.last().unwrap().role == rynna_core::Role::Tool {
+                return Ok(Completion::new(Message::assistant(
+                    request.messages.last().unwrap().content.clone(),
+                )));
+            }
+            let calls = if child {
+                (0..self.0)
+                    .map(|i| ToolCall::new(format!("effect-{i}"), "side_effect", json!({})))
+                    .collect()
+            } else {
+                (0..2)
+                    .map(|i| {
+                        ToolCall::new(
+                            format!("delegate-{i}"),
+                            "delegate_task",
+                            json!({"subagent":"reviewer","task":"Perform operations"}),
+                        )
+                    })
+                    .collect()
+            };
+            Ok(Completion::with_tool_calls(calls))
+        }
+    }
+    for (calls_per_child, expected_effects) in [(31, 62), (32, 32)] {
+        let effects = Arc::new(AtomicUsize::new(0));
+        let agent = Agent::with_tools(
+            Arc::new(ManyCalls(calls_per_child)),
+            "policy",
+            vec![Arc::new(SideEffect(effects.clone()))],
+        )
+        .unwrap();
+        let profiles =
+            AgentProfiles::new("work", [(profile("work", vec![helper("reviewer")]), agent)])
+                .unwrap();
+        // Reusing the runtime must give the next independent response a fresh budget.
+        for response in 1..=2 {
+            let reply = profiles.respond(None, &[], "Delegate twice").await.unwrap();
+            assert_eq!(effects.load(Ordering::SeqCst), expected_effects * response);
+            assert_eq!(
+                reply.content.contains("maximum of 64 tool calls"),
+                calls_per_child == 32
+            );
+        }
+    }
+}
