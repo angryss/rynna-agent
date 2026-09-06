@@ -132,8 +132,6 @@ select:disabled { opacity: .5; }
 }
 .account-panel input { max-width: 18rem; }
 .profile-summary { justify-content: flex-start; }
-.profile-summary strong { color: hsl(var(--primary)); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem; }
-.profile-provider-summary { display: inline-flex; align-items: center; gap: .45rem; }
 
 .chat-workspace { display: grid; grid-template-columns: minmax(14rem, 17rem) minmax(0, 1fr); min-height: 0; }
 .chat-main { min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
@@ -143,7 +141,10 @@ select:disabled { opacity: .5; }
 .session-sidebar-heading button { color: hsl(var(--muted-foreground)); }
 .session-sidebar nav { display: grid; gap: 1rem; }
 .session-project { min-width: 0; }
-.session-project h3 { display: flex; align-items: center; gap: .45rem; margin: 0 0 .3rem; padding: 0 .45rem; color: hsl(var(--foreground)); font-size: .8rem; font-weight: 590; }
+.session-project h3 { margin: 0 0 .3rem; padding: 0 .45rem; color: hsl(var(--foreground)); font-size: .8rem; font-weight: 590; }
+.session-project h3 button { display: flex; align-items: center; gap: .45rem; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.session-project h3 button:disabled { cursor: default; opacity: .5; }
+.session-project h3 button:hover:not(:disabled) { color: hsl(var(--primary)); }
 .session-project h3 svg { flex-shrink: 0; color: hsl(var(--muted-foreground)); }
 .session-project > p { margin: .35rem .45rem 0; color: hsl(var(--muted-foreground)); font-size: .75rem; }
 .session-project ul { display: grid; gap: .15rem; margin: 0; padding: 0; list-style: none; }

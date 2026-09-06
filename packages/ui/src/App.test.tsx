@@ -106,8 +106,8 @@ describe('App', () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await screen.findByRole('combobox', { name: 'Project' });
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), 'rynna');
+    await user.click(await screen.findByRole('button', { name: 'rynna' }));
+    expect(screen.queryByRole('combobox', { name: 'Project' })).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Message Rynna'), 'Inspect it');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -117,7 +117,7 @@ describe('App', () => {
     }), expect.any(Function));
     const firstSession = respond.mock.calls[0]![0].session_id;
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), '');
+    await user.click(screen.getByRole('button', { name: 'Default project' }));
     await user.type(screen.getByLabelText('Message Rynna'), 'Start over');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(respond.mock.calls[1]![0]).not.toHaveProperty('project');
@@ -147,14 +147,14 @@ describe('App', () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await screen.findByRole('combobox', { name: 'Project' });
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), 'rynna');
+    await user.click(await screen.findByRole('button', { name: 'rynna' }));
+    expect(screen.queryByRole('combobox', { name: 'Project' })).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Message Rynna'), 'Review Rynna changes');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(await screen.findByRole('button', { name: 'Review Rynna changes' })).toHaveAttribute('aria-current', 'page');
     const firstSession = respond.mock.calls[0]![0].session_id;
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), '');
+    await user.click(screen.getByRole('button', { name: 'Default project' }));
     expect(screen.queryByText('The project is healthy.')).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Message Rynna'), 'Plan something else');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -163,7 +163,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Review Rynna changes' }));
     expect(screen.getByText('The project is healthy.')).toBeInTheDocument();
     expect(screen.queryByText('A fresh answer.')).not.toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Project' })).toHaveValue('rynna');
+    expect(within(screen.getByRole('complementary', { name: 'Active profile' })).getByText('rynna · /projects/rynna')).toBeInTheDocument();
 
     await user.type(screen.getByLabelText('Message Rynna'), 'Continue the review');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -216,7 +216,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Back to chat' }));
 
     await user.click(screen.getByRole('button', { name: 'Review the project' }));
-    expect(screen.getByRole('combobox', { name: 'Project' })).toHaveValue('new-name');
+    expect(within(screen.getByRole('complementary', { name: 'Active profile' })).getByText('new-name · /projects/rynna')).toBeInTheDocument();
     expect(within(screen.getByRole('log')).getByText('Review the project')).toBeInTheDocument();
   });
 
@@ -1283,7 +1283,7 @@ describe('App', () => {
     expect(within(chatModels).queryByRole('button', { name: 'qwen3:14b' })).not.toBeInTheDocument();
     await user.keyboard('{Escape}');
     const runtimeSummary = screen.getByRole('complementary', { name: 'Active profile' });
-    expect(within(runtimeSummary).getByText('qwen3:8b')).toBeInTheDocument();
+    expect(within(runtimeSummary).queryByText('qwen3:8b')).not.toBeInTheDocument();
     expect(within(runtimeSummary).queryByText('qwen3:14b')).not.toBeInTheDocument();
   });
 

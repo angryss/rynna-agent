@@ -769,23 +769,6 @@ export function App({ client }: AppProps) {
               />
             </label>
           ) : null}
-          {view === 'chat' && activeProfile ? (
-            <label className="profile-picker" htmlFor="project">
-              <span>Project</span>
-              <select
-                disabled={pending}
-                id="project"
-                onChange={(event) => {
-                  const name = event.target.value || undefined;
-                  startNewSession(name);
-                }}
-                value={project ?? ''}
-              >
-                <option value="">Default project</option>
-                {activeProfile.projects.map(candidate => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}
-              </select>
-            </label>
-          ) : null}
           {client.connectOpenAi ? (
             <Button
               className="account-button"
@@ -857,6 +840,7 @@ export function App({ client }: AppProps) {
             activeSessionId={activeSessionId}
             disabled={pending}
             onNewSession={() => startNewSession(project)}
+            onSelectProject={startNewSession}
             onSelectSession={selectSession}
             profile={selectedProfile ?? ''}
             projects={activeProfile?.projects ?? []}
@@ -865,12 +849,6 @@ export function App({ client }: AppProps) {
           <div className="chat-main">
             {activeProfile ? (
               <aside className="profile-summary" aria-label="Active profile">
-                {activeProfile.providers.filter((provider) => provider.enabled !== false).map((provider, index) => (
-                  <span className="profile-provider-summary" key={`${provider.provider}-${provider.model}-${index}`}>
-                    <strong>{provider.model}</strong>
-                    <Badge>{provider.provider}</Badge>
-                  </span>
-                ))}
                 {activeProfile.active_skills.map((skill) => (
                   <Badge key={`skill-${skill}`}>{skill} skill</Badge>
                 ))}
