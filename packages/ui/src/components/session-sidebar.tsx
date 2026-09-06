@@ -8,6 +8,7 @@ interface SessionSidebarProps {
   activeSessionId: string | null;
   disabled: boolean;
   onNewSession: () => void;
+  onSelectProject: (project?: string) => void;
   onSelectSession: (session: Session) => void;
   profile: string;
   projects: Project[];
@@ -18,6 +19,7 @@ export function SessionSidebar({
   activeSessionId,
   disabled,
   onNewSession,
+  onSelectProject,
   onSelectSession,
   profile,
   projects,
@@ -54,7 +56,15 @@ export function SessionSidebar({
           const groupSessions = profileSessions.filter(session => session.project === group.project);
           return (
             <section className="session-project" key={group.project ?? 'default'}>
-              <h3><Folder aria-hidden="true" size={15} />{group.name}</h3>
+              <h3>
+                <button
+                  disabled={disabled}
+                  onClick={() => onSelectProject(group.project ?? undefined)}
+                  type="button"
+                >
+                  <Folder aria-hidden="true" size={15} />{group.name}
+                </button>
+              </h3>
               {groupSessions.length > 0 ? (
                 <ul>
                   {groupSessions.map(session => (
