@@ -36,6 +36,7 @@ fn app(path: &std::path::Path, model: Arc<Model>) -> Router {
         capabilities: vec![],
         default_project_directory: ".".into(),
         projects: vec![],
+        subagents: Vec::new(),
     };
     let profiles = AgentProfiles::new(
         "test",

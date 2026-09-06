@@ -78,6 +78,7 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
             capabilities: Vec::new(),
             default_project_directory: ".".into(),
             projects: Vec::new(),
+            subagents: Vec::new(),
         },
         Agent::new(Arc::new(FixedProvider(reply)), "Desktop policy"),
     )
@@ -191,6 +192,7 @@ model = "qwen3:14b"
         capabilities: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
+        subagents: Vec::new(),
     };
 
     create_saved_profile(&mut catalog, &mut runtime, new_profile.clone()).unwrap();
@@ -336,6 +338,7 @@ async fn desktop_non_streaming_response_releases_profiles_lock_while_provider_is
         capabilities: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
+        subagents: Vec::new(),
     };
     let profiles = Arc::new(AsyncMutex::new(
         AgentProfiles::new(
@@ -405,6 +408,7 @@ async fn desktop_stream_command_forwards_typed_deltas() {
         capabilities: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
+        subagents: Vec::new(),
     };
     let profiles = AgentProfiles::new(
         "local",
@@ -1034,4 +1038,47 @@ async fn desktop_response_modes_apply_and_validate_model_selection() {
         profiles.respond(None, &[], "hello").await.unwrap().content,
         "default"
     );
+}
+
+#[tokio::test]
+async fn saved_subagents_update_only_their_desktop_runtime_profile() {
+    let mut catalog = ProfileCatalog::built_in();
+    let mut work = catalog.resolve("default").unwrap().profile;
+    work.name = "work".into();
+    catalog.add_profile(work.clone()).unwrap();
+    let provider = Arc::new(RecordingProvider::default());
+    let mut runtime = AgentProfiles::new(
+        "default",
+        catalog
+            .resolve_all()
+            .unwrap()
+            .into_iter()
+            .map(|resolved| (resolved.profile, Agent::new(provider.clone(), "policy"))),
+    )
+    .unwrap();
+    work.subagents = vec![rynna_core::Subagent {
+        name: "reviewer".into(),
+        description: "Review code".into(),
+        instructions: "Find bugs".into(),
+    }];
+    update_saved_profile(&mut catalog, &mut runtime, None, "work", work.clone()).unwrap();
+    runtime.respond(Some("work"), &[], "Hello").await.unwrap();
+    runtime
+        .respond(Some("default"), &[], "Hello")
+        .await
+        .unwrap();
+    {
+        let requests = provider.requests.lock().unwrap();
+        assert!(
+            requests[0]
+                .tools
+                .iter()
+                .any(|tool| tool.name == "delegate_task")
+        );
+        assert!(requests[1].tools.is_empty());
+    }
+    work.subagents.clear();
+    update_saved_profile(&mut catalog, &mut runtime, None, "work", work).unwrap();
+    runtime.respond(Some("work"), &[], "Hello").await.unwrap();
+    assert!(provider.requests.lock().unwrap()[2].tools.is_empty());
 }

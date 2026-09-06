@@ -233,6 +233,25 @@ For example, a macOS profile can map `uname` to `/usr/bin/uname` and `sw_vers` t
 
 Skills load through the profile-scoped `read_skill` tool; legacy catalog MCP names remain metadata. Executable MCP servers are configured independently for each profile in Settings → MCP servers (see below); listing a legacy activation name does not execute it.
 
+## Profile-specific subagents
+
+In **Settings → Subagents**, select a profile and add helpers with a name, a description of when to use them, and instructions. Each profile owns an independent list; the same helper name can have different instructions in different profiles. Renaming or deleting a profile carries or removes its saved list.
+
+The parent model can call `delegate_task` with `subagent` and `task`. Each call runs a fresh helper conversation and returns its final answer to the parent. Helpers inherit the current model selection, profile policy and skills, selected project context, and permitted native/MCP tools. Include necessary context in the delegated task: earlier chat history and recalled memory are not copied, and helper exchanges are not retained to memory. Helpers share tool access, so they can modify the same permitted files as the parent.
+
+Delegation is one level deep and sequential; helpers cannot delegate to other helpers. Each helper uses the existing bounded model/tool loop, and the parent's 300-second aggregate deadline covers delegated work. Providers that disable external tools, including subscription adapters, do not expose delegation.
+
+Subagents are saved inline in `config.toml` and are available across CLI, HTTP and desktop:
+
+```toml
+[[profiles.local.subagents]]
+name = "reviewer"
+description = "Review code changes for correctness and missing tests."
+instructions = "Inspect the requested changes. Report actionable issues with file references and suggested fixes."
+```
+
+Names must be unique within a profile and contain 1–64 ASCII letters, digits, underscores or hyphens. A profile supports up to 32 helpers; descriptions and instructions are required and limited to 1024 and 32000 UTF-8 bytes. Delegated tasks are limited to 32000 bytes. Omitted lists default to empty. Settings saves apply on the next request for an already-running profile; manual file edits and newly created or renamed profiles follow the existing restart lifecycle.
+
 ## HTTP API
 
 `GET /v1/profiles` returns the process default, safe catalog provider identifiers, and safe profile metadata. It never returns API keys, API-key environment-variable names, provider base URLs, system prompts, or MCP command definitions. `POST /v1/profiles` and `PUT`/`DELETE /v1/profiles/{name}` add, update, and delete catalog profiles for loopback clients. Profile mutations persist to `config.toml`, but they never attach an existing runtime agent to changed metadata: metadata for currently running profiles remains the startup snapshot, while new catalog-only profiles have no runtime agent. Restart the process before using a new or renamed profile or relying on changed providers, models, prompts, skills, or capabilities.

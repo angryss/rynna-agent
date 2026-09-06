@@ -1,0 +1,352 @@
+use async_trait::async_trait;
+use rynna_core::{
+    Agent, AgentProfiles, Completion, CompletionDelta, CompletionRequest, Message, ModelProvider,
+    Profile, ProviderError, Subagent, Tool, ToolCall, ToolDefinition, ToolError, ToolSource,
+};
+use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
+
+struct Provider {
+    requests: Mutex<Vec<CompletionRequest>>,
+    arguments: Value,
+    tools_supported: bool,
+    fail_child: bool,
+    stall_child: bool,
+}
+
+#[async_trait]
+impl ModelProvider for Provider {
+    fn supports_external_tools(&self) -> bool {
+        self.tools_supported
+    }
+    async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
+        self.requests.lock().unwrap().push(request.clone());
+        let child = request.messages[0].content.contains("Subagent role:");
+        if child {
+            if self.stall_child {
+                std::future::pending::<()>().await;
+            }
+            if self.fail_child {
+                return Err(ProviderError::new("child failed"));
+            }
+            if request.messages.len() == 2 {
+                return Ok(Completion::with_tool_calls(vec![ToolCall::new(
+                    "read",
+                    "read_file",
+                    json!({}),
+                )]));
+            }
+            return Ok(Completion::new(Message::assistant("child findings")));
+        }
+        if request.messages.last().unwrap().role == rynna_core::Role::Tool {
+            return Ok(Completion::new(Message::assistant(
+                request.messages.last().unwrap().content.clone(),
+            )));
+        }
+        if request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "delegate_task")
+        {
+            return Ok(Completion::with_tool_calls(vec![ToolCall::new(
+                "delegate",
+                "delegate_task",
+                self.arguments.clone(),
+            )]));
+        }
+        Ok(Completion::new(Message::assistant("no delegation")))
+    }
+}
+
+struct ReadFile;
+#[async_trait]
+impl Tool for ReadFile {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new("read_file", "Permitted file read", json!({"type":"object"}))
+    }
+    async fn execute(&self, _: Value) -> Result<Value, ToolError> {
+        Ok(json!({"file":"permitted contents"}))
+    }
+}
+
+struct Source;
+#[async_trait]
+impl ToolSource for Source {
+    async fn discover(&self) -> Result<Vec<Arc<dyn Tool>>, ToolError> {
+        Ok(vec![Arc::new(ReadFile)])
+    }
+}
+
+fn helper(name: &str) -> Subagent {
+    Subagent {
+        name: name.into(),
+        description: "Review requested code".into(),
+        instructions: "Report actionable issues".into(),
+    }
+}
+fn profile(name: &str, subagents: Vec<Subagent>) -> Profile {
+    serde_json::from_value(json!({"name":name,"providers":[],"subagents":subagents})).unwrap()
+}
+fn provider(arguments: Value) -> Provider {
+    Provider {
+        requests: Mutex::new(vec![]),
+        arguments,
+        tools_supported: true,
+        fail_child: false,
+        stall_child: false,
+    }
+}
+fn profiles(provider: Arc<Provider>) -> AgentProfiles {
+    let mut result = AgentProfiles::new(
+        "work",
+        [
+            (
+                profile("work", vec![helper("reviewer")]),
+                Agent::new(provider.clone(), "Parent policy"),
+            ),
+            (
+                profile("personal", vec![helper("writer")]),
+                Agent::new(provider, "Personal policy"),
+            ),
+        ],
+    )
+    .unwrap();
+    result
+        .set_tool_source("work", Some(Arc::new(Source)))
+        .unwrap();
+    result
+        .set_project_configuration("work", "/work/project".into(), vec![])
+        .unwrap();
+    result
+}
+
+#[tokio::test]
+async fn delegation_inherits_project_and_tools_but_not_history_or_recursive_delegation() {
+    for stream in [false, true] {
+        let provider = Arc::new(provider(
+            json!({"subagent":"reviewer","task":"Review the change"}),
+        ));
+        let profiles = profiles(provider.clone())
+            .with_project(Some("work"), None)
+            .unwrap();
+        let agent = profiles.clone_agent("work").unwrap();
+        let history = [Message::user("private earlier context")];
+        let reply = if stream {
+            agent
+                .respond_stream(&history, "delegate", &mut |_: &CompletionDelta| {})
+                .await
+        } else {
+            agent.respond(&history, "delegate").await
+        }
+        .unwrap();
+        assert!(reply.content.contains("child findings"));
+        let requests = provider.requests.lock().unwrap();
+        let parent = &requests[0];
+        assert_eq!(
+            parent
+                .tools
+                .iter()
+                .find(|t| t.name == "delegate_task")
+                .unwrap()
+                .input_schema["properties"]["subagent"]["enum"],
+            json!(["reviewer"])
+        );
+        let child = &requests[1];
+        assert_eq!(child.messages.len(), 2);
+        assert!(child.messages[0].content.contains("Parent policy"));
+        assert!(child.messages[0].content.contains("/work/project"));
+        assert!(
+            child.messages[0]
+                .content
+                .contains("Report actionable issues")
+        );
+        assert_eq!(child.messages[1].content, "Review the change");
+        assert_eq!(
+            child
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read_file"]
+        );
+        assert!(
+            requests[2]
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains("permitted contents")
+        );
+    }
+}
+
+#[tokio::test]
+async fn rejects_other_profiles_helpers_and_invalid_arguments_without_starting_a_child() {
+    for args in [
+        json!({"subagent":"writer","task":"work"}),
+        json!({"subagent":"reviewer","task":" "}),
+        json!({"subagent":"reviewer","task":"work","profile":"personal"}),
+    ] {
+        let provider = Arc::new(provider(args));
+        let reply = profiles(provider.clone())
+            .respond(None, &[], "delegate")
+            .await
+            .unwrap();
+        assert!(reply.content.contains("error"));
+        assert_eq!(provider.requests.lock().unwrap().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn updates_are_profile_scoped_and_inflight_snapshots_keep_their_helpers() {
+    let provider = Arc::new(provider(json!({"subagent":"reviewer","task":"work"})));
+    let mut profiles = profiles(provider.clone());
+    let before = profiles.clone();
+    profiles.set_subagents("work", vec![]).unwrap();
+    assert_eq!(
+        profiles
+            .respond(Some("work"), &[], "delegate")
+            .await
+            .unwrap()
+            .content,
+        "no delegation"
+    );
+    assert!(
+        before
+            .respond(Some("work"), &[], "delegate")
+            .await
+            .unwrap()
+            .content
+            .contains("child findings")
+    );
+    assert!(
+        profiles
+            .profiles()
+            .iter()
+            .find(|p| p.name == "personal")
+            .unwrap()
+            .subagents
+            .iter()
+            .any(|s| s.name == "writer")
+    );
+    assert!(profiles.set_subagents("missing", vec![]).is_err());
+    assert!(
+        profiles
+            .set_subagents("work", vec![helper("same"), helper("same")])
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn providers_without_tool_support_do_not_receive_subagents() {
+    let mut provider = provider(json!({"subagent":"reviewer","task":"work"}));
+    provider.tools_supported = false;
+    let provider = Arc::new(provider);
+    assert_eq!(
+        profiles(provider.clone())
+            .respond(None, &[], "hello")
+            .await
+            .unwrap()
+            .content,
+        "no delegation"
+    );
+    assert!(provider.requests.lock().unwrap()[0].tools.is_empty());
+}
+
+#[tokio::test]
+async fn child_errors_return_to_the_parent_as_tool_errors() {
+    let mut provider = provider(json!({"subagent":"reviewer","task":"work"}));
+    provider.fail_child = true;
+    let reply = profiles(Arc::new(provider))
+        .respond(None, &[], "hello")
+        .await
+        .unwrap();
+    assert!(reply.content.contains("child failed"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn parent_deadline_bounds_child_execution() {
+    let mut provider = provider(json!({"subagent":"reviewer","task":"work"}));
+    provider.stall_child = true;
+    let start = tokio::time::Instant::now();
+    let result = profiles(Arc::new(provider))
+        .respond(None, &[], "hello")
+        .await;
+    let text = match result {
+        Ok(reply) => reply.content,
+        Err(error) => error.to_string(),
+    };
+    assert!(text.contains("deadline"));
+    assert!(start.elapsed() <= std::time::Duration::from_secs(300));
+}
+
+#[tokio::test]
+async fn helpers_use_the_request_selected_model_without_memory_hooks() {
+    use rynna_core::{
+        MemoryConversation, MemoryError, MemoryProvider, ModelSelection, ProfileProvider,
+        ThinkingLevel,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Default)]
+    struct Memory {
+        recalls: AtomicUsize,
+        retains: AtomicUsize,
+    }
+    #[async_trait]
+    impl MemoryProvider for Memory {
+        async fn recall(&self, _: &str) -> Result<Vec<String>, MemoryError> {
+            self.recalls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec!["private recalled fact".into()])
+        }
+        async fn retain(&self, _: &MemoryConversation) -> Result<(), MemoryError> {
+            self.retains.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    let default = Arc::new(provider(json!({})));
+    let selected = Arc::new(provider(json!({"subagent":"reviewer","task":"Review"})));
+    let model = ProfileProvider {
+        provider: "local".into(),
+        model: "chosen".into(),
+        enabled: true,
+        is_default: true,
+    };
+    let mut metadata = profile("work", vec![helper("reviewer")]);
+    metadata.providers = vec![model.clone()];
+    let memory = Arc::new(Memory::default());
+    let agent = Agent::new(default.clone(), "policy")
+        .with_model_options(vec![(model, selected.clone())])
+        .with_memory_provider(Some(memory.clone()));
+    let profiles = AgentProfiles::new("work", [(metadata, agent)])
+        .unwrap()
+        .with_model_selection(
+            None,
+            Some(&ModelSelection {
+                provider: "local".into(),
+                model: "chosen".into(),
+                thinking: ThinkingLevel::Default,
+            }),
+        )
+        .unwrap();
+    profiles.respond(None, &[], "Delegate").await.unwrap();
+    rynna_core::flush_memory_writes().await;
+    assert!(default.requests.lock().unwrap().is_empty());
+    let requests = selected.requests.lock().unwrap();
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("private recalled fact"))
+    );
+    assert!(
+        requests
+            .iter()
+            .filter(|request| request.messages[0].content.contains("Subagent role:"))
+            .all(|request| !request
+                .messages
+                .iter()
+                .any(|message| message.content.contains("private recalled fact")))
+    );
+    assert_eq!(memory.recalls.load(Ordering::SeqCst), 1);
+    assert_eq!(memory.retains.load(Ordering::SeqCst), 1);
+}

@@ -53,6 +53,7 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
             capabilities: Vec::new(),
             default_project_directory: ".".into(),
             projects: Vec::new(),
+            subagents: Vec::new(),
         },
         Agent::new(Arc::new(FixedProvider(reply)), "Profile policy"),
     )

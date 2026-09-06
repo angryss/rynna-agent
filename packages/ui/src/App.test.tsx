@@ -28,6 +28,7 @@ function testProfile(name: string, overrides: Partial<Profile> = {}): Profile {
     capabilities: [],
     default_project_directory: '.',
     projects: [],
+    subagents: [],
     ...overrides,
   };
 }
@@ -368,6 +369,7 @@ describe('App', () => {
             capabilities: ['workspace'],
             default_project_directory: '.',
             projects: [],
+            subagents: [],
           },
           {
             name: 'work',
@@ -377,6 +379,7 @@ describe('App', () => {
             capabilities: [],
             default_project_directory: '.',
             projects: [],
+            subagents: [],
           },
         ],
         configured_profiles: [
@@ -388,6 +391,7 @@ describe('App', () => {
             capabilities: ['workspace'],
             default_project_directory: '.',
             projects: [],
+            subagents: [],
           },
           {
             name: 'work',
@@ -397,6 +401,7 @@ describe('App', () => {
             capabilities: [],
             default_project_directory: '.',
             projects: [],
+            subagents: [],
           },
         ],
       }),
@@ -1474,6 +1479,7 @@ describe('App', () => {
       capabilities: [],
       default_project_directory: '.',
       projects: [],
+      subagents: [],
     });
     expect(await screen.findByRole('combobox', { name: 'Profile' })).toHaveValue('work');
 
@@ -1489,6 +1495,7 @@ describe('App', () => {
       capabilities: [],
       default_project_directory: '.',
       projects: [],
+      subagents: [],
     });
 
     await user.click(screen.getByRole('button', { name: 'Delete profile' }));

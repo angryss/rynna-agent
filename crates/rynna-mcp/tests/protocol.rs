@@ -111,6 +111,7 @@ fn profile(name: &str) -> Profile {
         capabilities: vec![],
         default_project_directory: ".".into(),
         projects: vec![],
+        subagents: Vec::new(),
     }
 }
 

@@ -1142,6 +1142,7 @@ fn editable_profile(name: &str, model: &str) -> Profile {
         capabilities: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
+        subagents: Vec::new(),
     }
 }
 
@@ -1656,4 +1657,122 @@ fn mlx_settings_validate_urls_and_persist_per_profile() {
     let reloaded = ProviderSettingsStore::load(&path).unwrap();
     assert_eq!(reloaded.list("local"), vec![provider]);
     assert!(reloaded.list("other").is_empty());
+}
+
+#[test]
+fn subagents_persist_per_profile_and_follow_profile_lifecycle() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"version = 1
+default_profile = "default"
+[providers.ollama]
+kind = "openai-compatible"
+api_base = "http://127.0.0.1:11434/v1"
+[profiles.default]
+provider = "ollama"
+model = "qwen3:8b"
+"#,
+    )
+    .unwrap();
+    let mut catalog = ProfileCatalog::load(&path).unwrap();
+    let mut work = editable_profile("work", "qwen3:8b");
+    work.subagents = vec![rynna_core::Subagent {
+        name: "reviewer".into(),
+        description: "Review code".into(),
+        instructions: "Find bugs".into(),
+    }];
+    catalog.add_profile(work.clone()).unwrap();
+    let mut personal = work.clone();
+    personal.name = "personal".into();
+    personal.subagents[0].instructions = "Review prose".into();
+    catalog.add_profile(personal).unwrap();
+    let mut reloaded = ProfileCatalog::load(&path).unwrap();
+    assert!(
+        reloaded
+            .resolve("default")
+            .unwrap()
+            .profile
+            .subagents
+            .is_empty()
+    );
+    assert_eq!(
+        reloaded.resolve("work").unwrap().profile.subagents[0].instructions,
+        "Find bugs"
+    );
+    assert_eq!(
+        reloaded.resolve("personal").unwrap().profile.subagents[0].instructions,
+        "Review prose"
+    );
+    work.name = "renamed".into();
+    reloaded.update_profile("work", work.clone()).unwrap();
+    assert!(reloaded.resolve("work").is_err());
+    assert_eq!(
+        reloaded.resolve("renamed").unwrap().profile.subagents,
+        work.subagents
+    );
+    reloaded.delete_profile("renamed").unwrap();
+    let reloaded = ProfileCatalog::load(&path).unwrap();
+    assert!(reloaded.resolve("renamed").is_err());
+    assert_eq!(
+        reloaded.resolve("personal").unwrap().profile.subagents[0].instructions,
+        "Review prose"
+    );
+}
+
+#[test]
+fn invalid_subagents_do_not_modify_the_saved_catalog() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"version = 1
+default_profile = "default"
+[providers.ollama]
+kind = "openai-compatible"
+api_base = "http://127.0.0.1:11434/v1"
+[profiles.default]
+provider = "ollama"
+model = "qwen3:8b"
+"#,
+    )
+    .unwrap();
+    let mut catalog = ProfileCatalog::load(&path).unwrap();
+    let mut work = editable_profile("work", "qwen3:8b");
+    catalog.add_profile(work.clone()).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let helper = rynna_core::Subagent {
+        name: "reviewer".into(),
+        description: "Review code".into(),
+        instructions: "Find bugs".into(),
+    };
+    for helpers in [
+        vec![helper.clone(), helper.clone()],
+        vec![rynna_core::Subagent {
+            name: "bad name".into(),
+            ..helper.clone()
+        }],
+        vec![rynna_core::Subagent {
+            instructions: " ".into(),
+            ..helper.clone()
+        }],
+        vec![rynna_core::Subagent {
+            description: "x".repeat(1025),
+            ..helper.clone()
+        }],
+        vec![helper; 33],
+    ] {
+        work.subagents = helpers;
+        assert!(catalog.update_profile("work", work.clone()).is_err());
+        assert!(
+            catalog
+                .resolve("work")
+                .unwrap()
+                .profile
+                .subagents
+                .is_empty()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
 }

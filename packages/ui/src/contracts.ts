@@ -45,6 +45,13 @@ export interface Profile {
   capabilities: string[];
   default_project_directory: string;
   projects: Project[];
+  subagents: Subagent[];
+}
+
+export interface Subagent {
+  name: string;
+  description: string;
+  instructions: string;
 }
 
 export interface Project {

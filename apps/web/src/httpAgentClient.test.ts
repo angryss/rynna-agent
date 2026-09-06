@@ -120,6 +120,7 @@ describe('HttpAgentClient', () => {
               capabilities: ['workspace'],
               default_project_directory: '.',
               projects: [],
+              subagents: [],
             },
           ],
           configured_profiles: [
@@ -134,6 +135,7 @@ describe('HttpAgentClient', () => {
               capabilities: ['workspace'],
               default_project_directory: '.',
               projects: [],
+              subagents: [],
             },
           ],
         }),
@@ -185,6 +187,7 @@ describe('HttpAgentClient', () => {
       capabilities: [],
       default_project_directory: '.',
       projects: [],
+      subagents: [{ name: 'reviewer', description: 'Review code', instructions: 'Find bugs' }],
     };
     const fetcher = vi
       .fn()

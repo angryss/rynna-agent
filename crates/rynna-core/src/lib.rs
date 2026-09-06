@@ -819,6 +819,9 @@ impl ManagedContextStore {
     }
 }
 
+pub mod subagents;
+pub use subagents::Subagent;
+
 pub mod memory;
 pub use memory::{
     MemoryConversation, MemoryError, MemoryMessage, MemoryProvider, flush_memory_writes,
@@ -826,6 +829,7 @@ pub use memory::{
 
 #[derive(Clone)]
 pub struct Agent {
+    subagents: Arc<Vec<Subagent>>,
     tool_source: Option<Arc<dyn ToolSource>>,
     memory: Option<Arc<dyn MemoryProvider>>,
     memory_session: Option<uuid::Uuid>,
@@ -860,6 +864,7 @@ impl Agent {
             memory_session: None,
             retention_queue: memory::RetentionQueue::default(),
             tool_source: None,
+            subagents: Arc::new(Vec::new()),
         }
     }
 
@@ -890,6 +895,7 @@ impl Agent {
             memory_session: None,
             retention_queue: memory::RetentionQueue::default(),
             tool_source: None,
+            subagents: Arc::new(Vec::new()),
         })
     }
 
@@ -1033,6 +1039,13 @@ impl Agent {
                 if available_tools.insert(name.clone(), tool).is_some() {
                     return Err(AgentError::DuplicateTool(name));
                 }
+            }
+        }
+        if self.provider.supports_external_tools() && !self.subagents.is_empty() {
+            let tool = subagents::delegation_tool(self, &available_tools);
+            let name = tool.definition().name;
+            if available_tools.insert(name.clone(), tool).is_some() {
+                return Err(AgentError::DuplicateTool(name));
             }
         }
         let tools = available_tools
@@ -1227,10 +1240,14 @@ pub struct Profile {
     pub default_project_directory: PathBuf,
     #[serde(default)]
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub subagents: Vec<Subagent>,
 }
 
 #[derive(Debug, Error)]
 pub enum ProfileError {
+    #[error("invalid subagents: {0}")]
+    InvalidSubagents(String),
     #[error("profile name must not be blank")]
     BlankName,
     #[error("profile `{0}` is defined more than once")]
@@ -1266,7 +1283,9 @@ impl AgentProfiles {
     ) -> Result<Self, ProfileError> {
         let default_profile = default_profile.into();
         let mut indexed = BTreeMap::new();
-        for (profile, agent) in profiles {
+        for (profile, mut agent) in profiles {
+            subagents::validate(&profile.subagents)?;
+            agent.subagents = Arc::new(profile.subagents.clone());
             if profile.name.trim().is_empty() {
                 return Err(ProfileError::BlankName);
             }
@@ -1283,6 +1302,21 @@ impl AgentProfiles {
             default_profile: default_profile.into(),
             profiles: Arc::new(indexed),
         })
+    }
+
+    /// Applies to subsequent requests; in-flight agents retain their original helpers.
+    pub fn set_subagents(
+        &mut self,
+        profile: &str,
+        subagents: Vec<Subagent>,
+    ) -> Result<(), ProfileError> {
+        subagents::validate(&subagents)?;
+        let (metadata, agent) = Arc::make_mut(&mut self.profiles)
+            .get_mut(profile)
+            .ok_or_else(|| ProfileError::UnknownProfile(profile.to_owned()))?;
+        metadata.subagents = subagents.clone();
+        agent.subagents = Arc::new(subagents);
+        Ok(())
     }
 
     /// Applies to subsequent requests; in-flight agents retain their original tools.
@@ -1478,10 +1512,12 @@ impl AgentProfiles {
         self.profiles.get(name).map(|(_, agent)| agent.clone())
     }
 
-    pub fn upsert(&mut self, profile: Profile, agent: Agent) -> Result<(), ProfileError> {
+    pub fn upsert(&mut self, profile: Profile, mut agent: Agent) -> Result<(), ProfileError> {
         if profile.name.trim().is_empty() {
             return Err(ProfileError::BlankName);
         }
+        subagents::validate(&profile.subagents)?;
+        agent.subagents = Arc::new(profile.subagents.clone());
         let mut indexed = (*self.profiles).clone();
         indexed.insert(profile.name.clone(), (profile, agent));
         self.profiles = Arc::new(indexed);

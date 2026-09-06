@@ -708,6 +708,9 @@ pub fn update_saved_profile(
                 saved.projects.clone(),
             )
             .map_err(|error| error.to_string())?;
+        runtime
+            .set_subagents(original_name, saved.subagents.clone())
+            .map_err(|error| error.to_string())?;
     }
     Ok(saved)
 }
@@ -1183,6 +1186,7 @@ fn configured_profiles(
         capabilities: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
+        subagents: Vec::new(),
     };
     let openai_provider: Arc<dyn ModelProvider> =
         Arc::new(CodexAppServerProvider::with_selectable_home(

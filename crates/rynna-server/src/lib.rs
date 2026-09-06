@@ -63,6 +63,7 @@ pub fn router(agent: Agent) -> Router {
         capabilities: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
+        subagents: Vec::new(),
     };
     let profiles = AgentProfiles::new("default", [(profile, agent)])
         .expect("the built-in server profile must be valid");
@@ -270,6 +271,7 @@ pub fn router_with_web(agent: Agent, web_dir: impl AsRef<Path>) -> Router {
         capabilities: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
+        subagents: Vec::new(),
     };
     let profiles = AgentProfiles::new("default", [(profile, agent)])
         .expect("the built-in server profile must be valid");
@@ -473,6 +475,9 @@ async fn update_saved_profile(
                     saved.default_project_directory.clone(),
                     saved.projects.clone(),
                 )
+                .map_err(runtime_profile_error)?;
+            runtime
+                .set_subagents(&name, saved.subagents.clone())
                 .map_err(runtime_profile_error)?;
         }
     }

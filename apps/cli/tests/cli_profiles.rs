@@ -20,6 +20,10 @@ api_base = "http://127.0.0.1:11434/v1"
 provider = "ollama"
 model = "qwen3:8b"
 active_skills = ["rust"]
+[[profiles.local.subagents]]
+name = "reviewer"
+description = "Review code"
+instructions = "Find bugs"
 
 [profiles.work]
 provider = "ollama"
@@ -48,6 +52,8 @@ active_skills = ["github"]
     assert_eq!(value["profiles"][1]["name"], "work");
     assert_eq!(value["profiles"][1]["providers"][0]["model"], "qwen3:14b");
     assert_eq!(value["profiles"][1]["active_skills"][0], "github");
+    assert_eq!(value["profiles"][0]["subagents"][0]["name"], "reviewer");
+    assert_eq!(value["profiles"][1]["subagents"], serde_json::json!([]));
 }
 
 #[test]
