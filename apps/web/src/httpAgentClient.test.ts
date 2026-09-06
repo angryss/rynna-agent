@@ -3,6 +3,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { HttpAgentClient } from './httpAgentClient';
 
 describe('HttpAgentClient', () => {
+  it('accepts MLX provider settings in list and save responses', async () => {
+    const provider = { kind: 'mlx' as const, api_base: 'http://localhost:8000/v1' };
+    const transport = vi.fn().mockResolvedValueOnce(jsonResponse([provider])).mockResolvedValueOnce(jsonResponse(provider)).mockResolvedValueOnce(jsonResponse(provider));
+    const client = new HttpAgentClient(undefined, transport);
+    await expect(client.listProviders('work')).resolves.toEqual([provider]);
+    await expect(client.createProvider(provider, 'work')).resolves.toEqual(provider);
+    await expect(client.updateProvider(provider, 'work')).resolves.toEqual(provider);
+  });
+
   it('loads and saves MCP settings through the HTTP settings endpoint', async () => {
     const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ mcpServers: {} })));
     const client = new HttpAgentClient('/custom/v1/respond', fetcher);

@@ -3,6 +3,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { TauriAgentClient } from './tauriAgentClient';
 
 describe('TauriAgentClient', () => {
+  it('accepts MLX provider settings in list and save responses', async () => {
+    const provider = { kind: 'mlx' as const, api_base: 'http://localhost:8000/v1' };
+    const transport = vi.fn().mockResolvedValueOnce([provider]).mockResolvedValueOnce(provider).mockResolvedValueOnce(provider);
+    const client = new TauriAgentClient(transport);
+    await expect(client.listProviders('work')).resolves.toEqual([provider]);
+    await expect(client.createProvider(provider, 'work')).resolves.toEqual(provider);
+    await expect(client.updateProvider(provider, 'work')).resolves.toEqual(provider);
+  });
+
   it('loads and saves MCP settings through narrow desktop commands', async () => {
     const invoke = vi.fn().mockResolvedValue({ mcpServers: {} });
     const client = new TauriAgentClient(invoke);
