@@ -1,3 +1,4 @@
+import { SlashCommandInput, slashCommands } from './components/slash-command-input';
 import { newSessionId } from './sessions';
 import { WorkflowSettings } from './components/workflow-settings';
 import { WorkflowPanel, workflowTerminal } from './components/workflow-panel';
@@ -120,6 +121,7 @@ export function App({ client }: AppProps) {
   const workflowEvents = useRef(new Set<string>());
   const [workflowRunning, setWorkflowRunning] = useState(false);
   const [input, setInput] = useState('');
+  const [modelOpenRequest, setModelOpenRequest] = useState(0);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -779,7 +781,72 @@ export function App({ client }: AppProps) {
       return;
     }
 
-    const displayHistory = messages;
+    if (prompt.startsWith('/')) {
+      runCommand(prompt);
+      return;
+    }
+    await sendPrompt(prompt, messages);
+  }
+
+  function runCommand(text: string) {
+    if (pending || workflowRunning) return;
+    const [name = '', ...parts] = text.trim().split(/\s+/);
+    const argument = parts.join(' ');
+    if (!slashCommands.some(command => command.name === name.toLowerCase())) {
+      setError(`Unknown command: ${name}. Type /help for available commands.`);
+      return;
+    }
+    if (argument && name.toLowerCase() !== '/title') {
+      setError(`${name} does not take arguments.`);
+      return;
+    }
+    setError(null);
+    switch (name.toLowerCase()) {
+      case '/new':
+      case '/clear': startNewSession(project); return;
+      case '/help': setInput('/'); document.getElementById('prompt')?.focus(); return;
+      case '/model':
+        if (!activeProfile) { setError('No profile is available.'); return; }
+        setModelOpenRequest(current => current + 1);
+        break;
+      case '/settings':
+        if (!canOpenSettings) { setError('Settings are not available for this connection.'); return; }
+        setEditingProvider(null);
+        setView('settings');
+        break;
+      case '/title':
+        if (!argument) { setInput('/title '); return; }
+        if (!activeSessionId) { setError('Send a message before renaming this chat.'); return; }
+        setSessions(current => current.map(session => session.id === activeSessionId
+          ? { ...session, name: argument, updated_at: new Date().toISOString() } : session));
+        break;
+      case '/retry': {
+        const index = messages.map(message => message.role).lastIndexOf('user');
+        if (index < 0) { setError('There is no user message to retry.'); return; }
+        void sendPrompt(messages[index]!.content, messages.slice(0, index));
+        return;
+      }
+      case '/save': {
+        if (!messages.length) { setError('There are no messages to save.'); return; }
+        const saved = sessions.find(session => session.id === activeSessionId);
+        const transcript = { ...saved, profile: selectedProfile ?? '', project: project ?? null,
+          messages: conversationHistory(messages) };
+        const url = URL.createObjectURL(new Blob([JSON.stringify(transcript, null, 2)], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `rynna-${activeSessionId ?? 'conversation'}.json`;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        break;
+      }
+    }
+    setInput('');
+  }
+
+  async function sendPrompt(prompt: string, displayHistory: DisplayMessage[]) {
+    const previousMessages = messages;
     const history = conversationHistory(displayHistory);
     setError(null);
     setInput('');
@@ -821,7 +888,7 @@ export function App({ client }: AppProps) {
     } catch (requestError) {
       if (sessionId.current !== currentSessionId) return;
       setError(requestError instanceof Error ? requestError.message : 'Rynna could not complete the request');
-      setMessages(displayHistory);
+      setMessages(previousMessages);
       setInput(prompt);
     } finally {
       setPending(false);
@@ -991,30 +1058,11 @@ export function App({ client }: AppProps) {
               <form className="composer" onSubmit={submit}>
                 <label htmlFor="prompt">Message Rynna</label>
                 <div className="composer-row">
-                  <Textarea
-                    id="prompt"
-                    name="prompt"
-                    value={input}
-                    onChange={(event) => setInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (
-                        event.key === 'Enter' &&
-                        !event.shiftKey &&
-                        !event.altKey &&
-                        !event.ctrlKey &&
-                        !event.metaKey &&
-                        !event.nativeEvent.isComposing
-                      ) {
-                        event.preventDefault();
-                        event.currentTarget.form?.requestSubmit();
-                      }
-                    }}
-                    placeholder="Describe the task, constraints, and desired outcome…"
-                    rows={3}
-                  />
+                  <SlashCommandInput value={input} onChange={setInput} onCommand={runCommand}
+                    busy={pending || workflowRunning} />
                 </div>
                 <div className="composer-actions">
-                  {activeProfile ? <ModelSelector profile={activeProfile} selection={selection} disabled={pending || deletingSession}
+                  {activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
                     onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
                   <Button disabled={pending || workflowRunning || deletingSession || !input.trim()} type="submit">
                     {workflowRunning ? 'Use workflow steering above' : pending ? 'Working…' : 'Send'}

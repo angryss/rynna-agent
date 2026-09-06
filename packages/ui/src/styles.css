@@ -249,6 +249,18 @@ select:disabled { opacity: .5; }
 .request-error { margin: 0 0 .75rem; padding: .75rem 1rem; border: 1px solid hsl(var(--destructive) / .4); border-radius: .65rem; color: hsl(var(--destructive-foreground)); background: hsl(var(--destructive) / .08); font-size: .88rem; }
 .composer label { display: block; margin: 0 .25rem .45rem; color: hsl(var(--muted-foreground)); font-size: .76rem; font-weight: 590; }
 .composer-row { display: flex; align-items: flex-end; gap: .65rem; }
+.slash-command-input { width: 100%; padding: .5rem .75rem; resize: vertical; background: transparent; color: hsl(var(--foreground)); font: inherit; font-size: .875rem; border-radius: .375rem; }
+.slash-command-input::placeholder { color: hsl(var(--muted-foreground)); }
+.slash-command-panel { position: fixed; z-index: 30; display: flex; flex-direction: column; overflow: hidden; border: 1px solid hsl(var(--border)); border-radius: .75rem; background: hsl(var(--card)); color: hsl(var(--foreground)); box-shadow: 0 .75rem 2rem hsl(0 0% 0% / .18); }
+.slash-command-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem; padding: .75rem; font-size: .8rem; border-bottom: 1px solid hsl(var(--border)); }
+.slash-command-heading span { color: hsl(var(--muted-foreground)); font-size: .7rem; }
+.slash-command-results { overflow-y: auto; padding: .35rem; }
+.slash-command-option { display: flex; align-items: center; gap: .65rem; padding: .7rem .6rem; border-radius: .4rem; cursor: pointer; font-size: .85rem; }
+.slash-command-option[aria-selected="true"] { background: hsl(var(--accent)); color: hsl(var(--accent-foreground)); }
+.slash-command-option svg { flex-shrink: 0; color: hsl(var(--muted-foreground)); }
+.slash-command-option strong { min-width: 4.5rem; font-weight: 600; }
+.slash-command-option span { color: hsl(var(--muted-foreground)); overflow-wrap: anywhere; }
+.slash-command-empty { padding: .75rem; font-size: .85rem; }
 .composer textarea { min-height: 4.2rem; max-height: 14rem; border: 0; box-shadow: none; }
 .composer textarea:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
 .composer button { min-width: 5.25rem; }
