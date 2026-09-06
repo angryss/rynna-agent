@@ -14,6 +14,7 @@ export interface Session {
 }
 
 const STORAGE_KEY = 'rynna-sessions-v1';
+const DELETED_PREFIX = 'rynna-deleted-session-v1:';
 
 export function sessionName(prompt: string): string {
   const normalized = prompt.replace(/\s+/g, ' ').trim();
@@ -24,7 +25,7 @@ export function readSessions(storage?: Pick<Storage, 'getItem'>): Session[] {
   try {
     const stored = (storage ?? window.localStorage).getItem(STORAGE_KEY);
     if (!stored) return [];
-    return decodeSessions(stored);
+    return decodeSessions(stored).filter(session => !isSessionDeleted(session.id, storage));
   } catch {
     return [];
   }
@@ -34,16 +35,34 @@ export function writeSessions(
   sessions: Session[],
   storage?: Pick<Storage, 'getItem' | 'setItem'>,
 ): Session[] {
+  let merged = sessions;
   try {
     const target = storage ?? window.localStorage;
     const stored = target.getItem(STORAGE_KEY);
-    const merged = mergeSessions(sessions, stored ? decodeSessions(stored) : []);
+    merged = mergeSessions(sessions, stored ? decodeSessions(stored) : [])
+      .filter(session => !isSessionDeleted(session.id, target));
     target.setItem(STORAGE_KEY, JSON.stringify(merged));
     return merged;
   } catch {
     // A full or unavailable local store must not prevent the conversation itself.
-    return sessions;
+    return merged;
   }
+}
+
+// Separate keys keep concurrent deletions from overwriting one another.
+export function isSessionDeleted(id: string, storage?: Pick<Storage, 'getItem'>): boolean {
+  try {
+    return (storage ?? window.localStorage).getItem(`${DELETED_PREFIX}${id}`) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function deleteSession(id: string, sessions: Session[], storage?: Pick<Storage, 'getItem' | 'setItem'>): Session[] {
+  const target = storage ?? window.localStorage;
+  // Do not report success if the durable deletion marker cannot be saved.
+  target.setItem(`${DELETED_PREFIX}${id}`, 'true');
+  return writeSessions(sessions.filter(session => session.id !== id), target);
 }
 
 export function mergeSessions(preferred: Session[], additional: Session[]): Session[] {
@@ -54,6 +73,7 @@ export function mergeSessions(preferred: Session[], additional: Session[]): Sess
 }
 
 export function sessionsFromStorageEvent(event: StorageEvent): Session[] | null {
+  if (event.key?.startsWith(DELETED_PREFIX)) return readSessions();
   if (event.key !== STORAGE_KEY || event.newValue === null) return null;
   try {
     return decodeSessions(event.newValue);

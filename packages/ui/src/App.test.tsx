@@ -3,8 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
-import type { AgentClient, Profile } from './contracts';
-import { writeSessions } from './sessions';
+import type { AgentClient, Profile, WorkflowRun } from './contracts';
+import { deleteSession, readSessions, writeSessions } from './sessions';
 
 beforeEach(() => {
   const values = new Map<string, string>();
@@ -176,6 +176,103 @@ describe('App', () => {
         { role: 'assistant', content: 'The project is healthy.' },
       ],
     }), expect.any(Function));
+  });
+
+  it('confirms deletion, preserves other chats, and resets the active session in its project', async () => {
+    const respond = vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Done.' } });
+    const client: AgentClient = {
+      respond,
+      listProfiles: vi.fn().mockResolvedValue({
+        default_profile: 'work', provider_ids: [], configured_profiles: [],
+        profiles: [testProfile('work', { projects: [{ name: 'rynna', directories: ['/rynna'], default_directory: '/rynna' }] })],
+      }),
+    };
+    const user = userEvent.setup();
+    const rendered = render(<App client={client} />);
+    await user.click(await screen.findByRole('button', { name: 'rynna' }));
+    await user.type(screen.getByLabelText('Message Rynna'), 'First chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    const firstId = respond.mock.calls[0]![0].session_id;
+    await user.click(screen.getByRole('button', { name: 'New session' }));
+    await user.type(screen.getByLabelText('Message Rynna'), 'Second chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.click(screen.getByRole('button', { name: 'Delete session First chat' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(readSessions()).toHaveLength(2);
+    await user.click(screen.getByRole('button', { name: 'Delete session First chat' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(screen.queryByRole('button', { name: 'First chat' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Second chat' })).toHaveAttribute('aria-current', 'page');
+    await user.click(screen.getByRole('button', { name: 'Delete session Second chat' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(readSessions()).toEqual([]);
+    expect(within(screen.getByRole('log')).queryByText('Done.')).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Message Rynna'), 'Fresh chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(respond.mock.calls[2]![0]).toMatchObject({ project: 'rynna', history: [] });
+    expect(respond.mock.calls[2]![0].session_id).not.toBe(firstId);
+    rendered.unmount();
+    render(<App client={client} />);
+    expect(await screen.findByRole('button', { name: 'Fresh chat' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Second chat' })).not.toBeInTheDocument();
+  });
+
+  it('does not resurrect an active session deleted by another window during a response', async () => {
+    let finish!: (value: { message: { role: 'assistant'; content: string } }) => void;
+    const respond = vi.fn()
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: 'First answer' } })
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const user = userEvent.setup();
+    render(<App client={{ respond }} />);
+    await user.type(screen.getByLabelText('Message Rynna'), 'Saved chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.type(screen.getByLabelText('Message Rynna'), 'Continue');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(screen.getByRole('button', { name: 'Delete session Saved chat' })).toBeDisabled();
+    const id = readSessions()[0]!.id;
+    act(() => {
+      deleteSession(id, readSessions());
+      window.dispatchEvent(new StorageEvent('storage', { key: `rynna-deleted-session-v1:${id}`, newValue: 'true' }));
+    });
+    await act(async () => { finish({ message: { role: 'assistant', content: 'Late answer' } }); });
+    expect(readSessions()).toEqual([]);
+    expect(screen.queryByText('Late answer')).not.toBeInTheDocument();
+    expect(screen.queryByText('First answer')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Saved chat' })).not.toBeInTheDocument();
+  });
+
+  it('requires unfinished workflows to finish or cancel before session deletion', async () => {
+    const listWorkflowRuns = vi.fn().mockResolvedValue([{ status: 'paused' } as WorkflowRun]);
+    const user = userEvent.setup();
+    render(<App client={{
+      respond: vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Workflow history' } }),
+      listWorkflowRuns,
+    }} />);
+    await user.type(screen.getByLabelText('Message Rynna'), 'Workflow chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    const id = readSessions()[0]!.id;
+    await user.click(screen.getByRole('button', { name: 'Delete session Workflow chat' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(listWorkflowRuns).toHaveBeenCalledWith('', id);
+    expect(screen.getByRole('alert')).toHaveTextContent('Cancel or finish');
+    expect(readSessions()).toHaveLength(1);
+    listWorkflowRuns.mockResolvedValue([{ status: 'cancelled' } as WorkflowRun]);
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(readSessions()).toEqual([]);
+  });
+
+  it('keeps a session when persistent deletion fails', async () => {
+    const user = userEvent.setup();
+    render(<App client={{ respond: vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Kept answer' } }) }} />);
+    await user.type(screen.getByLabelText('Message Rynna'), 'Keep chat');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    const setter = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => { throw new Error('Storage full'); });
+    await user.click(screen.getByRole('button', { name: 'Delete session Keep chat' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Storage full');
+    expect(screen.getByRole('button', { name: 'Keep chat' })).toBeInTheDocument();
+    expect(readSessions()).toHaveLength(1);
+    setter.mockRestore();
   });
 
   it('keeps saved sessions accessible when their project is renamed', async () => {
