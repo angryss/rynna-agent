@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Folder, MessageSquare, Plus, Trash2 } from 'lucide-react';
+import { Folder, MessageSquare, Plus } from 'lucide-react';
 
 import type { Project } from '../contracts';
 import type { Session } from '../sessions';
+import { SessionMenu } from './session-menu';
 import { Button } from './ui/button';
 
 interface SessionSidebarProps {
@@ -86,22 +87,16 @@ export function SessionSidebar({
                           <span>{session.name}</span>
                           <time dateTime={session.updated_at}>{relativeTime(session.updated_at)}</time>
                         </button>
-                        <button
-                          aria-label={`Delete session ${session.name}`}
-                          className="session-delete"
-                          disabled={disabled}
-                          onClick={() => setConfirmDelete(session.id)}
-                          title="Delete session"
-                          type="button"
-                        >
-                          <Trash2 aria-hidden="true" size={14} />
-                        </button>
+                        <SessionMenu name={session.name} disabled={disabled} onDelete={() => setConfirmDelete(session.id)} />
                       </div>
                       {confirmDelete === session.id && (
                         <div className="session-delete-confirm" role="group" aria-label={`Delete ${session.name}?`}>
                           <p>Delete this session from saved history? This cannot be undone.</p>
                           <div>
-                            <Button disabled={disabled} size="sm" type="button" variant="outline" onClick={() => setConfirmDelete(null)}>Cancel</Button>
+                            <Button autoFocus disabled={disabled} size="sm" type="button" variant="outline" onClick={event => {
+                              event.currentTarget.closest('li')?.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')?.focus();
+                              setConfirmDelete(null);
+                            }}>Cancel</Button>
                             <Button disabled={disabled} size="sm" type="button" variant="destructive" onClick={async () => {
                               if (await onDeleteSession(session)) setConfirmDelete(null);
                             }}>Delete</Button>
