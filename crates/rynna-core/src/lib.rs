@@ -673,17 +673,22 @@ impl ModelProvider for FallbackProvider {
     ) -> Result<Completion, ProviderError> {
         let mut last_error = None;
         for provider in &self.providers {
-            let mut deltas = Vec::new();
+            let mut emitted_output = false;
             match provider
-                .complete_stream(request.clone(), &mut |delta| deltas.push(delta.clone()))
-                .await
-            {
-                Ok(completion) => {
-                    for delta in &deltas {
+                .complete_stream(request.clone(), &mut |delta| {
+                    let text = match delta {
+                        CompletionDelta::Thinking(text) | CompletionDelta::Content(text) => text,
+                    };
+                    if !text.is_empty() {
+                        emitted_output = true;
                         on_delta(delta);
                     }
-                    return Ok(completion);
-                }
+                })
+                .await
+            {
+                Ok(completion) => return Ok(completion),
+                // Once visible output starts, switching models would mix responses.
+                Err(error) if emitted_output => return Err(error),
                 Err(error) => last_error = Some(error),
             }
         }
@@ -697,17 +702,22 @@ impl ModelProvider for FallbackProvider {
     ) -> Result<Completion, ProviderError> {
         let mut last_error = None;
         for provider in &self.providers {
-            let mut deltas = Vec::new();
+            let mut emitted_output = false;
             match provider
-                .complete_stream_managed(plan.clone(), &mut |delta| deltas.push(delta.clone()))
-                .await
-            {
-                Ok(completion) => {
-                    for delta in &deltas {
+                .complete_stream_managed(plan.clone(), &mut |delta| {
+                    let text = match delta {
+                        CompletionDelta::Thinking(text) | CompletionDelta::Content(text) => text,
+                    };
+                    if !text.is_empty() {
+                        emitted_output = true;
                         on_delta(delta);
                     }
-                    return Ok(completion);
-                }
+                })
+                .await
+            {
+                Ok(completion) => return Ok(completion),
+                // Once visible output starts, switching models would mix responses.
+                Err(error) if emitted_output => return Err(error),
                 Err(error) => last_error = Some(error),
             }
         }

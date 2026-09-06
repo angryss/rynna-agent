@@ -107,6 +107,11 @@ model paths are accepted. New entries are enabled; use **Default** to make one
 preferred, or disable older entries. Duplicate names for the same provider are
 rejected. Restart Rynna to load saved changes into chat.
 
+Streaming thinking and answer events are forwarded as they arrive, including
+when a profile has fallback models. Streaming requests try the next model only
+if the current model fails before emitting non-empty thinking or answer text;
+failures after output begins are reported without switching models.
+
 For MLX LM on macOS, start your model server, for example:
 
 ```bash
