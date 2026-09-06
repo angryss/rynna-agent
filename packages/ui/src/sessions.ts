@@ -2,6 +2,9 @@ import type { Message } from './contracts';
 
 export interface Session {
   id: string;
+  workflow_id?: string;
+  workflow_run_id?: string;
+  workflow_event_ids?: string[];
   name: string;
   profile: string;
   project: string | null;
@@ -88,6 +91,9 @@ function decodeSessions(stored: string): Session[] {
 function isSession(value: unknown): value is Session {
   if (!value || typeof value !== 'object') return false;
   const session = value as Partial<Session>;
+  if ((session.workflow_id !== undefined && typeof session.workflow_id !== 'string') ||
+      (session.workflow_run_id !== undefined && typeof session.workflow_run_id !== 'string') ||
+      (session.workflow_event_ids !== undefined && (!Array.isArray(session.workflow_event_ids) || !session.workflow_event_ids.every(id => typeof id === 'string')))) return false;
   return typeof session.id === 'string' &&
     typeof session.name === 'string' && session.name.length > 0 &&
     typeof session.profile === 'string' &&
@@ -99,4 +105,13 @@ function isSession(value: unknown): value is Session {
       (message.role === 'user' || message.role === 'assistant') &&
       typeof message.content === 'string',
     );
+}
+
+// getRandomValues also works on self-hosted HTTP pages where randomUUID is unavailable.
+export function newSessionId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }

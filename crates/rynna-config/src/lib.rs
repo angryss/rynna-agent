@@ -12,6 +12,7 @@ use url::Url;
 pub mod mcp;
 pub mod memory;
 pub mod profile_update;
+pub mod workflows;
 
 const MAX_COMMAND_TIMEOUT_SECONDS: u64 = 300;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -763,6 +764,7 @@ impl ProfileCatalog {
                     default_project_directory: default_project_directory(),
                     projects: Vec::new(),
                     subagents: Vec::new(),
+                    workflows: Vec::new(),
                 },
             )]),
             mcp_servers: BTreeMap::new(),
@@ -884,6 +886,10 @@ impl ProfileCatalog {
         {
             provider.is_default = true;
         }
+        let workflows = original_name
+            .and_then(|name| file.profiles.get(name))
+            .map(|p| p.workflows.clone())
+            .unwrap_or_default();
         let system_prompt = original_name
             .and_then(|name| file.profiles.get(name))
             .and_then(|existing| existing.system_prompt.clone());
@@ -906,6 +912,7 @@ impl ProfileCatalog {
                 default_project_directory: profile.default_project_directory.clone(),
                 projects: profile.projects.clone(),
                 subagents: profile.subagents.clone(),
+                workflows,
             },
         );
         self.apply_file(file)?;
@@ -1238,6 +1245,8 @@ impl ProfileCatalog {
                 });
             }
             rynna_core::subagents::validate(&profile.subagents)?;
+            rynna_core::workflows::validate_custom(&profile.workflows, &profile.subagents)
+                .map_err(ConfigError::InvalidWorkflow)?;
             ensure_unique("active skill", &profile.active_skills)?;
             ensure_unique("MCP server", &profile.mcp_servers)?;
             ensure_unique("capability", &profile.capabilities)?;
@@ -1389,6 +1398,8 @@ struct ProfileConfig {
     projects: Vec<Project>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     subagents: Vec<Subagent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workflows: Vec<rynna_core::workflows::Workflow>,
 }
 
 fn default_project_directory() -> PathBuf {
@@ -1460,6 +1471,8 @@ impl From<FileSystemCapabilityConfig> for FileSystemCapability {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error("invalid workflow: {0}")]
+    InvalidWorkflow(String),
     #[error(transparent)]
     InvalidSubagents(#[from] rynna_core::ProfileError),
     #[error("profile `{0}` is defined more than once")]

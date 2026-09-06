@@ -1,3 +1,4 @@
+import type { Workflow, WorkflowMetadata, WorkflowStart, WorkflowRun, WorkflowControl } from '@rynna/ui';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { isMcpSettings, isMemorySettings } from '@rynna/ui';
 import type {
@@ -34,6 +35,15 @@ export class TauriAgentClient implements AgentClient {
     this.invoke = invoker;
     this.createChannel = createChannel;
   }
+
+  async listWorkflows(profile: string): Promise<WorkflowMetadata[]> { return await this.invoke('list_workflows', { profile }) as WorkflowMetadata[]; }
+  async readWorkflow(profile: string, id: string): Promise<Workflow> { return await this.invoke('read_workflow', { profile, id }) as Workflow; }
+  async saveWorkflow(profile: string, workflow: Workflow): Promise<Workflow> { return await this.invoke('save_workflow', { profile, workflow }) as Workflow; }
+  async deleteWorkflow(profile: string, id: string): Promise<void> { await this.invoke('delete_workflow', { profile, id }); }
+  async startWorkflow(request: WorkflowStart): Promise<WorkflowRun> { return await this.invoke('start_workflow', { request }) as WorkflowRun; }
+  async readWorkflowRun(id: string, profile: string, session: string): Promise<WorkflowRun> { return await this.invoke('read_workflow_run', { id, profile, sessionId: session }) as WorkflowRun; }
+  async listWorkflowRuns(profile: string, session: string): Promise<WorkflowRun[]> { return await this.invoke('list_workflow_runs', { profile, sessionId: session }) as WorkflowRun[]; }
+  async controlWorkflow(id: string, request: WorkflowControl): Promise<WorkflowRun> { return await this.invoke('control_workflow', { id, request }) as WorkflowRun; }
 
   async getMcpSettings(profile: string): Promise<McpSettings> {
     const settings = await this.invoke('get_mcp_settings', { profile });

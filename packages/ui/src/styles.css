@@ -324,3 +324,14 @@ select:disabled { opacity: .5; }
 .model-picker-thinking span { display: block; text-align: center; padding: .4rem .25rem; border-radius: .3rem; font-size: .8rem; }
 .model-picker-thinking input:checked + span { background: hsl(var(--accent)); }
 .model-picker-thinking input:focus-visible + span { outline: 2px solid hsl(var(--ring)); }
+
+.workflow-panel { padding: 1rem; border-bottom: 1px solid hsl(var(--border)); min-width: 0; overflow-wrap: anywhere; }
+.workflow-panel label, .workflow-settings label { display: flex; flex-direction: column; gap: .4rem; }
+.workflow-panel select, .workflow-settings select { min-width: 0; max-width: 100%; padding: .5rem; color: inherit; background: hsl(var(--background)); border: 1px solid hsl(var(--border)); border-radius: .4rem; }
+.workflow-limits { display: flex; flex-wrap: wrap; gap: .75rem; }
+.workflow-limits label { flex: 1 1 8rem; min-width: 0; }
+.workflow-steps { padding-left: 1.5rem; }
+.workflow-steps fieldset { min-width: 0; border: 1px solid hsl(var(--border)); padding: 1rem; margin-block: 1rem; display: flex; flex-direction: column; gap: .75rem; }
+.workflow-progress { margin-top: 1rem; display: flex; flex-direction: column; gap: .65rem; }
+.workflow-progress ul { list-style: disc; padding-inline-start: 1.25rem; }
+.workflow-panel .provider-actions { flex-wrap: wrap; }

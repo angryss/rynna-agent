@@ -289,6 +289,14 @@ struct PendingToolCall {
 
 #[async_trait]
 impl ModelProvider for OpenAiCompatibleProvider {
+    fn workflow_policy(&self) -> String {
+        format!(
+            "{}:{}:{}",
+            self.completion_url,
+            self.model,
+            self.thinking.as_str()
+        )
+    }
     fn with_thinking(
         &self,
         level: rynna_core::ThinkingLevel,

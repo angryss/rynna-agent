@@ -40,6 +40,7 @@ pub struct CommandConfig {
 }
 
 pub struct CommandTool {
+    workflow_policy: String,
     aliases: Vec<String>,
     #[cfg(unix)]
     working_directory: Arc<File>,
@@ -75,6 +76,8 @@ impl CommandTool {
 
         #[cfg(unix)]
         {
+            let workflow_policy =
+                format!("{config:?}:{:?}", config.working_directory.canonicalize());
             let working_directory = open_working_directory(&config.working_directory)?;
             let program_directory = tempfile::Builder::new()
                 .prefix("rynna-command-")
@@ -100,6 +103,7 @@ impl CommandTool {
 
             Ok(Self {
                 aliases,
+                workflow_policy,
                 working_directory: Arc::new(working_directory),
                 programs,
                 _program_directory: program_directory,
@@ -234,6 +238,9 @@ struct CommandArguments {
 
 #[async_trait]
 impl Tool for CommandTool {
+    fn workflow_policy(&self) -> String {
+        self.workflow_policy.clone()
+    }
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(
             "run_command",

@@ -42,6 +42,24 @@ pub struct McpToolSource(pub McpSettings);
 
 #[async_trait]
 impl ToolSource for McpToolSource {
+    fn workflow_policy(&self) -> String {
+        let mut settings = self.0.clone();
+        for server in settings.servers.values_mut() {
+            if let rynna_config::mcp::McpTransport::Stdio { env, .. } = &mut server.transport {
+                for (name, value) in env.iter_mut() {
+                    let name = name.to_ascii_uppercase();
+                    if ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
+                        .iter()
+                        .any(|part| name.contains(part))
+                    {
+                        value.clear();
+                    }
+                }
+            }
+        }
+        serde_json::to_string(&settings).expect("MCP settings")
+    }
+
     async fn discover(&self) -> Result<Vec<Arc<dyn Tool>>, ToolError> {
         self.0
             .validate()

@@ -19,6 +19,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+rynna-workflows = { path = "../../../crates/rynna-workflows" }
 rynna-skills = { path = "../../../crates/rynna-skills" }
 uuid.workspace = true
 rynna-mcp = { path = "../../../crates/rynna-mcp" }
@@ -38,3 +39,4 @@ tempfile.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }

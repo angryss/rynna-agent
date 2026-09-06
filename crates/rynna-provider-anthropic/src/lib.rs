@@ -552,6 +552,14 @@ fn anthropic_context(request: &CompletionRequest) -> Option<ProviderContext> {
 
 #[async_trait]
 impl ModelProvider for AnthropicMessagesProvider {
+    fn workflow_policy(&self) -> String {
+        format!(
+            "{}:{}:{}",
+            self.messages_url,
+            self.model,
+            self.thinking.as_str()
+        )
+    }
     fn with_thinking(
         &self,
         level: rynna_core::ThinkingLevel,

@@ -803,6 +803,9 @@ struct SearchArguments {
 
 #[async_trait]
 impl Tool for FileSystemTool {
+    fn workflow_policy(&self) -> String {
+        format!("{:?}:{:?}", self.filesystem.root, self.filesystem.config)
+    }
     fn definition(&self) -> ToolDefinition {
         match self.operation {
             Operation::ReadFile => path_tool_definition(

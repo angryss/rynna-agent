@@ -42,9 +42,29 @@ async fn provider_error_body_removes_terminal_control_characters() {
         .mount(&server)
         .await;
 
+    // An error response must not fall through to a real locally configured provider.
+    let config = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        config.path(),
+        format!(
+            r#"
+version = 1
+default_profile = "fixture"
+[providers.fixture]
+kind = "openai-compatible"
+api_base = "{}/v1"
+[profiles.fixture]
+provider = "fixture"
+model = "test-model"
+"#,
+            server.uri()
+        ),
+    )
+    .unwrap();
     let mut command = Command::cargo_bin("rynna").unwrap();
     command
         .args(["run", "--prompt", "Do the work", "--output", "text"])
+        .env("RYNNA_CONFIG", config.path())
         .env("RYNNA_API_BASE", format!("{}/v1", server.uri()))
         .env("RYNNA_MODEL", "test-model");
 
