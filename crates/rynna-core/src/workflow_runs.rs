@@ -468,8 +468,13 @@ impl Runner {
     /// Budget exhaustion is terminal. Transient faults park the run as `Blocked`,
     /// which is non-terminal and already offers Resume in the UI, so an overnight
     /// rate limit no longer discards the run's progress.
+    ///
+    /// The step allowance is checked alongside the other two: without it a
+    /// transient failure on the final permitted step would offer Resume even
+    /// though `drive` would immediately exhaust the budget and stop.
     fn failure_status(run: &Run, transient: bool) -> Status {
-        if run.consumed.tool_calls >= run.start.limits.tool_calls
+        if run.consumed.steps >= run.start.limits.steps
+            || run.consumed.tool_calls >= run.start.limits.tool_calls
             || run.consumed.active_seconds >= run.start.limits.active_seconds
         {
             Status::BudgetExhausted
@@ -478,6 +483,20 @@ impl Runner {
         } else {
             Status::Failed
         }
+    }
+
+    /// Records a failure, marking a resumable one uncertain.
+    ///
+    /// A step that failed part-way may already have executed tools, and resuming
+    /// replays the same cursor. We cannot tell from a provider error whether any
+    /// side effects landed, so resuming must require the same explicit
+    /// acknowledgement that an interrupted in-flight run does.
+    fn record_failure(run: &mut Run, transient: bool, reason: String) {
+        run.status = Self::failure_status(run, transient);
+        if run.status == Status::Blocked {
+            run.uncertain = true;
+        }
+        run.reason = Some(reason);
     }
 
     pub async fn control(self: &Arc<Self>, id: Uuid, control: Control) -> Result<Run, String> {
@@ -694,26 +713,26 @@ impl Runner {
                 }
                 // Oversized or over-budget results are a step failure, not a transport fault.
                 Ok(Ok(result)) => {
-                    current.status = Self::failure_status(&current, false);
-                    current.reason = Some(format!(
+                    let reason = format!(
                         "step produced {} bytes and {} tool calls, exceeding its 32000-byte / {tools}-call allowance; reserved resources remain charged",
                         result.content.len(),
                         result.tool_calls
-                    ));
+                    );
+                    Self::record_failure(&mut current, false, reason);
                 }
                 Ok(Err(error)) => {
-                    current.status = Self::failure_status(&current, error.transient);
-                    current.reason = Some(format!(
+                    let reason = format!(
                         "step failed: {}; reserved resources remain charged",
                         error.message
-                    ));
+                    );
+                    Self::record_failure(&mut current, error.transient, reason);
                 }
                 Err(_) => {
                     // A step that outran its reserved wall clock may still succeed on resume.
-                    current.status = Self::failure_status(&current, true);
-                    current.reason = Some(format!(
+                    let reason = format!(
                         "step exceeded its {seconds}-second allowance; reserved resources remain charged"
-                    ));
+                    );
+                    Self::record_failure(&mut current, true, reason);
                 }
             }
             // A control accepted before this commit wins, including verification completion.

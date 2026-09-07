@@ -486,6 +486,48 @@ async fn a_rate_limited_step_parks_the_run_as_resumable_instead_of_failing_it() 
 }
 
 #[tokio::test]
+async fn a_resumable_transient_failure_requires_side_effect_acknowledgement() {
+    let run = run_until_settled(true).await;
+    assert_eq!(run.status, Status::Blocked);
+    // The step may already have executed tools before the provider failed, and
+    // resuming replays the same cursor, so Resume must be acknowledged.
+    assert!(
+        run.uncertain,
+        "a replayable failure must require acknowledgement"
+    );
+}
+
+#[tokio::test]
+async fn a_transient_failure_on_the_final_step_exhausts_instead_of_offering_resume() {
+    let runner = Runner::open(
+        Arc::new(Store::default()),
+        Arc::new(FailingExecutor { transient: true }),
+    )
+    .await
+    .unwrap();
+    let mut request = start();
+    // One step only: resuming could not make progress even if it were offered.
+    request.limits.steps = 1;
+    let run = runner
+        .start(request, default_workflow(), vec![], "snapshot".into())
+        .await
+        .unwrap();
+    let mut settled = None;
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        if let Some(current) = runner.read(run.id, "default", run.start.session_id).await
+            && current.status != Status::Running
+        {
+            settled = Some(current);
+            break;
+        }
+    }
+    let settled = settled.expect("run never settled");
+    assert_eq!(settled.status, Status::BudgetExhausted);
+    assert!(settled.status.terminal());
+}
+
+#[tokio::test]
 async fn a_permanent_step_failure_still_fails_the_run() {
     let run = run_until_settled(false).await;
     assert_eq!(run.status, Status::Failed);
