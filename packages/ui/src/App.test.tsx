@@ -107,6 +107,70 @@ describe('App', () => {
 
   });
 
+  it('follows streamed replies until the reader scrolls up, and resumes at the bottom', async () => {
+    let emit: Parameters<AgentClient['respond']>[1];
+    const client: AgentClient = { respond: vi.fn((_request, onDelta) => {
+      emit = onDelta;
+      return new Promise<never>(() => {});
+    }) };
+    const user = userEvent.setup();
+    render(<App client={client} />);
+    const conversation = screen.getByRole('region', { name: 'Conversation' });
+    Object.defineProperties(conversation, {
+      scrollHeight: { configurable: true, value: 1200 },
+      clientHeight: { configurable: true, value: 400 },
+    });
+    await user.type(screen.getByLabelText('Message Rynna'), 'Investigate');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    act(() => emit?.({ kind: 'content', content: 'First part' }));
+    expect(conversation.scrollTop).toBe(1200);
+
+    conversation.scrollTop = 200;
+    fireEvent.scroll(conversation);
+    act(() => emit?.({ kind: 'content', content: ' Second part' }));
+    expect(conversation.scrollTop).toBe(200);
+
+    conversation.scrollTop = 800;
+    fireEvent.scroll(conversation);
+    Object.defineProperty(conversation, 'scrollHeight', { configurable: true, value: 1400 });
+    act(() => emit?.({ kind: 'content', content: ' Third part' }));
+    expect(conversation.scrollTop).toBe(1400);
+  });
+
+  it('preserves scroll opt-out when the first response is saved, but follows a selected session', async () => {
+    let finish!: (value: Awaited<ReturnType<AgentClient['respond']>>) => void;
+    const client: AgentClient = {
+      listProfiles: vi.fn().mockResolvedValue({ default_profile: 'work', provider_ids: [],
+        profiles: [testProfile('work')], configured_profiles: [] }),
+      respond: vi.fn((_request, onDelta) => {
+        onDelta?.({ kind: 'content', content: 'Partial answer' });
+        return new Promise<Awaited<ReturnType<AgentClient['respond']>>>(resolve => { finish = resolve; });
+      }),
+    };
+    const user = userEvent.setup();
+    render(<App client={client} />);
+    await screen.findByRole('combobox', { name: 'Profile' });
+    const conversation = screen.getByRole('region', { name: 'Conversation' });
+    Object.defineProperties(conversation, {
+      scrollHeight: { configurable: true, value: 1200 },
+      clientHeight: { configurable: true, value: 400 },
+    });
+    await user.type(screen.getByLabelText('Message Rynna'), 'Investigate scroll behavior');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await screen.findByText('Partial answer');
+    conversation.scrollTop = 200;
+    fireEvent.scroll(conversation);
+
+    await act(async () => finish({ message: { role: 'assistant', content: 'Completed answer' } }));
+    expect(readSessions()).toHaveLength(1);
+    expect(conversation.scrollTop).toBe(200);
+
+    await user.click(screen.getByRole('button', { name: 'New session' }));
+    await user.click(screen.getByRole('button', { name: 'Investigate scroll behavior' }));
+    expect(screen.getByText('Completed answer')).toBeInTheDocument();
+    expect(conversation.scrollTop).toBe(1200);
+  });
+
   it('selects a profile project and starts a new session when the project changes', async () => {
     const respond = vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Done.' } });
     const client: AgentClient = {

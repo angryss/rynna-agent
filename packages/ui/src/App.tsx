@@ -1,3 +1,4 @@
+import { ArrowUp, Square } from 'lucide-react';
 import type { ContextResponse } from './contracts';
 import { SlashCommandInput, slashCommands } from './components/slash-command-input';
 import { newSessionId } from './sessions';
@@ -6,7 +7,7 @@ import { WorkflowPanel, workflowTerminal } from './components/workflow-panel';
 import type { WorkflowRun } from './contracts';
 import { ModelSelector } from './components/model-selector';
 import { McpSettingsPanel } from './components/mcp-settings';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { MemorySettingsPanel } from './components/memory-settings';
 import { ThemeToggle } from './components/theme-toggle';
@@ -962,11 +963,22 @@ export function App({ client }: AppProps) {
     }
   }
 
+  const conversationRef = useRef<HTMLElement>(null);
+  const followConversation = useRef(true);
+  // The live ID is assigned before streaming; saving the first reply does not change it.
+  const displayedSessionId = sessionId.current;
+  useLayoutEffect(() => { followConversation.current = true; }, [displayedSessionId, view]);
+  useLayoutEffect(() => {
+    const conversation = conversationRef.current;
+    if (conversation && (followConversation.current || messages.at(-1)?.role === 'user')) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+  }, [messages, displayedSessionId, view]);
+
   return (
     <main className="app-shell">
       <header className="app-header">
         <div>
-          <p className="eyebrow">AI software agent</p>
           <h1>Rynna</h1>
         </div>
         <div className="header-actions">
@@ -1078,7 +1090,11 @@ export function App({ client }: AppProps) {
                   : activeProfile.default_project_directory}</Badge>
               </aside>
             ) : null}
-            <section className="conversation" aria-label="Conversation">
+            <section className="conversation" aria-label="Conversation" ref={conversationRef}
+              onScroll={event => {
+                const element = event.currentTarget;
+                followConversation.current = element.scrollHeight - element.clientHeight - element.scrollTop < 48;
+              }}>
               {activeProfile && client.startWorkflow && client.listWorkflowRuns ? <WorkflowPanel
                 key={`${activeProfile.name}:${workflowSession}`} disabled={deletingSession || pending} client={client} profile={activeProfile.name} session={workflowSession}
                 savedRunId={sessions.find(s => s.id === workflowSession)?.workflow_run_id} project={project ?? null} selected={selectedWorkflow} context={conversationHistory(messages).map(m => `${m.role}: ${m.content}`).join('\n')}
@@ -1089,7 +1105,6 @@ export function App({ client }: AppProps) {
               <div className="messages" role="log" aria-live="polite">
                 {messages.length === 0 ? (
                   !workflowSelected && <div className="empty-state">
-                    <p className="thread-mark" aria-hidden="true">A</p>
                     <h2>What should we work through?</h2>
                     <p>Ask Rynna to investigate, plan, or execute a development task.</p>
                   </div>
@@ -1116,7 +1131,7 @@ export function App({ client }: AppProps) {
                       </details>
                     ) : (
                       <article className={`message message-${message.role}`} key={`${message.role}-${index}`}>
-                        <p className="message-role">{message.role === 'assistant' ? 'Rynna' : 'You'}</p>
+                        <p className="message-role sr-only">{message.role === 'assistant' ? 'Rynna' : 'You'}</p>
                         <p>{message.content}</p>
                       </article>
                     ),
@@ -1127,7 +1142,7 @@ export function App({ client }: AppProps) {
               {contextNotice ? <p className="context-notice" role="status">{contextNotice}</p> : null}
               {error ? <p className="request-error" role="alert">{error}</p> : null}
               {!workflowSelected && <form className="composer" onSubmit={submit}>
-                <label htmlFor="prompt">Message Rynna</label>
+                <label className="sr-only" htmlFor="prompt">Message Rynna</label>
                 <div className="composer-row">
                   <SlashCommandInput value={input} onChange={setInput} onCommand={runCommand}
                     busy={pending || workflowRunning || deletingSession} />
@@ -1138,10 +1153,10 @@ export function App({ client }: AppProps) {
                   </span>
                   {activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
                     onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
-                  {pending && compacting ? <Button disabled type="button">Compacting…</Button> : pending ? <Button type="button" disabled={stopping} onClick={() => { setStopping(true); activeResponse.current?.abort(); }}>
-                    {stopping ? 'Stopping…' : 'Stop'}
-                  </Button> : <Button disabled={workflowRunning || deletingSession || !input.trim()} type="submit">
-                    {workflowRunning ? 'Use workflow steering above' : 'Send'}
+                  {pending && compacting ? <Button disabled type="button">Compacting…</Button> : pending ? <Button className="composer-submit" aria-label={stopping ? 'Stopping…' : 'Stop'} title={stopping ? 'Stopping…' : 'Stop'} type="button" disabled={stopping} onClick={() => { setStopping(true); activeResponse.current?.abort(); }}>
+                    <Square aria-hidden="true" size={14} fill="currentColor" />
+                  </Button> : <Button className="composer-submit" aria-label={workflowRunning ? 'Use workflow steering above' : 'Send'} title={workflowRunning ? 'Use workflow steering above' : 'Send'} disabled={workflowRunning || deletingSession || !input.trim()} type="submit">
+                    <ArrowUp aria-hidden="true" />
                   </Button>}
                 </div>
               </form>}
