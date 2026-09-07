@@ -3501,7 +3501,6 @@ dependencies = [
  "indexmap 2.14.0",
  "nix 0.31.3",
  "tokio",
- "windows 0.62.2",
 ]
 
 [[package]]
@@ -4103,7 +4102,7 @@ dependencies = [
  "axum",
  "futures-util",
  "libc",
- "process-wrap 10.0.0",
+ "process-wrap 9.1.0",
  "reqwest",
  "rmcp",
  "rynna-config",
