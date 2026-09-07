@@ -1664,6 +1664,39 @@ describe('App', () => {
     expect(screen.queryByRole('option', { name: 'anthropic' })).not.toBeInTheDocument();
   });
 
+  it('preserves model context windows when editing profile identity and skills', async () => {
+    const profile = testProfile('alpha', { providers: [
+      { provider: 'ollama', model: 'qwen3:8b', enabled: true, default: true },
+      { provider: 'ollama', model: 'other', enabled: false, default: false },
+    ] });
+    const updateProfile = vi.fn().mockImplementation(async (_name: string, next: Profile) => next);
+    const user = userEvent.setup();
+    render(<App client={{ respond: vi.fn(), updateProfile,
+      listProfiles: vi.fn().mockResolvedValue({ default_profile: 'alpha', provider_ids: ['ollama'], profiles: [profile], configured_profiles: [profile] }),
+    }} />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Models' }));
+    await user.type(screen.getByLabelText('Context window for qwen3:8b'), '32768');
+    await user.tab();
+    expect(updateProfile).toHaveBeenLastCalledWith('alpha', expect.objectContaining({
+      providers: [
+        { provider: 'ollama', model: 'qwen3:8b', enabled: true, default: true, context_window: 32768 },
+        { provider: 'ollama', model: 'other', enabled: false, default: false },
+      ],
+    }));
+    await user.click(screen.getByRole('button', { name: 'Profiles' }));
+    await user.clear(screen.getByLabelText('Name'));
+    await user.type(screen.getByLabelText('Name'), 'renamed');
+    await user.type(screen.getByLabelText('Skills'), './skills/review');
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    expect(updateProfile).toHaveBeenLastCalledWith('alpha', expect.objectContaining({
+      name: 'renamed', active_skills: ['./skills/review'], providers: [
+        { provider: 'ollama', model: 'qwen3:8b', enabled: true, default: true, context_window: 32768 },
+        { provider: 'ollama', model: 'other', enabled: false, default: false },
+      ],
+    }));
+  });
+
   it('adds modifies and deletes profiles from settings', async () => {
     const createProfile = vi.fn().mockImplementation(async (profile: Profile) => profile);
     const updateProfile = vi.fn().mockImplementation(async (_name: string, profile: Profile) => profile);

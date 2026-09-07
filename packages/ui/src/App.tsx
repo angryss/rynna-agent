@@ -441,6 +441,7 @@ export function App({ client }: AppProps) {
     return {
       name: profileName.trim(),
       providers: profileProviders.map((provider, index) => ({
+        ...provider,
         provider: provider.provider.trim(),
         model: provider.model.trim(),
         enabled: provider.enabled !== false,
