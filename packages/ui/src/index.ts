@@ -6,6 +6,7 @@ export type { AppProps } from './App';
 export type { Session } from './sessions';
 export type {
   AgentClient,
+  SessionTitleRequest,
   McpSettings,
   McpServer,
   MemorySettings,

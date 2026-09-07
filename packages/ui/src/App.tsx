@@ -120,6 +120,8 @@ export function App({ client }: AppProps) {
   const [sessions, setSessions] = useState<Session[]>(readSessions);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const workflowDraftId = useRef(newSessionId());
+  const [workflowDraft, setWorkflowDraft] = useState({ session: '', id: '' });
+  const namingSessions = useRef(new Set<string>());
   const workflowEvents = useRef(new Set<string>());
   const [workflowRunning, setWorkflowRunning] = useState(false);
   const [input, setInput] = useState('');
@@ -750,36 +752,46 @@ export function App({ client }: AppProps) {
   }
 
   const workflowSession = activeSessionId ?? workflowDraftId.current;
-  const selectedWorkflow = sessions.find(s => s.id === workflowSession)?.workflow_id ?? '';
+  const selectedWorkflow = sessions.find(s => s.id === workflowSession)?.workflow_id ?? (workflowDraft.session === workflowSession ? workflowDraft.id : '');
   const workflowSelected = Boolean(activeProfile && client.startWorkflow && client.listWorkflowRuns && selectedWorkflow);
   function saveWorkflowSelection(id: string) {
     const now = new Date().toISOString();
-    sessionId.current = workflowSession;
-    setActiveSessionId(workflowSession);
-    setSessions(current => {
-      const existing = current.find(s => s.id === workflowSession);
-      return [{ id: workflowSession, name: 'Workflow conversation', profile: selectedProfile ?? '', project: project ?? null,
-        messages: conversationHistory(messages), created_at: now, updated_at: now, ...existing, workflow_id: id }, ...current.filter(s => s.id !== workflowSession)];
-    });
+    setWorkflowDraft({ session: workflowSession, id });
+    setSessions(current => current.map(session => session.id === workflowSession
+      ? { ...session, workflow_id: id, updated_at: now } : session));
   }
+  function generateSessionName(id: string, prompt: string, profile: string | undefined, model = selection) {
+    if (!client.sessionTitle || namingSessions.current.has(id)) return;
+    namingSessions.current.add(id);
+    void client.sessionTitle({ prompt, profile, selection: model }).then(name => {
+      if (isSessionDeleted(id)) return;
+      const stored = readSessions().find(session => session.id === id);
+      setSessions(current => current.map(session => session.id === id && session.name_source === 'derived'
+        ? { ...session, name: stored?.name_source === 'user' ? stored.name : name, name_source: stored?.name_source === 'user' ? 'user' : 'llm' } : session));
+    }).catch(() => { /* Keep the opening submission as a usable fallback. */ });
+  }
+
   function receiveWorkflow(run: WorkflowRun) {
     if (isSessionDeleted(run.start.session_id)) return;
     setWorkflowRunning(['running', 'pausing', 'cancelling'].includes(run.status));
     const saved = sessions.find(s => s.id === run.start.session_id);
+    sessionId.current = run.start.session_id;
+    setActiveSessionId(run.start.session_id);
     const known = new Set(saved?.workflow_event_ids ?? []);
     const events = run.events.filter(e => !known.has(`${run.id}:${e.id}`) && !workflowEvents.current.has(`${run.id}:${e.id}`));
     if (!events.length && saved?.workflow_run_id === run.id) return;
     events.forEach(e => workflowEvents.current.add(`${run.id}:${e.id}`));
     const additions: Message[] = events.map(e => ({ role: 'assistant', content: e.content }));
-    if (additions.length) setMessages(current => [...current, ...additions]);
+    if (!saved || additions.length) setMessages(current => [...current, ...(!saved ? [{ role: 'user' as const, content: run.start.goal }] : []), ...additions]);
     const now = new Date().toISOString();
     setSessions(current => {
       const existing = current.find(s => s.id === run.start.session_id);
       const entry: Session = { id: run.start.session_id, profile: run.start.profile,
-        project: run.start.project, created_at: now, ...existing, name: existing?.name && existing.name !== 'Workflow conversation' ? existing.name : sessionName(run.start.goal), updated_at: now, workflow_run_id: run.id,
-        messages: [...(existing?.messages ?? []), ...additions], workflow_event_ids: [...(existing?.workflow_event_ids ?? []), ...events.map(e => `${run.id}:${e.id}`)] };
+        project: run.start.project, created_at: now, name_source: 'derived', ...existing, workflow_id: run.start.workflow_id, name: existing?.name && existing.name !== 'Workflow conversation' ? existing.name : sessionName(run.start.goal), updated_at: now, workflow_run_id: run.id,
+        messages: [...(existing?.messages ?? [{ role: 'user' as const, content: run.start.goal }]), ...additions], workflow_event_ids: [...(existing?.workflow_event_ids ?? []), ...events.map(e => `${run.id}:${e.id}`)] };
       return [entry, ...current.filter(s => s.id !== entry.id)];
     });
+    if (!saved) generateSessionName(run.start.session_id, run.start.goal, run.start.profile, run.start.selection);
   }
 
   useEffect(() => {
@@ -841,7 +853,7 @@ export function App({ client }: AppProps) {
         if (!argument) { setInput('/title '); return; }
         if (!activeSessionId) { setError('Send a message before renaming this chat.'); return; }
         setSessions(current => current.map(session => session.id === activeSessionId
-          ? { ...session, name: argument, updated_at: new Date().toISOString() } : session));
+          ? { ...session, name: argument, name_source: 'user', updated_at: new Date().toISOString() } : session));
         break;
       case '/retry': {
         const index = messages.map(message => message.role).lastIndexOf('user');
@@ -915,6 +927,7 @@ export function App({ client }: AppProps) {
       setSessions((current) => {
         const existing = current.find(session => session.id === currentSessionId);
         const saved: Session = {
+          name_source: 'derived',
           ...existing,
           id: currentSessionId,
           name: existing?.name ?? sessionName(prompt),
@@ -927,6 +940,7 @@ export function App({ client }: AppProps) {
         return [saved, ...current.filter(session => session.id !== currentSessionId)];
       });
       setActiveSessionId(currentSessionId);
+      if (!sessions.some(session => session.id === currentSessionId)) generateSessionName(currentSessionId, prompt, selectedProfile ?? undefined);
     }
     try {
       const response = await client.respond({

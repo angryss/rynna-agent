@@ -4,6 +4,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { isMcpSettings, isMemorySettings } from '@rynna/ui';
 import type {
   AgentClient,
+  SessionTitleRequest,
   McpSettings,
   MemorySettings,
   MemorySettingsInput,
@@ -35,6 +36,12 @@ export class TauriAgentClient implements AgentClient {
   ) {
     this.invoke = invoker;
     this.createChannel = createChannel;
+  }
+
+  async sessionTitle(request: SessionTitleRequest): Promise<string> {
+    const title = await this.invoke('session_title', { request });
+    if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new Error('Rynna returned an invalid session title');
+    return title;
   }
 
   async conversationContext(request: ContextRequest): Promise<ContextResponse> {

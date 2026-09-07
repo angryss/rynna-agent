@@ -276,3 +276,12 @@ it('preserves portable summaries through the desktop context command', async () 
   invoke.mockResolvedValueOnce({ history: [] });
   await expect(client.conversationContext({ history: [] })).rejects.toThrow('invalid context data');
 });
+
+it('requests a session title through the dedicated desktop command', async () => {
+  const invoke = vi.fn().mockResolvedValue('Rust Code Review');
+  const client = new TauriAgentClient(invoke);
+  expect(await client.sessionTitle({ prompt: 'Review Rust code', profile: 'work' })).toBe('Rust Code Review');
+  expect(invoke).toHaveBeenCalledWith('session_title', { request: { prompt: 'Review Rust code', profile: 'work' } });
+  invoke.mockResolvedValueOnce('');
+  await expect(client.sessionTitle({ prompt: 'Review' })).rejects.toThrow('invalid session title');
+});

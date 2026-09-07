@@ -291,3 +291,13 @@ it('preserves portable summaries and validates context API responses', async () 
   fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ history, size: { current_tokens: 0, max_tokens: 0 }, compacted: true, limit_known: true })));
   await expect(client.conversationContext({ history: [] })).rejects.toThrow('invalid context data');
 });
+
+it('requests a session title independently of the chat endpoint', async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify('Rust Code Review')));
+  const client = new HttpAgentClient('/custom/v1/respond', fetcher);
+  expect(await client.sessionTitle({ prompt: 'Review Rust code', profile: 'work' })).toBe('Rust Code Review');
+  expect(fetcher.mock.calls[0]![0]).toBe('/custom/v1/session-title');
+  expect(JSON.parse(fetcher.mock.calls[0]![1].body)).toEqual({ prompt: 'Review Rust code', profile: 'work' });
+  fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ message: 'bad' })));
+  await expect(client.sessionTitle({ prompt: 'Review' })).rejects.toThrow('invalid session title');
+});

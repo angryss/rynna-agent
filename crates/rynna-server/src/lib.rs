@@ -241,6 +241,10 @@ fn router_with_runtime(
                 .fallback(api_method_not_allowed),
         )
         .route(
+            "/v1/session-title",
+            post(session_title).fallback(api_method_not_allowed),
+        )
+        .route(
             "/v1/context",
             post(conversation_context).fallback(api_method_not_allowed),
         )
@@ -1130,6 +1134,20 @@ pub struct RespondRequest {
 #[derive(Serialize)]
 pub struct RespondResponse {
     pub message: Message,
+}
+
+async fn session_title(
+    State(state): State<AppState>,
+    request: Result<Json<rynna_core::SessionTitleRequest>, JsonRejection>,
+) -> Result<Json<String>, ApiError> {
+    let Json(request) = request.map_err(ApiError::from)?;
+    let profiles = state.profiles.lock().await.clone();
+    Ok(Json(
+        profiles
+            .session_title(&request)
+            .await
+            .map_err(ApiError::from)?,
+    ))
 }
 
 async fn conversation_context(

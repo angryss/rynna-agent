@@ -475,6 +475,18 @@ pub async fn context_with_profiles(
 }
 
 #[tauri::command]
+async fn session_title(
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
+    request: rynna_core::SessionTitleRequest,
+) -> Result<String, String> {
+    let profiles = profiles.lock().await.clone();
+    profiles
+        .session_title(&request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn conversation_context(
     host: State<'_, Arc<rynna_workflows::host::Host>>,
     profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
@@ -1193,6 +1205,7 @@ pub fn run() {
             workflows::read_workflow_run,
             workflows::control_workflow,
             conversation_context,
+            session_title,
             respond,
             respond_stream,
             cancel_response,

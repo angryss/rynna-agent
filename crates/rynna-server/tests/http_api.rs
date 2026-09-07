@@ -1762,3 +1762,23 @@ async fn context_endpoint_estimates_and_compacts_without_replacing_transcript() 
     assert_eq!(body["compacted"], true);
     assert!(body["size"]["max_tokens"].as_u64().unwrap() > 0);
 }
+
+#[tokio::test]
+async fn session_title_endpoint_uses_the_requested_profile() {
+    let response = profiles_app().oneshot(Request::post("/v1/session-title")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"profile":"work","prompt":"Review code","selection":{"provider":"work-provider","model":"work-model","thinking":"default"}}"#)).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 1024).await.unwrap();
+    assert_eq!(serde_json::from_slice::<String>(&body).unwrap(), "Work.");
+    let response = profiles_app()
+        .oneshot(
+            Request::post("/v1/session-title")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"prompt":"Review","profile":"missing"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!response.status().is_success());
+}
