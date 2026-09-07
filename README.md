@@ -181,6 +181,18 @@ The desktop frontend uses narrow Tauri commands and a typed IPC channel instead 
 
 The desktop app also exposes **Connect OpenAI**. Choose **Use ChatGPT subscription** to complete Codex's supported browser sign-in, or enter an OpenAI API key for usage-based API billing. When adding a ChatGPT-backed OpenAI provider later, Rynna checks the user's existing Codex account and asks whether to reuse those ChatGPT credentials or complete a new browser sign-in in Rynna's private Codex configuration directory. Rynna verifies reused credentials with `codex login status`, passes API keys to Codex over stdin, and never returns credentials through Tauri IPC. After connecting, select the `openai-account` profile to send prompts through that account. This account-backed profile does not receive Rynna tools. Its ephemeral Codex thread has no execution environment; shell, image, planning, and web-search tools are disabled, any tool lifecycle item aborts the response, and the model is instructed to answer only from the supplied conversation. The provider is pinned to the reviewed `codex-cli 0.149.1` protocol/tool surface; upgrading Codex requires an Rynna compatibility review and release.
 
+## Conversation context and compaction
+
+CLI chat (terminal and plain text), web, and desktop support `/compact`. It asks the selected model to summarize previous conversation context while preserving the transcript. Summaries travel with the assistant message, survive saved-session reloads and model changes, and remain untrusted user-level reference data. Compaction does not execute tools or retain an extra memory exchange. Failed compaction leaves history intact.
+
+The shared agent automatically summarizes at 75% of its input context allowance, including system instructions, history, recalled memory, and discovered tool definitions/results. Long histories are summarized in bounded chunks; the latest request is preserved verbatim. The same check runs between tool turns. If the latest request and fixed instructions/tools cannot fit, the request fails with a context-limit error instead of silently truncating it. Workflow runs retain their stricter policy of rejecting oversized context to preserve acceptance criteria.
+
+The composer/terminal shows estimated usage as a percentage. Web/desktop also include the unsent draft, with token counts and the limit in the indicator tooltip. Counts use a byte-based estimate, not a provider tokenizer; dynamic tools and memory added during execution can increase actual usage. Automatic compaction includes these at execution time. During an active response the web/desktop indicator retains the estimate from before that response, then refreshes on completion.
+
+Set each model's **Context window (tokens)** in Settings → Models, or add `context_window = 32768` to its profile provider entry in `config.toml`. Use the actual serving limit, especially for local models. Saved model settings apply after restart. Explicit limits override built-in defaults for GPT-5.2 (400,000) and Claude Sonnet/Haiku 4.5 (200,000), including their listed dated IDs. These defaults follow [OpenAI's model documentation](https://developers.openai.com/api/docs/models/gpt-5.2) and [Anthropic's context documentation](https://platform.claude.com/docs/en/build-with-claude/context-windows). Other IDs/endpoints use an 8,192-token fallback, shown as **budget** rather than a known model context limit. Profile-default routing uses the smallest enabled fallback allowance; explicitly selecting a model uses that model's allowance.
+
+`POST /v1/context` and desktop `conversation_context` accept `profile`, `project`, `selection`, `session_id`, `history`, optional `prompt`, and `compact` (default false). They return `history`, `size: { current_tokens, max_tokens }`, `compacted`, and `limit_known`. Estimation does not call a model. Clients must preserve returned message metadata when resending history. Manual compaction has a 60-second overall deadline.
+
 ## Web and desktop slash commands
 
 Type `/` at the start of the chat composer to browse commands. Keep typing to filter,
@@ -190,6 +202,7 @@ the menu without changing the draft; Shift+Enter and Alt+Enter still insert newl
 | Command | Action |
 | --- | --- |
 | `/new`, `/clear` | Start a fresh chat in the current project, keeping saved sessions. |
+| `/compact` | Summarize the active context while preserving the visible transcript. |
 | `/retry` | Resend the last user message with its preceding history, replacing the last exchange. |
 | `/title <name>` | Rename the current saved chat. |
 | `/save` | Export the visible user/assistant transcript as JSON. |

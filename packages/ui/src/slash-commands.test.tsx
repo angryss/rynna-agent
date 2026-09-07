@@ -15,7 +15,7 @@ function setup(extra: Partial<AgentClient> = {}) {
 it('filters commands, completes with Tab, and executes with Enter without a model call', async () => {
   const { user, input, respond } = setup();
   await user.type(input, '/');
-  expect(screen.getAllByRole('option')).toHaveLength(8);
+  expect(screen.getAllByRole('option')).toHaveLength(9);
   await user.keyboard('{ArrowDown}{Tab}');
   expect(input).toHaveValue('/clear ');
   expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
@@ -136,4 +136,64 @@ it('restores the previous exchange when retry fails', async () => {
   expect(within(screen.getByRole('log')).getByText('Answer')).toBeInTheDocument();
   expect(within(screen.getByRole('log')).getAllByText('Keep this')).toHaveLength(1);
   expect(input).toHaveValue('Keep this');
+});
+
+it('compacts without changing the visible transcript and saves the summary for the next turn', async () => {
+  const conversationContext = vi.fn().mockImplementation(async request => ({
+    history: request.compact ? request.history.map((message: object, index: number) => index === request.history.length - 1
+      ? { ...message, provider_context: { provider: 'conversation_summary', state: 'Remember first request' } } : message) : request.history,
+    size: { current_tokens: 100, max_tokens: 1000 }, compacted: !!request.compact, limit_known: true,
+  }));
+  const { user, input, respond } = setup({ conversationContext });
+  await user.type(input, 'First{Enter}');
+  await screen.findByText('Answer');
+  await user.type(input, '/compact{Enter}');
+  await screen.findByText('Context compacted. Your transcript is preserved.');
+  expect(within(screen.getByRole('log')).getByText('First')).toBeInTheDocument();
+  expect(within(screen.getByRole('log')).getByText('Answer')).toBeInTheDocument();
+  expect(respond).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(window.localStorage.getItem('rynna-sessions-v1')!)[0].messages[1].provider_context.state).toBe('Remember first request');
+  await user.type(input, 'Continue{Enter}');
+  expect(respond.mock.calls[1]![0].history[1].provider_context.state).toBe('Remember first request');
+});
+
+it('preserves history when manual compaction fails', async () => {
+  const { user, input, respond } = setup({ conversationContext: vi.fn().mockImplementation(async request => {
+    if (request.compact) throw new Error('Summary unavailable');
+    return { history: request.history, size: { current_tokens: 1, max_tokens: 1000 }, compacted: false, limit_known: false };
+  }) });
+  await user.type(input, 'First{Enter}');
+  await screen.findByText('Answer');
+  await user.type(input, '/compact{Enter}');
+  expect(await screen.findByRole('alert')).toHaveTextContent('Summary unavailable');
+  expect(within(screen.getByRole('log')).getByText('First')).toBeInTheDocument();
+  expect(respond).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
+});
+
+it('labels the context percentage and unknown-model fallback honestly', async () => {
+  setup({ conversationContext: vi.fn().mockResolvedValue({ history: [], size: { current_tokens: 2048, max_tokens: 8192 }, compacted: false, limit_known: false }) });
+  const indicator = await screen.findByText('~25% budget');
+  expect(indicator).toHaveAttribute('title', expect.stringContaining('Fallback budget'));
+});
+
+it('ignores a late compaction failure after the session is deleted in another window', async () => {
+  let fail!: (error: Error) => void;
+  const { user, input } = setup({ conversationContext: vi.fn().mockImplementation(request => request.compact
+    ? new Promise((_resolve, reject) => { fail = reject; })
+    : Promise.resolve({ history: request.history, size: { current_tokens: 1, max_tokens: 8192 }, compacted: false, limit_known: false })) });
+  await user.type(input, 'First{Enter}');
+  await screen.findByText('Answer');
+  const id = JSON.parse(window.localStorage.getItem('rynna-sessions-v1')!)[0].id;
+  await user.type(input, '/compact{Enter}');
+  await screen.findByRole('button', { name: 'Compacting…' });
+  await act(async () => {
+    const key = `rynna-deleted-session-v1:${id}`;
+    window.localStorage.setItem(key, 'true');
+    window.dispatchEvent(new StorageEvent('storage', { key, newValue: 'true' }));
+    fail(new Error('Late compaction failure'));
+  });
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.queryByText('Context compacted. Your transcript is preserved.')).not.toBeInTheDocument();
+  expect(within(screen.getByRole('log')).queryByText('First')).not.toBeInTheDocument();
 });

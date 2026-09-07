@@ -1,3 +1,4 @@
+import { isContextResponse, type ContextRequest, type ContextResponse } from '@rynna/ui';
 import type { Workflow, WorkflowMetadata, WorkflowStart, WorkflowRun, WorkflowControl } from '@rynna/ui';
 import { isMcpSettings, isMemorySettings } from '@rynna/ui';
 import type {
@@ -33,6 +34,12 @@ export class HttpAgentClient implements AgentClient {
     this.profilesEndpoint = profilesEndpoint;
     this.providersEndpoint = endpoint.replace(/\/respond$/, '/providers');
     this.fetcher = fetcher;
+  }
+
+  async conversationContext(request: ContextRequest): Promise<ContextResponse> {
+    const response = await this.providerRequest(this.endpoint.replace(/\/respond$/, '/context'), 'POST', request);
+    if (!isContextResponse(response)) throw new Error('Rynna returned invalid context data');
+    return response;
   }
 
   async listWorkflows(profile: string): Promise<WorkflowMetadata[]> { return await this.providerRequest(`${this.profilesEndpoint}/${encodeURIComponent(profile)}/workflows`, 'GET') as WorkflowMetadata[]; }
@@ -122,7 +129,7 @@ export class HttpAgentClient implements AgentClient {
     return body;
   }
 
-  private async providerRequest(endpoint: string, method: string, body?: ProviderInput | MemorySettingsInput | McpSettings | Workflow | WorkflowStart | WorkflowControl): Promise<unknown> {
+  private async providerRequest(endpoint: string, method: string, body?: ContextRequest | ProviderInput | MemorySettingsInput | McpSettings | Workflow | WorkflowStart | WorkflowControl): Promise<unknown> {
     const response = await this.fetcher(endpoint, {
       method,
       ...(body

@@ -72,6 +72,7 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
                 model: format!("{name}-model"),
                 enabled: true,
                 is_default: true,
+                context_window: None,
             }],
             active_skills: vec![format!("{name}-skill")],
             mcp_servers: vec![format!("{name}-mcp")],
@@ -186,6 +187,7 @@ model = "qwen3:14b"
             model: "other".to_owned(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }],
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
@@ -275,6 +277,7 @@ providers = [
         model: "qwen3:14b".to_owned(),
         enabled: false,
         is_default: false,
+        context_window: None,
     });
     let runtime =
         AgentProfiles::new("alpha", vec![alpha, profile("openai-account", "OpenAI")]).unwrap();
@@ -332,6 +335,7 @@ async fn desktop_non_streaming_response_releases_profiles_lock_while_provider_is
             model: "test".to_owned(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }],
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
@@ -402,6 +406,7 @@ async fn desktop_stream_command_forwards_typed_deltas() {
             model: "test".to_owned(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }],
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
@@ -1005,6 +1010,7 @@ async fn desktop_response_modes_apply_and_validate_model_selection() {
         model: "selected-model".into(),
         enabled: true,
         is_default: false,
+        context_window: None,
     };
     metadata.providers.push(option.clone());
     let agent = agent.with_model_options(vec![(option, Arc::new(RecordingProvider::default()))]);
@@ -1081,4 +1087,36 @@ async fn saved_subagents_update_only_their_desktop_runtime_profile() {
     update_saved_profile(&mut catalog, &mut runtime, None, "work", work).unwrap();
     runtime.respond(Some("work"), &[], "Hello").await.unwrap();
     assert!(provider.requests.lock().unwrap()[2].tools.is_empty());
+}
+
+#[tokio::test]
+async fn desktop_context_command_uses_selected_profile_and_preserves_messages() {
+    let profiles = AgentProfiles::new(
+        "local",
+        [
+            profile("local", "Local summary"),
+            profile("work", "Work summary"),
+        ],
+    )
+    .unwrap();
+    let request = rynna_core::ContextRequest {
+        profile: Some("work".into()),
+        history: vec![
+            Message::user("Important goal"),
+            Message::assistant("Working"),
+        ],
+        compact: true,
+        ..Default::default()
+    };
+    let response = rynna_desktop::context_with_profiles(&profiles, request)
+        .await
+        .unwrap();
+    assert_eq!(response.history[1].content, "Working");
+    assert_eq!(
+        response.history[1].provider_context,
+        Some(rynna_core::ProviderContext::ConversationSummary(
+            "Work summary".into()
+        ))
+    );
+    assert!(response.compacted);
 }
