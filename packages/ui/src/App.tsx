@@ -965,13 +965,15 @@ export function App({ client }: AppProps) {
 
   const conversationRef = useRef<HTMLElement>(null);
   const followConversation = useRef(true);
-  useLayoutEffect(() => { followConversation.current = true; }, [activeSessionId, view]);
+  // The live ID is assigned before streaming; saving the first reply does not change it.
+  const displayedSessionId = sessionId.current;
+  useLayoutEffect(() => { followConversation.current = true; }, [displayedSessionId, view]);
   useLayoutEffect(() => {
     const conversation = conversationRef.current;
     if (conversation && (followConversation.current || messages.at(-1)?.role === 'user')) {
       conversation.scrollTop = conversation.scrollHeight;
     }
-  }, [messages, activeSessionId, view]);
+  }, [messages, displayedSessionId, view]);
 
   return (
     <main className="app-shell">
