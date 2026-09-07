@@ -206,7 +206,11 @@ impl WorkflowExecutor for ProfileExecutor {
         }
         Ok(())
     }
-    async fn execute(&self, run: &Run, allowance: usize) -> Result<ExecutionResult, String> {
+    async fn execute(
+        &self,
+        run: &Run,
+        allowance: usize,
+    ) -> Result<ExecutionResult, ExecutionError> {
         self.preflight(run).await?;
         let (agent, _) = resolve(&self.profiles, &run.start).await?;
         agent.execute_workflow_step(run, allowance).await

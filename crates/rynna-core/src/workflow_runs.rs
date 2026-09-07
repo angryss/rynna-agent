@@ -239,10 +239,54 @@ pub struct ExecutionResult {
     pub content: String,
     pub tool_calls: usize,
 }
+/// A step failure plus whether retrying the identical step could succeed.
+///
+/// `String` conversions default to non-transient, so an unclassified failure is
+/// still treated as terminal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionError {
+    pub message: String,
+    pub transient: bool,
+}
+
+impl ExecutionError {
+    pub fn transient(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            transient: true,
+        }
+    }
+}
+
+impl From<String> for ExecutionError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            transient: false,
+        }
+    }
+}
+
+impl From<&str> for ExecutionError {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl std::fmt::Display for ExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 #[async_trait]
 pub trait WorkflowExecutor: Send + Sync {
     async fn preflight(&self, run: &Run) -> Result<(), String>;
-    async fn execute(&self, run: &Run, tool_allowance: usize) -> Result<ExecutionResult, String>;
+    async fn execute(
+        &self,
+        run: &Run,
+        tool_allowance: usize,
+    ) -> Result<ExecutionResult, ExecutionError>;
 }
 pub struct Runner {
     store: Arc<dyn RunStore>,
@@ -421,6 +465,21 @@ impl Runner {
         runs.insert(run.id, run);
         Ok(())
     }
+    /// Budget exhaustion is terminal. Transient faults park the run as `Blocked`,
+    /// which is non-terminal and already offers Resume in the UI, so an overnight
+    /// rate limit no longer discards the run's progress.
+    fn failure_status(run: &Run, transient: bool) -> Status {
+        if run.consumed.tool_calls >= run.start.limits.tool_calls
+            || run.consumed.active_seconds >= run.start.limits.active_seconds
+        {
+            Status::BudgetExhausted
+        } else if transient {
+            Status::Blocked
+        } else {
+            Status::Failed
+        }
+    }
+
     pub async fn control(self: &Arc<Self>, id: Uuid, control: Control) -> Result<Run, String> {
         let mut runs = self.runs.lock().await;
         let mut run = runs
@@ -633,16 +692,28 @@ impl Runner {
                         current.cursor += 1;
                     }
                 }
-                _ => {
-                    current.status = if current.consumed.tool_calls
-                        >= current.start.limits.tool_calls
-                        || current.consumed.active_seconds >= current.start.limits.active_seconds
-                    {
-                        Status::BudgetExhausted
-                    } else {
-                        Status::Failed
-                    };
-                    current.reason=Some("bounded step failed, timed out, or exceeded output allowance; reserved resources remain charged".into());
+                // Oversized or over-budget results are a step failure, not a transport fault.
+                Ok(Ok(result)) => {
+                    current.status = Self::failure_status(&current, false);
+                    current.reason = Some(format!(
+                        "step produced {} bytes and {} tool calls, exceeding its 32000-byte / {tools}-call allowance; reserved resources remain charged",
+                        result.content.len(),
+                        result.tool_calls
+                    ));
+                }
+                Ok(Err(error)) => {
+                    current.status = Self::failure_status(&current, error.transient);
+                    current.reason = Some(format!(
+                        "step failed: {}; reserved resources remain charged",
+                        error.message
+                    ));
+                }
+                Err(_) => {
+                    // A step that outran its reserved wall clock may still succeed on resume.
+                    current.status = Self::failure_status(&current, true);
+                    current.reason = Some(format!(
+                        "step exceeded its {seconds}-second allowance; reserved resources remain charged"
+                    ));
                 }
             }
             // A control accepted before this commit wins, including verification completion.
@@ -679,7 +750,7 @@ impl crate::Agent {
         &self,
         run: &Run,
         allowance: usize,
-    ) -> Result<ExecutionResult, String> {
+    ) -> Result<ExecutionResult, ExecutionError> {
         use std::sync::atomic::Ordering;
         let mut agent = self.clone().with_memory_provider(None);
         agent.subagents = Arc::new(run.helpers.clone());
@@ -718,10 +789,17 @@ impl crate::Agent {
         if plan.compacted {
             return Err("workflow context exceeds the model context allowance".into());
         }
-        let message = agent
-            .respond(&[], &prompt)
-            .await
-            .map_err(|e| e.to_string())?;
+        let message = agent.respond(&[], &prompt).await.map_err(|error| {
+            // A rate-limited or overloaded provider must leave the run resumable.
+            let transient = matches!(
+                &error,
+                crate::AgentError::Provider(provider) if provider.is_transient()
+            );
+            ExecutionError {
+                message: error.to_string(),
+                transient,
+            }
+        })?;
         Ok(ExecutionResult {
             content: message.content,
             tool_calls: budget.calls.load(Ordering::Relaxed),

@@ -34,7 +34,7 @@ impl WorkflowExecutor for Executor {
     async fn preflight(&self, _: &Run) -> Result<(), String> {
         Ok(())
     }
-    async fn execute(&self, r: &Run, _: usize) -> Result<ExecutionResult, String> {
+    async fn execute(&self, r: &Run, _: usize) -> Result<ExecutionResult, ExecutionError> {
         let count = self.calls.fetch_add(1, Ordering::SeqCst);
         let content = if r.cursor == 2 && !self.malformed {
             serde_json::json!({"results":[{"criterion_id":"works","verdict":if count>=4 {"met"}else{"unmet"},"kind":"test","reference":"tests","excerpt":"deterministic check"}],"summary":"checked","can_continue":true}).to_string()
@@ -230,7 +230,7 @@ impl WorkflowExecutor for GatedExecutor {
     async fn preflight(&self, _: &Run) -> Result<(), String> {
         Ok(())
     }
-    async fn execute(&self, run: &Run, _: usize) -> Result<ExecutionResult, String> {
+    async fn execute(&self, run: &Run, _: usize) -> Result<ExecutionResult, ExecutionError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.entered.notify_one();
         self.release.notified().await;
@@ -426,4 +426,70 @@ async fn cancel_interrupts_a_blocked_step_without_waiting_for_completion() {
     assert!(stopped.events.is_empty());
     assert_eq!(stopped.cursor, 0);
     assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+}
+
+/// Fails every step with a caller-chosen classification.
+struct FailingExecutor {
+    transient: bool,
+}
+#[async_trait]
+impl WorkflowExecutor for FailingExecutor {
+    async fn preflight(&self, _: &Run) -> Result<(), String> {
+        Ok(())
+    }
+    async fn execute(&self, _: &Run, _: usize) -> Result<ExecutionResult, ExecutionError> {
+        Err(if self.transient {
+            ExecutionError::transient("provider returned 429: slow down")
+        } else {
+            ExecutionError::from("the model refused the task")
+        })
+    }
+}
+
+async fn run_until_settled(transient: bool) -> Run {
+    let runner = Runner::open(
+        Arc::new(Store::default()),
+        Arc::new(FailingExecutor { transient }),
+    )
+    .await
+    .unwrap();
+    let run = runner
+        .start(start(), default_workflow(), vec![], "snapshot".into())
+        .await
+        .unwrap();
+    // The runner drives the step on a spawned task; wait for it to settle.
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let current = runner.read(run.id, "default", run.start.session_id).await;
+        if let Some(current) = current
+            && current.status != Status::Running
+        {
+            return current;
+        }
+    }
+    panic!("run never settled");
+}
+
+#[tokio::test]
+async fn a_rate_limited_step_parks_the_run_as_resumable_instead_of_failing_it() {
+    let run = run_until_settled(true).await;
+    // Blocked is non-terminal, so the run keeps its cursor and offers Resume.
+    assert_eq!(run.status, Status::Blocked);
+    assert!(
+        !run.status.terminal(),
+        "a transient fault must stay resumable"
+    );
+    // The provider's own message survives instead of a generic string.
+    let reason = run.reason.clone().expect("a reason is recorded");
+    assert!(reason.contains("429"), "{reason}");
+    assert!(reason.contains("slow down"), "{reason}");
+}
+
+#[tokio::test]
+async fn a_permanent_step_failure_still_fails_the_run() {
+    let run = run_until_settled(false).await;
+    assert_eq!(run.status, Status::Failed);
+    assert!(run.status.terminal());
+    let reason = run.reason.clone().expect("a reason is recorded");
+    assert!(reason.contains("the model refused the task"), "{reason}");
 }

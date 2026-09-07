@@ -534,17 +534,91 @@ pub enum CompletionDelta {
     Content(String),
 }
 
+/// How a provider failure should be treated by callers that can retry or resume.
+///
+/// Defaults to `Permanent` so an unclassified failure is never retried: hammering a
+/// provider that rejected us for a real reason is worse than surfacing the error.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ProviderErrorKind {
+    /// Retrying the identical request may succeed (rate limits, overload, transport faults).
+    Transient,
+    /// Credentials were rejected. Retrying cannot help.
+    Auth,
+    /// The request exceeded the model context window. Retrying cannot help; compact instead.
+    ContextOverflow,
+    /// Anything else, including unclassified failures.
+    #[default]
+    Permanent,
+}
+
 #[derive(Debug, Error)]
 #[error("model provider failed: {message}")]
 pub struct ProviderError {
     message: String,
+    kind: ProviderErrorKind,
+    status: Option<u16>,
+    retry_after: Option<std::time::Duration>,
 }
 
 impl ProviderError {
+    /// Builds an unclassified (`Permanent`) error. Adapters that know better should
+    /// chain `with_kind`, `with_status`, or `with_retry_after`.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            kind: ProviderErrorKind::default(),
+            status: None,
+            retry_after: None,
         }
+    }
+
+    pub fn with_kind(mut self, kind: ProviderErrorKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn with_status(mut self, status: u16) -> Self {
+        self.status = Some(status);
+        self.kind = classify_status(status);
+        self
+    }
+
+    /// Records a server-supplied `Retry-After`. Callers decide whether to honour it.
+    pub fn with_retry_after(mut self, retry_after: Option<std::time::Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn kind(&self) -> ProviderErrorKind {
+        self.kind
+    }
+
+    pub fn status(&self) -> Option<u16> {
+        self.status
+    }
+
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        self.retry_after
+    }
+
+    pub fn is_transient(&self) -> bool {
+        self.kind == ProviderErrorKind::Transient
+    }
+}
+
+/// Maps an HTTP status onto a retry classification shared by every provider adapter.
+pub fn classify_status(status: u16) -> ProviderErrorKind {
+    match status {
+        401 | 403 => ProviderErrorKind::Auth,
+        // 408 request timeout, 409 conflict, 425 too early, 429 rate limited.
+        408 | 409 | 425 | 429 => ProviderErrorKind::Transient,
+        // 529 is Anthropic's "overloaded".
+        500 | 502 | 503 | 504 | 529 => ProviderErrorKind::Transient,
+        _ => ProviderErrorKind::Permanent,
     }
 }
 
@@ -848,6 +922,7 @@ impl ManagedContextStore {
 }
 
 pub mod process;
+pub mod retry;
 pub mod subagents;
 pub mod workflow_runs;
 pub mod workflows;

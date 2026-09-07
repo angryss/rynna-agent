@@ -1238,6 +1238,9 @@ impl From<&CompletionDelta> for StreamResponseEvent {
     }
 }
 
+/// Interval between SSE keep-alive frames that stop intermediaries timing out.
+const SSE_KEEP_ALIVE: Duration = Duration::from_secs(15);
+
 async fn respond_stream(
     State(state): State<AppState>,
     request: Result<Json<RespondRequest>, JsonRejection>,
@@ -1297,7 +1300,9 @@ async fn respond_stream(
             (Ok(event), receiver)
         })
     });
-    Ok(Sse::new(stream))
+    // Without periodic traffic an idle intermediary (nginx defaults to a 60-second
+    // proxy_read_timeout) drops the connection while the model is still thinking.
+    Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new().interval(SSE_KEEP_ALIVE)))
 }
 
 struct ApiError {
