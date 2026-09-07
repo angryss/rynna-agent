@@ -1,3 +1,4 @@
+import type { ContextResponse } from './contracts';
 import { SlashCommandInput, slashCommands } from './components/slash-command-input';
 import { newSessionId } from './sessions';
 import { WorkflowSettings } from './components/workflow-settings';
@@ -167,6 +168,9 @@ export function App({ client }: AppProps) {
   const [profileProviders, setProfileProviders] = useState<ProfileProvider[]>([]);
   const [catalogProviderIds, setCatalogProviderIds] = useState<string[]>([]);
   const [modelProvider, setModelProvider] = useState('');
+  const [context, setContext] = useState<ContextResponse | null>(null);
+  const [compacting, setCompacting] = useState(false);
+  const [contextNotice, setContextNotice] = useState('');
   const [customModel, setCustomModel] = useState('');
   const [mlxApiBase, setMlxApiBase] = useState('http://127.0.0.1:8000/v1');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
@@ -366,6 +370,7 @@ export function App({ client }: AppProps) {
 
   function resetConversation() {
     setPending(false);
+    setCompacting(false);
     setMessages([]);
     setInput('');
     sessionId.current = null;
@@ -775,6 +780,20 @@ export function App({ client }: AppProps) {
     });
   }
 
+  useEffect(() => {
+    let active = true;
+    if (!client.conversationContext || pending || workflowSelected) return;
+    const timer = setTimeout(() => {
+      void client.conversationContext!({ history: conversationHistory(messages), prompt: input,
+        profile: selectedProfile ?? undefined, project, selection }).then(result => {
+          if (active) setContext(result);
+        }).catch(() => { if (active) setContext(null); });
+    }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [client, messages, input, selectedProfile, project, selection, pending, workflowSelected]);
+
+  useEffect(() => { setContext(null); setContextNotice(''); }, [selectedProfile, project, selection, activeSessionId]);
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const prompt = input.trim();
@@ -803,6 +822,7 @@ export function App({ client }: AppProps) {
     }
     setError(null);
     switch (name.toLowerCase()) {
+      case '/compact': void compactConversation(); return;
       case '/new':
       case '/clear': startNewSession(project); return;
       case '/help': setInput('/'); document.getElementById('prompt')?.focus(); return;
@@ -846,7 +866,35 @@ export function App({ client }: AppProps) {
     setInput('');
   }
 
+  async function compactConversation() {
+    if (!client.conversationContext) { setError('Compaction is not available for this connection.'); return; }
+    if (conversationHistory(messages).length < 2) { setError('Send a message before compacting this chat.'); return; }
+    const id = sessionId.current;
+    const controller = new AbortController();
+    activeResponse.current = controller;
+    setPending(true);
+    setCompacting(true);
+    setContextNotice('');
+    setInput('');
+    try {
+      const result = await client.conversationContext({ profile: selectedProfile ?? undefined, project, selection,
+        session_id: id ?? undefined, history: conversationHistory(messages), compact: true });
+      if (activeResponse.current !== controller || sessionId.current !== id || controller.signal.aborted || (id && isSessionDeleted(id))) return;
+      let index = 0;
+      setMessages(messages.map(message => message.role === 'thinking' ? message : result.history[index++]!));
+      setSessions(current => current.map(session => session.id === id ? { ...session, messages: result.history, updated_at: new Date().toISOString() } : session));
+      setContext(result);
+      setContextNotice(result.compacted ? 'Context compacted. Your transcript is preserved.' : 'Context is already compact.');
+    } catch (error) {
+      if (activeResponse.current === controller && sessionId.current === id) setError(error instanceof Error ? error.message : 'Could not compact context.');
+    } finally {
+      if (activeResponse.current === controller) { activeResponse.current = null; setPending(false); setCompacting(false); }
+    }
+  }
+
   async function sendPrompt(prompt: string, displayHistory: DisplayMessage[]) {
+    setCompacting(false);
+    setContextNotice('');
     const previousMessages = messages;
     const history = conversationHistory(displayHistory);
     setError(null);
@@ -1075,6 +1123,7 @@ export function App({ client }: AppProps) {
                 )}
               </div>
 
+              {contextNotice ? <p className="context-notice" role="status">{contextNotice}</p> : null}
               {error ? <p className="request-error" role="alert">{error}</p> : null}
               {!workflowSelected && <form className="composer" onSubmit={submit}>
                 <label htmlFor="prompt">Message Rynna</label>
@@ -1083,9 +1132,12 @@ export function App({ client }: AppProps) {
                     busy={pending || workflowRunning || deletingSession} />
                 </div>
                 <div className="composer-actions">
+                  <span className="context-usage" title={context ? `Estimated ${context.size.current_tokens.toLocaleString()} / ${context.size.max_tokens.toLocaleString()} tokens, including draft and configured tools. ${context.limit_known ? 'Model context allowance.' : 'Fallback budget; configure the serving context window in model settings.'} Automatic compaction starts at 75%.` : 'Context estimate unavailable'}>
+                    {context ? `~${Math.round(context.size.current_tokens / context.size.max_tokens * 100)}% ${context.limit_known ? 'context' : 'budget'}` : 'Context —'}
+                  </span>
                   {activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
                     onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
-                  {pending ? <Button type="button" disabled={stopping} onClick={() => { setStopping(true); activeResponse.current?.abort(); }}>
+                  {pending && compacting ? <Button disabled type="button">Compacting…</Button> : pending ? <Button type="button" disabled={stopping} onClick={() => { setStopping(true); activeResponse.current?.abort(); }}>
                     {stopping ? 'Stopping…' : 'Stop'}
                   </Button> : <Button disabled={workflowRunning || deletingSession || !input.trim()} type="submit">
                     {workflowRunning ? 'Use workflow steering above' : 'Send'}
@@ -1791,6 +1843,19 @@ export function App({ client }: AppProps) {
                             <strong>{provider.model}</strong>
                             <small>{enabled ? 'Enabled in saved profile' : 'Disabled'}</small>
                           </span>
+                        </label>
+                        <label className="context-window-control">
+                          Context window (tokens)
+                          <Input type="number" min={1024} max={100000000} step={1}
+                            key={`${provider.provider}-${provider.model}-${provider.context_window ?? 'auto'}`}
+                            aria-label={`Context window for ${provider.model}`} placeholder="Auto / 8192 fallback"
+                            defaultValue={provider.context_window ?? ''} disabled={savingProfile}
+                            onBlur={event => {
+                              if (!event.currentTarget.reportValidity()) return;
+                              const context_window = event.currentTarget.value ? Number(event.currentTarget.value) : undefined;
+                              if (context_window !== provider.context_window) void saveModelSettings(activeConfiguredProfile.providers.map(pair =>
+                                pair.provider === provider.provider && pair.model === provider.model ? { ...pair, context_window } : pair));
+                            }} />
                         </label>
                         <label className="default-model-control">
                           <input

@@ -449,6 +449,7 @@ fn configured_agent(profile: &ResolvedProfile, api_key_override: Option<String>)
             model: p.model.clone(),
             enabled: true,
             is_default: false,
+            context_window: None,
         })
         .zip(providers.iter().cloned())
         .collect();
@@ -602,7 +603,9 @@ async fn chat(profiles: &AgentProfiles, profile: &str, project: Option<&str>) ->
     let mut line = String::new();
 
     let mut selection = None;
-    println!("Rynna interactive mode. /model selects a model; /thinking sets effort; /quit exits.");
+    println!(
+        "Rynna interactive mode. /compact summarizes context; /model selects a model; /thinking sets effort; /quit exits."
+    );
     loop {
         print!("you> ");
         io::stdout().flush().context("failed to flush stdout")?;
@@ -627,16 +630,57 @@ async fn chat(profiles: &AgentProfiles, profile: &str, project: Option<&str>) ->
             );
             continue;
         }
-        let message = profiles
+        let selected = profiles
             .clone()
             .with_model_selection(Some(profile), selection.as_ref())?
-            .with_project(Some(profile), project)?
+            .with_project(Some(profile), project)?;
+        if prompt.split_whitespace().next() == Some("/compact") {
+            if prompt != "/compact" {
+                println!("/compact does not take arguments.");
+                continue;
+            }
+            let request = rynna_core::ContextRequest {
+                profile: Some(profile.to_owned()),
+                history: history.clone(),
+                compact: true,
+                selection: selection.clone(),
+                ..Default::default()
+            };
+            match selected.conversation_context(&request).await {
+                Ok(result) => {
+                    history = result.history;
+                    println!(
+                        "{}: ~{}% used ({} / {} estimated tokens).",
+                        if result.compacted {
+                            "Context compacted"
+                        } else {
+                            "No context to compact"
+                        },
+                        result.size.current_tokens * 100 / result.size.max_tokens,
+                        result.size.current_tokens,
+                        result.size.max_tokens
+                    );
+                }
+                Err(error) => println!("{}", sanitize_terminal_text(&error.to_string())),
+            }
+            continue;
+        }
+        let message = selected
             .respond(Some(profile), &history, prompt)
             .await
             .map_err(sanitize_agent_error)?;
         println!("rynna> {}", sanitize_terminal_text(&message.content));
         history.push(rynna_core::Message::user(prompt));
         history.push(message);
+        if let Some(agent) = selected.clone_agent(profile) {
+            let size = agent.conversation_size(&history, "")?;
+            println!(
+                "Context: ~{}% used ({} / {} estimated tokens).",
+                size.current_tokens * 100 / size.max_tokens,
+                size.current_tokens,
+                size.max_tokens
+            );
+        }
     }
 
     Ok(())

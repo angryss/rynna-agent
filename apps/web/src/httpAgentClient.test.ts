@@ -281,3 +281,13 @@ it('passes cancellation to streaming fetch even without a delta handler', async 
   await rejected;
   expect(fetcher).toHaveBeenCalledWith('/v1/respond/stream', expect.objectContaining({ signal: controller.signal }));
 });
+
+it('preserves portable summaries and validates context API responses', async () => {
+  const history = [{ role: 'assistant', content: 'Visible answer', provider_context: { provider: 'conversation_summary', state: 'Remember this' } }];
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ history, size: { current_tokens: 200, max_tokens: 4000 }, compacted: true, limit_known: true })));
+  const client = new HttpAgentClient('/custom/v1/respond', fetcher);
+  expect((await client.conversationContext({ history: [], compact: true })).history).toEqual(history);
+  expect(fetcher.mock.calls[0]![0]).toBe('/custom/v1/context');
+  fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ history, size: { current_tokens: 0, max_tokens: 0 }, compacted: true, limit_known: true })));
+  await expect(client.conversationContext({ history: [] })).rejects.toThrow('invalid context data');
+});

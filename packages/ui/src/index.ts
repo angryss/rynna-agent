@@ -1,3 +1,5 @@
+export { isContextResponse } from './contracts';
+export type { ContextRequest, ContextResponse } from './contracts';
 export { isMcpSettings, isMemorySettings } from './contracts';
 export { App } from './App';
 export type { AppProps } from './App';

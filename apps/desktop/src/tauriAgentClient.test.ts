@@ -266,3 +266,13 @@ it('does not dispatch an already aborted request', async () => {
   await expect(new TauriAgentClient(invoke).respond({ prompt: 'Hi', history: [] }, undefined, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
   expect(invoke).not.toHaveBeenCalled();
 });
+
+it('preserves portable summaries through the desktop context command', async () => {
+  const response = { history: [{ role: 'assistant', content: 'Visible answer', provider_context: { provider: 'conversation_summary', state: 'Remember this' } }], size: { current_tokens: 200, max_tokens: 4000 }, compacted: true, limit_known: true };
+  const invoke = vi.fn().mockResolvedValue(response);
+  const client = new TauriAgentClient(invoke);
+  expect(await client.conversationContext({ profile: 'work', history: [], compact: true })).toEqual(response);
+  expect(invoke).toHaveBeenCalledWith('conversation_context', { request: { profile: 'work', history: [], compact: true } });
+  invoke.mockResolvedValueOnce({ history: [] });
+  await expect(client.conversationContext({ history: [] })).rejects.toThrow('invalid context data');
+});

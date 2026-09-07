@@ -310,6 +310,7 @@ async fn helpers_use_the_request_selected_model_without_memory_hooks() {
         model: "chosen".into(),
         enabled: true,
         is_default: true,
+        context_window: None,
     };
     let mut metadata = profile("work", vec![helper("reviewer")]);
     metadata.providers = vec![model.clone()];
@@ -474,8 +475,16 @@ async fn helpers_share_the_aggregate_result_byte_budget_across_short_summaries()
         vec![Arc::new(LargeResult)],
     )
     .unwrap();
-    let profiles =
-        AgentProfiles::new("work", [(profile("work", vec![helper("reviewer")]), agent)]).unwrap();
+    // Keep this test focused on aggregate result bytes, independently of compaction.
+    let mut metadata = profile("work", vec![helper("reviewer")]);
+    metadata.providers.push(rynna_core::ProfileProvider {
+        provider: "test".into(),
+        model: "large-context".into(),
+        enabled: true,
+        is_default: true,
+        context_window: Some(4_000_000),
+    });
+    let profiles = AgentProfiles::new("work", [(metadata, agent)]).unwrap();
     for response in 1..=2 {
         let reply = profiles.respond(None, &[], "Delegate twice").await.unwrap();
         assert!(reply.content.contains("aggregate tool result byte limit"));

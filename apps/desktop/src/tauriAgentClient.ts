@@ -1,3 +1,4 @@
+import { isContextResponse, type ContextRequest, type ContextResponse } from '@rynna/ui';
 import type { Workflow, WorkflowMetadata, WorkflowStart, WorkflowRun, WorkflowControl } from '@rynna/ui';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { isMcpSettings, isMemorySettings } from '@rynna/ui';
@@ -34,6 +35,12 @@ export class TauriAgentClient implements AgentClient {
   ) {
     this.invoke = invoker;
     this.createChannel = createChannel;
+  }
+
+  async conversationContext(request: ContextRequest): Promise<ContextResponse> {
+    const response = await this.invoke('conversation_context', { request });
+    if (!isContextResponse(response)) throw new Error('Rynna returned invalid context data');
+    return response;
   }
 
   async listWorkflows(profile: string): Promise<WorkflowMetadata[]> { return await this.invoke('list_workflows', { profile }) as WorkflowMetadata[]; }

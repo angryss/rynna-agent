@@ -60,6 +60,7 @@ pub fn router(agent: Agent) -> Router {
             model: "configured".to_owned(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }],
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
@@ -240,6 +241,10 @@ fn router_with_runtime(
                 .fallback(api_method_not_allowed),
         )
         .route(
+            "/v1/context",
+            post(conversation_context).fallback(api_method_not_allowed),
+        )
+        .route(
             "/v1/respond",
             post(respond).fallback(api_method_not_allowed),
         )
@@ -305,6 +310,7 @@ pub fn router_with_web(agent: Agent, web_dir: impl AsRef<Path>) -> Router {
             model: "configured".to_owned(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }],
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
@@ -1126,6 +1132,37 @@ pub struct RespondResponse {
     pub message: Message,
 }
 
+async fn conversation_context(
+    State(state): State<AppState>,
+    request: Result<Json<rynna_core::ContextRequest>, JsonRejection>,
+) -> Result<Json<rynna_core::ContextResponse>, ApiError> {
+    let Json(request) = request.map_err(ApiError::from)?;
+    let _lease = state
+        .workflows
+        .chat_lease(request.session_id)
+        .await
+        .map_err(workflows::error)?;
+    let profiles = state
+        .profiles
+        .lock()
+        .await
+        .clone()
+        .with_project(request.profile.as_deref(), request.project.as_deref())
+        .map_err(project_error)?
+        .with_model_selection(request.profile.as_deref(), request.selection.as_ref())
+        .map_err(|error| ApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_request",
+            message: error.to_string(),
+        })?;
+    Ok(Json(
+        profiles
+            .conversation_context(&request)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
 async fn respond(
     State(state): State<AppState>,
     request: Result<Json<RespondRequest>, JsonRejection>,
@@ -1255,6 +1292,7 @@ impl From<AgentError> for ApiError {
     fn from(error: AgentError) -> Self {
         match error {
             AgentError::BlankInput
+            | AgentError::ContextLimit
             | AgentError::InvalidHistory
             | AgentError::WorkflowContextLimit => Self {
                 status: StatusCode::BAD_REQUEST,

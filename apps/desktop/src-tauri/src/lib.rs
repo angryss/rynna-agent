@@ -459,6 +459,32 @@ pub struct ProfilesResponse {
     pub configured_profiles: Vec<Profile>,
 }
 
+pub async fn context_with_profiles(
+    profiles: &AgentProfiles,
+    request: rynna_core::ContextRequest,
+) -> Result<rynna_core::ContextResponse, String> {
+    profiles
+        .clone()
+        .with_project(request.profile.as_deref(), request.project.as_deref())
+        .map_err(|e| e.to_string())?
+        .with_model_selection(request.profile.as_deref(), request.selection.as_ref())
+        .map_err(|e| e.to_string())?
+        .conversation_context(&request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn conversation_context(
+    host: State<'_, Arc<rynna_workflows::host::Host>>,
+    profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
+    request: rynna_core::ContextRequest,
+) -> Result<rynna_core::ContextResponse, String> {
+    let _lease = host.chat_lease(request.session_id).await?;
+    let profiles = profiles.lock().await.clone();
+    context_with_profiles(&profiles, request).await
+}
+
 pub async fn respond_with_agent(
     agent: &Agent,
     request: RespondRequest,
@@ -1166,6 +1192,7 @@ pub fn run() {
             workflows::list_workflow_runs,
             workflows::read_workflow_run,
             workflows::control_workflow,
+            conversation_context,
             respond,
             respond_stream,
             cancel_response,
@@ -1259,6 +1286,7 @@ fn configured_profiles(
             model: "Codex default".to_owned(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }],
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
@@ -1347,6 +1375,7 @@ fn configured_agent(
             model: p.model.clone(),
             enabled: true,
             is_default: false,
+            context_window: None,
         })
         .zip(providers.iter().cloned())
         .collect();

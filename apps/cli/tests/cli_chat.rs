@@ -27,7 +27,7 @@ async fn chat_removes_terminal_control_characters() {
         .env("RYNNA_MODEL", "test-model");
 
     command.assert().success().stdout(predicate::eq(
-        "Rynna interactive mode. /model selects a model; /thinking sets effort; /quit exits.\nyou> rynna> safe[2J]0;owned31m\nyou> ",
+        "Rynna interactive mode. /compact summarizes context; /model selects a model; /thinking sets effort; /quit exits.\nyou> rynna> safe[2J]0;owned31m\nContext: ~1% used (127 / 8192 estimated tokens).\nyou> ",
     ));
 }
 
@@ -98,7 +98,7 @@ async fn exit_alias_quits_without_contacting_the_provider() {
         .env("RYNNA_MODEL", "test-model");
 
     command.assert().success().stdout(predicate::eq(
-        "Rynna interactive mode. /model selects a model; /thinking sets effort; /quit exits.\nyou> ",
+        "Rynna interactive mode. /compact summarizes context; /model selects a model; /thinking sets effort; /quit exits.\nyou> ",
     ));
 }
 

@@ -47,6 +47,7 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
                 model: format!("{name}-model"),
                 enabled: true,
                 is_default: true,
+                context_window: None,
             }],
             active_skills: Vec::new(),
             mcp_servers: Vec::new(),
@@ -137,6 +138,7 @@ async fn model_selection_routes_both_modes_without_mutating_defaults() {
         model: "second".into(),
         enabled: true,
         is_default: false,
+        context_window: None,
     };
     metadata.providers.push(second.clone());
     let agent =
@@ -207,6 +209,7 @@ fn disabled_models_and_unknown_thinking_are_rejected() {
         model: "disabled".into(),
         enabled: false,
         is_default: false,
+        context_window: None,
     });
     let profiles = AgentProfiles::new("local", vec![(metadata, agent)]).unwrap();
     let selection = rynna_core::ModelSelection {

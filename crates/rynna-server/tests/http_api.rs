@@ -98,6 +98,7 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
                 model: format!("{name}-model"),
                 enabled: true,
                 is_default: true,
+                context_window: None,
             }],
             active_skills: vec![format!("{name}-skill")],
             mcp_servers: vec![format!("{name}-mcp")],
@@ -993,6 +994,7 @@ model = "qwen3:8b"
             model: "qwen3:8b".to_owned(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }],
         active_skills: vec!["sensitive-skill".to_owned()],
         mcp_servers: Vec::new(),
@@ -1070,6 +1072,7 @@ model = "qwen3:8b"
             model: "runtime-model".to_owned(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }],
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
@@ -1153,6 +1156,7 @@ providers = [
         model: "qwen3:14b".to_owned(),
         enabled: false,
         is_default: false,
+        context_window: None,
     });
     let profiles = AgentProfiles::new("alpha", vec![alpha]).unwrap();
     let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
@@ -1351,6 +1355,7 @@ async fn non_streaming_response_releases_profiles_lock_while_provider_is_pending
             model: "test".to_owned(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }],
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
@@ -1420,6 +1425,7 @@ async fn both_http_response_modes_route_to_the_selected_pair() {
         model: "selected-model".into(),
         enabled: true,
         is_default: false,
+        context_window: None,
     };
     metadata.providers.push(option.clone());
     let agent =
@@ -1729,4 +1735,30 @@ async fn disconnecting_stream_drops_active_provider_work() {
     timeout(Duration::from_secs(2), provider.dropped.notified())
         .await
         .expect("disconnected response kept calculating");
+}
+
+#[tokio::test]
+async fn context_endpoint_estimates_and_compacts_without_replacing_transcript() {
+    let app = router(Agent::new(Arc::new(FixedProvider), "Policy"));
+    let request = serde_json::json!({"history":[{"role":"user","content":"Keep the goal"},{"role":"assistant","content":"Working"}],"compact":true});
+    let response = app
+        .oneshot(
+            Request::post("/v1/context")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["history"][0]["content"], "Keep the goal");
+    assert_eq!(body["history"][1]["content"], "Working");
+    assert_eq!(
+        body["history"][1]["provider_context"]["provider"],
+        "conversation_summary"
+    );
+    assert_eq!(body["compacted"], true);
+    assert!(body["size"]["max_tokens"].as_u64().unwrap() > 0);
 }
