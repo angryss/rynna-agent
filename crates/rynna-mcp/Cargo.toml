@@ -12,7 +12,7 @@ rynna-core = { path = "../rynna-core" }
 rynna-config = { path = "../rynna-config" }
 rmcp = { version = "3.2", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
 # Match the SDK transport’s wrapper version for process-tree cleanup.
-process-wrap = { version = "9.1", default-features = false, features = ["kill-on-drop", "process-group", "tokio1", "job-object"] }
+process-wrap = { version = "10.0", default-features = false, features = ["kill-on-drop", "process-group", "tokio1", "job-object"] }
 libc.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
