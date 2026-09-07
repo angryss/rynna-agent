@@ -153,7 +153,10 @@ export function isMcpSettings(value: unknown): value is McpSettings {
   });
 }
 
+export interface SessionTitleRequest { profile?: string; selection?: ModelSelection; prompt: string }
+
 export interface AgentClient {
+  sessionTitle?(request: SessionTitleRequest): Promise<string>;
   conversationContext?(request: ContextRequest): Promise<ContextResponse>;
   listWorkflows?(profile: string): Promise<WorkflowMetadata[]>;
   readWorkflow?(profile: string, id: string): Promise<Workflow>;

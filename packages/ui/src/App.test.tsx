@@ -1910,3 +1910,122 @@ describe('Stop processing', () => {
     expect(signal?.aborted).toBe(true);
   });
 });
+
+it('keeps new conversations and workflow selections unsaved until submission', async () => {
+  const user = userEvent.setup();
+  const sessionTitle = vi.fn();
+  const view = render(<App client={workflowClient({ sessionTitle })} />);
+  await screen.findByRole('option', { name: 'Test workflow' });
+  await user.type(screen.getByLabelText('Message Rynna'), 'Unsent draft');
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), 'workflow');
+  await user.type(screen.getByLabelText('Goal'), 'Unsubmitted goal');
+  expect(readSessions()).toEqual([]);
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), '');
+  await user.click(screen.getByRole('button', { name: 'New session' }));
+  expect(readSessions()).toEqual([]);
+  expect(sessionTitle).not.toHaveBeenCalled();
+  view.unmount();
+  render(<App client={workflowClient()} />);
+  expect(readSessions()).toEqual([]);
+});
+
+it('upgrades the first submission title in the background only once', async () => {
+  const user = userEvent.setup();
+  let finish!: (name: string) => void;
+  const sessionTitle = vi.fn(() => new Promise<string>(resolve => { finish = resolve; }));
+  render(<App client={{ respond: vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Done' } }), sessionTitle }} />);
+  await user.type(screen.getByLabelText('Message Rynna'), 'Please review my Rust code');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  await screen.findByRole('button', { name: 'Please review my Rust code' });
+  expect(screen.getByRole('button', { name: 'New session' })).toBeEnabled();
+  await act(async () => finish('Rust Code Review'));
+  expect(screen.getByRole('button', { name: 'Rust Code Review' })).toBeInTheDocument();
+  await user.type(screen.getByLabelText('Message Rynna'), 'Continue');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  expect(sessionTitle).toHaveBeenCalledTimes(1);
+  expect(sessionTitle).toHaveBeenCalledWith({ prompt: 'Please review my Rust code', profile: undefined, selection: undefined });
+  expect(readSessions()[0]?.name).toBe('Rust Code Review');
+});
+
+it.each(['rename', 'remote rename', 'delete', 'failure', 'navigate'])('handles a late session title after %s', async outcome => {
+  const user = userEvent.setup();
+  let finish!: (name: string) => void;
+  let fail!: (error: Error) => void;
+  const sessionTitle = vi.fn(() => new Promise<string>((resolve, reject) => { finish = resolve; fail = reject; }));
+  render(<App client={{ respond: vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Done' } }), sessionTitle }} />);
+  await user.type(screen.getByLabelText('Message Rynna'), 'Opening submission');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  await screen.findByRole('button', { name: 'Opening submission' });
+  if (outcome === 'rename') {
+    await user.type(screen.getByLabelText('Message Rynna'), '/title My chosen name');
+    await user.keyboard('{Enter}');
+  } else if (outcome === 'remote rename') {
+    writeSessions(readSessions().map(session => ({ ...session, name: 'My chosen name', name_source: 'user' })));
+  } else if (outcome === 'delete') {
+    const id = readSessions()[0]!.id;
+    await act(async () => {
+      deleteSession(id, readSessions());
+      window.dispatchEvent(new StorageEvent('storage', { key: `rynna-deleted-session-v1:${id}`, newValue: 'true' }));
+    });
+  } else if (outcome === 'navigate') {
+    await user.click(screen.getByRole('button', { name: 'New session' }));
+  }
+  await act(async () => outcome === 'failure' ? fail(new Error('offline')) : finish('Generated name'));
+  expect(readSessions().map(s => s.name)).toEqual(outcome === 'delete' ? [] : [outcome.includes('rename') ? 'My chosen name' : outcome === 'failure' ? 'Opening submission' : 'Generated name']);
+  if (outcome === 'navigate') expect(screen.getByText('What should we work through?')).toBeInTheDocument();
+});
+
+it('persists and names a workflow only after its goal is submitted', async () => {
+  const user = userEvent.setup();
+  const sessionTitle = vi.fn().mockResolvedValue('Implement Rust Changes');
+  const startWorkflow = vi.fn(async (start: WorkflowRun['start']) => ({ ...workflowRun(start.session_id, 'completed'), start }));
+  render(<App client={workflowClient({ startWorkflow, sessionTitle })} />);
+  await screen.findByRole('option', { name: 'Test workflow' });
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), 'workflow');
+  expect(readSessions()).toEqual([]);
+  await user.type(screen.getByLabelText('Goal'), 'Implement the Rust changes');
+  await user.type(screen.getByLabelText('Success criteria · one per line'), 'Tests pass');
+  await user.click(screen.getByRole('button', { name: 'Start workflow' }));
+  await screen.findByRole('button', { name: 'Implement Rust Changes' });
+  expect(readSessions()).toHaveLength(1);
+  expect(readSessions()[0]).toMatchObject({ workflow_id: 'workflow', messages: [{ role: 'user', content: 'Implement the Rust changes' }] });
+  expect(sessionTitle).toHaveBeenCalledWith({ prompt: 'Implement the Rust changes', profile: 'work', selection: startWorkflow.mock.calls[0]![0].selection });
+});
+
+it('preserves another window’s newer session data when the generated title arrives', async () => {
+  const user = userEvent.setup();
+  let finish!: (name: string) => void;
+  render(<App client={{
+    respond: vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Done' } }),
+    sessionTitle: () => new Promise(resolve => { finish = resolve; }),
+  }} />);
+  await user.type(screen.getByLabelText('Message Rynna'), 'Opening submission');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  await screen.findByRole('button', { name: 'Opening submission' });
+  const stored = readSessions()[0]!;
+  const updated = { ...stored, project: 'renamed-project', updated_at: '2099-01-01T00:00:00.000Z',
+    messages: [...stored.messages, { role: 'user' as const, content: 'From another window' }, { role: 'assistant' as const, content: 'New answer' }] };
+  writeSessions([updated]);
+  await act(async () => finish('Generated title'));
+  expect(readSessions()).toEqual([{ ...updated, name: 'Generated title', name_source: 'llm' }]);
+});
+
+it('shows the workflow goal once when polling and start resolve before a render', async () => {
+  const user = userEvent.setup();
+  let finishPoll!: (runs: WorkflowRun[]) => void;
+  let finishStart!: (run: WorkflowRun) => void;
+  const listWorkflowRuns = vi.fn(() => new Promise<WorkflowRun[]>(resolve => { finishPoll = resolve; }));
+  const startWorkflow = vi.fn((_start: WorkflowRun['start']) => new Promise<WorkflowRun>(resolve => { finishStart = resolve; }));
+  render(<App client={workflowClient({ listWorkflowRuns, startWorkflow })} />);
+  await screen.findByRole('option', { name: 'Test workflow' });
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), 'workflow');
+  await user.type(screen.getByLabelText('Goal'), 'Implement the Rust changes');
+  await user.type(screen.getByLabelText('Success criteria · one per line'), 'Tests pass');
+  await user.click(screen.getByRole('button', { name: 'Start workflow' }));
+  const start = startWorkflow.mock.calls[0]![0];
+  const run = { ...workflowRun(start.session_id, 'running'), start, events: [{ id: 1, step_id: 'implement', content: 'Working on it' }] };
+  await act(async () => { finishPoll([run]); finishStart(run); });
+  expect(within(screen.getByRole('log')).getAllByText(start.goal)).toHaveLength(1);
+  expect(within(screen.getByRole('log')).getAllByText('Working on it')).toHaveLength(1);
+  expect(readSessions()[0]!.messages).toEqual([{ role: 'user', content: start.goal }, { role: 'assistant', content: 'Working on it' }]);
+});

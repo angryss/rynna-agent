@@ -3,6 +3,7 @@ import type { Workflow, WorkflowMetadata, WorkflowStart, WorkflowRun, WorkflowCo
 import { isMcpSettings, isMemorySettings } from '@rynna/ui';
 import type {
   AgentClient,
+  SessionTitleRequest,
   McpSettings,
   MemorySettings,
   MemorySettingsInput,
@@ -34,6 +35,12 @@ export class HttpAgentClient implements AgentClient {
     this.profilesEndpoint = profilesEndpoint;
     this.providersEndpoint = endpoint.replace(/\/respond$/, '/providers');
     this.fetcher = fetcher;
+  }
+
+  async sessionTitle(request: SessionTitleRequest): Promise<string> {
+    const title = await this.providerRequest(this.endpoint.replace(/\/respond$/, '/session-title'), 'POST', request);
+    if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new Error('Rynna returned an invalid session title');
+    return title;
   }
 
   async conversationContext(request: ContextRequest): Promise<ContextResponse> {
@@ -129,7 +136,7 @@ export class HttpAgentClient implements AgentClient {
     return body;
   }
 
-  private async providerRequest(endpoint: string, method: string, body?: ContextRequest | ProviderInput | MemorySettingsInput | McpSettings | Workflow | WorkflowStart | WorkflowControl): Promise<unknown> {
+  private async providerRequest(endpoint: string, method: string, body?: SessionTitleRequest | ContextRequest | ProviderInput | MemorySettingsInput | McpSettings | Workflow | WorkflowStart | WorkflowControl): Promise<unknown> {
     const response = await this.fetcher(endpoint, {
       method,
       ...(body

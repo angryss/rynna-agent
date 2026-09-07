@@ -6,6 +6,7 @@ export interface Session {
   workflow_run_id?: string;
   workflow_event_ids?: string[];
   name: string;
+  name_source?: 'derived' | 'llm' | 'user';
   profile: string;
   project: string | null;
   messages: Message[];

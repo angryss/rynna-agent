@@ -853,6 +853,8 @@ pub mod workflow_runs;
 pub mod workflows;
 pub use subagents::Subagent;
 
+pub mod session_title;
+pub use session_title::SessionTitleRequest;
 pub mod context;
 pub use context::{ContextRequest, ContextResponse};
 pub mod memory;
