@@ -1991,3 +1991,41 @@ it('persists and names a workflow only after its goal is submitted', async () =>
   expect(readSessions()[0]).toMatchObject({ workflow_id: 'workflow', messages: [{ role: 'user', content: 'Implement the Rust changes' }] });
   expect(sessionTitle).toHaveBeenCalledWith({ prompt: 'Implement the Rust changes', profile: 'work', selection: startWorkflow.mock.calls[0]![0].selection });
 });
+
+it('preserves another window’s newer session data when the generated title arrives', async () => {
+  const user = userEvent.setup();
+  let finish!: (name: string) => void;
+  render(<App client={{
+    respond: vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Done' } }),
+    sessionTitle: () => new Promise(resolve => { finish = resolve; }),
+  }} />);
+  await user.type(screen.getByLabelText('Message Rynna'), 'Opening submission');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  await screen.findByRole('button', { name: 'Opening submission' });
+  const stored = readSessions()[0]!;
+  const updated = { ...stored, project: 'renamed-project', updated_at: '2099-01-01T00:00:00.000Z',
+    messages: [...stored.messages, { role: 'user' as const, content: 'From another window' }, { role: 'assistant' as const, content: 'New answer' }] };
+  writeSessions([updated]);
+  await act(async () => finish('Generated title'));
+  expect(readSessions()).toEqual([{ ...updated, name: 'Generated title', name_source: 'llm' }]);
+});
+
+it('shows the workflow goal once when polling and start resolve before a render', async () => {
+  const user = userEvent.setup();
+  let finishPoll!: (runs: WorkflowRun[]) => void;
+  let finishStart!: (run: WorkflowRun) => void;
+  const listWorkflowRuns = vi.fn(() => new Promise<WorkflowRun[]>(resolve => { finishPoll = resolve; }));
+  const startWorkflow = vi.fn((_start: WorkflowRun['start']) => new Promise<WorkflowRun>(resolve => { finishStart = resolve; }));
+  render(<App client={workflowClient({ listWorkflowRuns, startWorkflow })} />);
+  await screen.findByRole('option', { name: 'Test workflow' });
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), 'workflow');
+  await user.type(screen.getByLabelText('Goal'), 'Implement the Rust changes');
+  await user.type(screen.getByLabelText('Success criteria · one per line'), 'Tests pass');
+  await user.click(screen.getByRole('button', { name: 'Start workflow' }));
+  const start = startWorkflow.mock.calls[0]![0];
+  const run = { ...workflowRun(start.session_id, 'running'), start, events: [{ id: 1, step_id: 'implement', content: 'Working on it' }] };
+  await act(async () => { finishPoll([run]); finishStart(run); });
+  expect(within(screen.getByRole('log')).getAllByText(start.goal)).toHaveLength(1);
+  expect(within(screen.getByRole('log')).getAllByText('Working on it')).toHaveLength(1);
+  expect(readSessions()[0]!.messages).toEqual([{ role: 'user', content: start.goal }, { role: 'assistant', content: 'Working on it' }]);
+});

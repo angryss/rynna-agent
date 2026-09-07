@@ -765,9 +765,14 @@ export function App({ client }: AppProps) {
     namingSessions.current.add(id);
     void client.sessionTitle({ prompt, profile, selection: model }).then(name => {
       if (isSessionDeleted(id)) return;
-      const stored = readSessions().find(session => session.id === id);
-      setSessions(current => current.map(session => session.id === id && session.name_source === 'derived'
-        ? { ...session, name: stored?.name_source === 'user' ? stored.name : name, name_source: stored?.name_source === 'user' ? 'user' : 'llm' } : session));
+      setSessions(current => {
+        const stored = readSessions().find(session => session.id === id);
+        return current.map(session => {
+          if (session.id !== id || session.name_source !== 'derived') return session;
+          const latest = stored && stored.updated_at >= session.updated_at ? { ...session, ...stored } : session;
+          return { ...latest, name: stored?.name_source === 'user' ? stored.name : name, name_source: stored?.name_source === 'user' ? 'user' : 'llm' };
+        });
+      });
     }).catch(() => { /* Keep the opening submission as a usable fallback. */ });
   }
 
@@ -782,7 +787,10 @@ export function App({ client }: AppProps) {
     if (!events.length && saved?.workflow_run_id === run.id) return;
     events.forEach(e => workflowEvents.current.add(`${run.id}:${e.id}`));
     const additions: Message[] = events.map(e => ({ role: 'assistant', content: e.content }));
-    if (!saved || additions.length) setMessages(current => [...current, ...(!saved ? [{ role: 'user' as const, content: run.start.goal }] : []), ...additions]);
+    if (!saved || additions.length) setMessages(current => {
+      const needsGoal = !saved && !current.some(message => message.role === 'user');
+      return [...current, ...(needsGoal ? [{ role: 'user' as const, content: run.start.goal }] : []), ...additions];
+    });
     const now = new Date().toISOString();
     setSessions(current => {
       const existing = current.find(s => s.id === run.start.session_id);
