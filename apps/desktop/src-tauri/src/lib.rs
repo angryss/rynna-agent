@@ -33,6 +33,7 @@ use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant, timeout};
 
 mod codex_provider;
+mod responses;
 mod workflows;
 pub use codex_provider::CodexAppServerProvider;
 
@@ -530,6 +531,7 @@ pub async fn respond_stream_with_profiles(
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CompletionDeltaEvent {
+    Started,
     Thinking { content: String },
     Content { content: String },
 }
@@ -606,13 +608,35 @@ async fn respond_stream(
     profiles: State<'_, Arc<Mutex<AgentProfiles>>>,
     request: RespondRequest,
     on_event: Channel<CompletionDeltaEvent>,
+    responses: State<'_, responses::Responses>,
+    response_id: Option<uuid::Uuid>,
 ) -> Result<RespondResponse, String> {
-    let _lease = host.chat_lease(request.session_id).await?;
-    let profiles = profiles.lock().await.clone();
-    let mut on_delta = |delta: &CompletionDelta| {
-        let _ = on_event.send(CompletionDeltaEvent::from(delta));
+    let execute = async {
+        let _lease = host.chat_lease(request.session_id).await?;
+        let profiles = profiles.lock().await.clone();
+        let mut on_delta = |delta: &CompletionDelta| {
+            let _ = on_event.send(CompletionDeltaEvent::from(delta));
+        };
+        respond_stream_with_profiles(&profiles, request, &mut on_delta).await
     };
-    respond_stream_with_profiles(&profiles, request, &mut on_delta).await
+    if let Some(id) = response_id {
+        let (_guard, cancelled) = responses.register(id)?;
+        on_event
+            .send(CompletionDeltaEvent::Started)
+            .map_err(|e| e.to_string())?;
+        tokio::select! {
+            biased;
+            _ = cancelled => Err("Response stopped".into()),
+            result = execute => result,
+        }
+    } else {
+        execute.await
+    }
+}
+
+#[tauri::command]
+fn cancel_response(responses: State<'_, responses::Responses>, response_id: uuid::Uuid) {
+    responses.cancel(response_id);
 }
 
 #[tauri::command]
@@ -1126,6 +1150,7 @@ pub fn run() {
                 .build()?;
             Ok(())
         })
+        .manage(responses::Responses::default())
         .manage(configured)
         .manage(catalog)
         .manage(workflow_host)
@@ -1143,6 +1168,7 @@ pub fn run() {
             workflows::control_workflow,
             respond,
             respond_stream,
+            cancel_response,
             profiles,
             create_profile,
             update_profile,

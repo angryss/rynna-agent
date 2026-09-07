@@ -123,6 +123,9 @@ export function App({ client }: AppProps) {
   const [input, setInput] = useState('');
   const [modelOpenRequest, setModelOpenRequest] = useState(0);
   const [pending, setPending] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const activeResponse = useRef<AbortController | null>(null);
+  useEffect(() => () => activeResponse.current?.abort(), []);
   const [error, setError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [configuredProfiles, setConfiguredProfiles] = useState<Profile[]>([]);
@@ -848,26 +851,17 @@ export function App({ client }: AppProps) {
     const history = conversationHistory(displayHistory);
     setError(null);
     setInput('');
+    const controller = new AbortController();
+    activeResponse.current = controller;
+    setStopping(false);
     setPending(true);
     setMessages([...displayHistory, { role: 'user', content: prompt }]);
 
     const currentSessionId = sessionId.current ?? newSessionId();
     sessionId.current = currentSessionId;
-    try {
-      const response = await client.respond({
-        session_id: currentSessionId,
-        ...(selection ? { selection } : {}),
-        ...(selectedProfile ? { profile: selectedProfile } : {}),
-        ...(project ? { project } : {}),
-        prompt,
-        history,
-      }, (delta) => {
-        if (sessionId.current === currentSessionId) setMessages((current) => appendDelta(current, delta));
-      });
-      if (sessionId.current !== currentSessionId || isSessionDeleted(currentSessionId)) return;
-      setMessages((current) => finalizeResponse(current, response.message));
+    let streamedMessages: DisplayMessage[] = [...displayHistory, { role: 'user', content: prompt }];
+    function saveMessages(visibleMessages: Message[]) {
       const now = new Date().toISOString();
-      const visibleMessages = [...history, { role: 'user' as const, content: prompt }, response.message];
       setSessions((current) => {
         const existing = current.find(session => session.id === currentSessionId);
         const saved: Session = {
@@ -883,13 +877,39 @@ export function App({ client }: AppProps) {
         return [saved, ...current.filter(session => session.id !== currentSessionId)];
       });
       setActiveSessionId(currentSessionId);
+    }
+    try {
+      const response = await client.respond({
+        session_id: currentSessionId,
+        ...(selection ? { selection } : {}),
+        ...(selectedProfile ? { profile: selectedProfile } : {}),
+        ...(project ? { project } : {}),
+        prompt,
+        history,
+      }, (delta) => {
+        if (!controller.signal.aborted && activeResponse.current === controller && sessionId.current === currentSessionId) {
+          streamedMessages = appendDelta(streamedMessages, delta);
+          setMessages(current => appendDelta(current, delta));
+        }
+      }, controller.signal);
+      if (controller.signal.aborted || activeResponse.current !== controller || sessionId.current !== currentSessionId || isSessionDeleted(currentSessionId)) return;
+      setMessages((current) => finalizeResponse(current, response.message));
+      saveMessages([...history, { role: 'user', content: prompt }, response.message]);
     } catch (requestError) {
-      if (sessionId.current !== currentSessionId) return;
+      if (activeResponse.current !== controller || sessionId.current !== currentSessionId) return;
+      if (controller.signal.aborted && requestError instanceof Error && requestError.name === 'AbortError') {
+        if (!isSessionDeleted(currentSessionId)) saveMessages(conversationHistory(streamedMessages));
+        setError('Response stopped.');
+        return;
+      }
       setError(requestError instanceof Error ? requestError.message : 'Rynna could not complete the request');
       setMessages(previousMessages);
       setInput(prompt);
     } finally {
-      if (sessionId.current === currentSessionId) setPending(false);
+      if (activeResponse.current === controller) {
+        activeResponse.current = null;
+        if (sessionId.current === currentSessionId) { setPending(false); setStopping(false); }
+      }
     }
   }
 
@@ -932,6 +952,7 @@ export function App({ client }: AppProps) {
           ) : null}
           {canOpenSettings ? (
             <Button
+              disabled={pending}
               className="account-button"
               onClick={() => {
                 setView(view === 'settings' ? 'chat' : 'settings');
@@ -1010,7 +1031,7 @@ export function App({ client }: AppProps) {
             ) : null}
             <section className="conversation" aria-label="Conversation">
               {activeProfile && client.startWorkflow && client.listWorkflowRuns ? <WorkflowPanel
-                key={`${activeProfile.name}:${workflowSession}`} disabled={deletingSession} client={client} profile={activeProfile.name} session={workflowSession}
+                key={`${activeProfile.name}:${workflowSession}`} disabled={deletingSession || pending} client={client} profile={activeProfile.name} session={workflowSession}
                 savedRunId={sessions.find(s => s.id === workflowSession)?.workflow_run_id} project={project ?? null} selected={selectedWorkflow} context={conversationHistory(messages).map(m => `${m.role}: ${m.content}`).join('\n')}
                 selection={selection ?? { provider: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.provider ?? '', model: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.model ?? '', thinking: 'default' }}
                 onSelection={saveWorkflowSelection} onRun={receiveWorkflow} /> : null}
@@ -1064,9 +1085,11 @@ export function App({ client }: AppProps) {
                 <div className="composer-actions">
                   {activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
                     onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
-                  <Button disabled={pending || workflowRunning || deletingSession || !input.trim()} type="submit">
-                    {workflowRunning ? 'Use workflow steering above' : pending ? 'Working…' : 'Send'}
-                  </Button>
+                  {pending ? <Button type="button" disabled={stopping} onClick={() => { setStopping(true); activeResponse.current?.abort(); }}>
+                    {stopping ? 'Stopping…' : 'Stop'}
+                  </Button> : <Button disabled={workflowRunning || deletingSession || !input.trim()} type="submit">
+                    {workflowRunning ? 'Use workflow steering above' : 'Send'}
+                  </Button>}
                 </div>
               </form>}
             </section>

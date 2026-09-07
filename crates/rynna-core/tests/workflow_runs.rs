@@ -384,3 +384,46 @@ async fn concurrent_starts_admit_only_one_request() {
     );
     assert_ne!(a.is_ok(), b.is_ok());
 }
+
+#[tokio::test]
+async fn cancel_interrupts_a_blocked_step_without_waiting_for_completion() {
+    let executor = gated();
+    let runner = Runner::open(Arc::new(Store::default()), executor.clone())
+        .await
+        .unwrap();
+    let request = start();
+    runner
+        .start(
+            request.clone(),
+            default_workflow(),
+            vec![],
+            "snapshot".into(),
+        )
+        .await
+        .unwrap();
+    executor.entered.notified().await;
+    let active = runner
+        .list(&request.profile, request.session_id)
+        .await
+        .pop()
+        .unwrap();
+    runner
+        .control(
+            active.id,
+            Control {
+                profile: request.profile.clone(),
+                session_id: request.session_id,
+                expected_revision: active.revision,
+                action: Action::Cancel,
+            },
+        )
+        .await
+        .unwrap();
+    // Deliberately never release the executor. Cancellation must drop the step.
+    let stopped = settled(&runner, &request).await;
+    assert_eq!(stopped.status, Status::Cancelled);
+    assert!(!stopped.in_flight);
+    assert!(stopped.events.is_empty());
+    assert_eq!(stopped.cursor, 0);
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+}

@@ -205,11 +205,13 @@ export class HttpAgentClient implements AgentClient {
   async respond(
     request: RespondRequest,
     onDelta?: CompletionDeltaHandler,
+    signal?: AbortSignal,
   ): Promise<RespondResponse> {
-    if (onDelta) {
-      return this.respondStream(request, onDelta);
+    if (onDelta || signal) {
+      return this.respondStream(request, onDelta ?? (() => {}), signal);
     }
     const response = await this.fetcher(this.endpoint, {
+      signal,
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
@@ -236,8 +238,10 @@ export class HttpAgentClient implements AgentClient {
   private async respondStream(
     request: RespondRequest,
     onDelta: CompletionDeltaHandler,
+    signal?: AbortSignal,
   ): Promise<RespondResponse> {
     const response = await this.fetcher(`${this.endpoint}/stream`, {
+      signal,
       method: 'POST',
       headers: {
         accept: 'text/event-stream',
@@ -294,24 +298,29 @@ export class HttpAgentClient implements AgentClient {
       }
     };
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        pending += decoder.decode();
-        if (pending) {
-          pending += '\n\n';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          pending += decoder.decode();
+          if (pending) {
+            pending += '\n\n';
+          }
+          processRecords(true);
+          break;
         }
-        processRecords(true);
-        break;
+        pending += decoder.decode(value, { stream: true });
+        processRecords(false);
       }
-      pending += decoder.decode(value, { stream: true });
-      processRecords(false);
-    }
 
-    if (!result) {
-      throw new Error('Rynna API stream ended without a response');
+      if (!result) {
+        throw new Error('Rynna API stream ended without a response');
+      }
+      return result;
+    } finally {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
     }
-    return result;
   }
 }
 

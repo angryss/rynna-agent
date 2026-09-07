@@ -77,7 +77,7 @@ export function WorkflowPanel(props: Props) {
       <div className="provider-actions">
         {run.status === 'running' && <Button disabled={disabled || busy || !!error} onClick={() => void action({ action: 'pause' })}>Pause</Button>}
         {['paused', 'blocked'].includes(run.status) && <Button disabled={disabled || busy || !!error || (run.uncertain && !acknowledge)} onClick={() => void action({ action: 'resume', acknowledge_uncertain: acknowledge })}>Resume</Button>}
-        {!workflowTerminal(run) && <Button disabled={disabled || busy || !!error} variant="outline" onClick={() => void action({ action: 'cancel' })}>Cancel run</Button>}
+        {!workflowTerminal(run) && <Button disabled={disabled || busy || run.status === 'cancelling'} variant="outline" onClick={() => void action({ action: 'cancel' })}>{['running', 'pausing', 'cancelling'].includes(run.status) ? (run.status === 'cancelling' ? 'Stopping…' : 'Stop') : 'Cancel run'}</Button>}
       </div>
       {!workflowTerminal(run) && <form className="provider-form" onSubmit={e => { e.preventDefault(); void action({ action: 'steer', text: steering, criteria: amendment.trim() ? amendment.split('\n').filter(v => v.trim()).map((text, i) => ({ id: run.start.criteria[i]?.id ?? `criterion-${i + 1}`, text })) : null }).then(() => setSteering('')); }}>
         <label>Steering<Textarea value={steering} onChange={e => setSteering(e.target.value)} maxLength={8192} /></label>

@@ -1686,3 +1686,47 @@ async fn public_profile_lists_redact_helper_instructions_but_local_admin_can_edi
         }
     }
 }
+
+#[tokio::test]
+async fn disconnecting_stream_drops_active_provider_work() {
+    struct PendingProvider {
+        entered: Notify,
+        dropped: Arc<Notify>,
+    }
+    struct Dropped(Arc<Notify>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+    #[async_trait]
+    impl ModelProvider for PendingProvider {
+        async fn complete(&self, _: CompletionRequest) -> Result<Completion, ProviderError> {
+            let _guard = Dropped(self.dropped.clone());
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+    }
+    let provider = Arc::new(PendingProvider {
+        entered: Notify::new(),
+        dropped: Arc::new(Notify::new()),
+    });
+    let app = router(Agent::new(provider.clone(), "Test"));
+    let response = app
+        .oneshot(
+            Request::post("/v1/respond/stream")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"prompt":"Think","history":[]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    timeout(Duration::from_secs(2), provider.entered.notified())
+        .await
+        .unwrap();
+    drop(response);
+    timeout(Duration::from_secs(2), provider.dropped.notified())
+        .await
+        .expect("disconnected response kept calculating");
+}

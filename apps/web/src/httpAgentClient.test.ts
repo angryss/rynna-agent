@@ -268,3 +268,16 @@ it('scopes workflow reads and controls and accepts successful deletion without J
   fetcher.mockResolvedValueOnce(new Response('{"error":{"message":"stale revision"}}', { status: 409 }));
   await expect(client.controlWorkflow('run', control)).rejects.toThrow('stale revision');
 });
+
+it('passes cancellation to streaming fetch even without a delta handler', async () => {
+  const controller = new AbortController();
+  const fetcher = vi.fn((_url, init) => new Promise<Response>((_, reject) => {
+    init.signal.addEventListener('abort', () => reject(init.signal.reason));
+  }));
+  const client = new HttpAgentClient('/v1/respond', fetcher);
+  const pending = client.respond({ prompt: 'Think', history: [] }, undefined, controller.signal);
+  const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  controller.abort();
+  await rejected;
+  expect(fetcher).toHaveBeenCalledWith('/v1/respond/stream', expect.objectContaining({ signal: controller.signal }));
+});

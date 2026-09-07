@@ -156,31 +156,59 @@ export class TauriAgentClient implements AgentClient {
   async respond(
     request: RespondRequest,
     onDelta?: CompletionDeltaHandler,
+    signal?: AbortSignal,
   ): Promise<RespondResponse> {
+    signal?.throwIfAborted();
+    const responseId = signal ? crypto.randomUUID() : undefined;
+    let started = false;
+    let cancellation: Promise<unknown> | undefined;
+    let cancelFailure: (reason: unknown) => void = () => {};
+    const failedCancellation = new Promise<never>((_, reject) => { cancelFailure = reject; });
+    const cancel = () => {
+      if (started && signal?.aborted) {
+        cancellation = this.invoke('cancel_response', { responseId });
+        void cancellation.catch(cancelFailure);
+      }
+    };
     let command = 'respond';
     let args: Record<string, unknown> = { request };
     let invalidDelta = false;
-    if (onDelta) {
+    if (onDelta || signal) {
       command = 'respond_stream';
       const onEvent = this.createChannel();
-      onEvent.onmessage = (message) => {
-        if (isCompletionDelta(message)) {
-          onDelta(message);
+      onEvent.onmessage = (message: unknown) => {
+        if (responseId && typeof message === 'object' && message !== null && 'kind' in message && message.kind === 'started') {
+          started = true;
+          cancel();
+        } else if (isCompletionDelta(message)) {
+          if (!signal?.aborted) onDelta?.(message);
         } else {
           invalidDelta = true;
         }
       };
-      args = { request, onEvent };
+      args = { request, onEvent, ...(responseId ? { responseId } : {}) };
     }
 
-    const response = await this.invoke(command, args);
-    if (invalidDelta) {
-      throw new Error('Rynna desktop returned invalid stream data');
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      const response = await Promise.race([this.invoke(command, args), failedCancellation]);
+      signal?.throwIfAborted();
+      if (invalidDelta) {
+        throw new Error('Rynna desktop returned invalid stream data');
+      }
+      if (!isRespondResponse(response)) {
+        throw new Error('Rynna desktop returned an invalid response');
+      }
+      return response;
+    } catch (error) {
+      if (signal?.aborted && cancellation) {
+        await cancellation;
+        signal.throwIfAborted();
+      }
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', cancel);
     }
-    if (!isRespondResponse(response)) {
-      throw new Error('Rynna desktop returned an invalid response');
-    }
-    return response;
   }
 }
 

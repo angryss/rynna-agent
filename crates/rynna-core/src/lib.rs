@@ -838,6 +838,7 @@ impl ManagedContextStore {
     }
 }
 
+pub mod process;
 pub mod subagents;
 pub mod workflow_runs;
 pub mod workflows;

@@ -95,6 +95,7 @@ describe('App', () => {
         history: [],
       },
       expect.any(Function),
+      expect.any(AbortSignal),
     );
     expect(await screen.findByText('Follow the thread.')).toBeInTheDocument();
     expect(within(screen.getByRole('log')).getByText('Help me plan this')).toBeInTheDocument();
@@ -135,7 +136,7 @@ describe('App', () => {
       profile: 'work',
       project: 'rynna',
       session_id: expect.any(String),
-    }), expect.any(Function));
+    }), expect.any(Function), expect.any(AbortSignal));
     const firstSession = respond.mock.calls[0]![0].session_id;
 
     await user.click(screen.getByRole('button', { name: 'Default project' }));
@@ -195,7 +196,7 @@ describe('App', () => {
         { role: 'user', content: 'Review Rynna changes' },
         { role: 'assistant', content: 'The project is healthy.' },
       ],
-    }), expect.any(Function));
+    }), expect.any(Function), expect.any(AbortSignal));
   });
 
   it('confirms deletion, preserves other chats, and resets the active session in its project', async () => {
@@ -270,7 +271,7 @@ describe('App', () => {
       if (outcome === 'resolve') finish({ message: { role: 'assistant', content: 'Late answer' } });
       else fail(new Error('Late failure'));
     });
-    expect(screen.getByRole('button', { name: 'Working…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'New session' })).toBeDisabled();
     expect(screen.queryByText('Late answer')).not.toBeInTheDocument();
     expect(screen.queryByText('Late failure')).not.toBeInTheDocument();
@@ -463,6 +464,7 @@ describe('App', () => {
         history: [],
       },
       expect.any(Function),
+      expect.any(AbortSignal),
     );
     expect(await screen.findByText('Submitted.')).toBeInTheDocument();
   });
@@ -573,6 +575,7 @@ describe('App', () => {
         history: [],
       },
       expect.any(Function),
+      expect.any(AbortSignal),
     );
     expect(await screen.findByText('Recovered.')).toBeInTheDocument();
     expect(within(screen.getByRole('log')).getAllByText('Retry this')).toHaveLength(1);
@@ -656,6 +659,7 @@ describe('App', () => {
         history: [],
       },
       expect.any(Function),
+      expect.any(AbortSignal),
     );
     expect(respond.mock.calls[1]![0].session_id).not.toBe(respond.mock.calls[0]![0].session_id);
     expect(screen.getByRole('button', { name: 'Choose model: gpt-5 · Default' })).toBeInTheDocument();
@@ -1769,4 +1773,43 @@ it('selects chat provider, model and thinking without changing history or profil
   await user.click(screen.getByRole('button', { name: /Profile default/ }));
   expect(picker).toHaveTextContent('small· Default');
   expect(updateProfile).not.toHaveBeenCalled();
+});
+
+describe('Stop processing', () => {
+  it('keeps partial output, cancels processing, saves it and allows another prompt', async () => {
+    let signal: AbortSignal | undefined;
+    let lateDelta: (() => void) | undefined;
+    const client: AgentClient = { respond: vi.fn((_request, onDelta, abort) => {
+      signal = abort;
+      onDelta?.({ kind: 'content', content: 'Partial answer' });
+      lateDelta = () => onDelta?.({ kind: 'content', content: ' unwanted late text' });
+      return new Promise<never>((_, reject) => abort!.addEventListener('abort', () => reject(abort!.reason), { once: true }));
+    }) };
+    const user = userEvent.setup();
+    render(<App client={client} />);
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Message Rynna'), 'Do some work');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(signal?.aborted).toBe(true);
+    expect(await screen.findByText('Response stopped.')).toBeInTheDocument();
+    expect(screen.getByText('Partial answer')).toBeInTheDocument();
+    act(() => lateDelta?.());
+    expect(screen.queryByText(/unwanted late text/)).not.toBeInTheDocument();
+    expect(readSessions()[0]?.messages).toEqual([{ role: 'user', content: 'Do some work' }, { role: 'assistant', content: 'Partial answer' }]);
+    await user.type(screen.getByLabelText('Message Rynna'), 'Next task');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+  });
+
+  it('shows Stop before the first token arrives and aborts on unmount', async () => {
+    let signal: AbortSignal | undefined;
+    const client: AgentClient = { respond: vi.fn((_request, _onDelta, abort) => { signal = abort; return new Promise<never>(() => {}); }) };
+    const user = userEvent.setup();
+    const view = render(<App client={client} />);
+    await user.type(screen.getByLabelText('Message Rynna'), 'Think');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
+    view.unmount();
+    expect(signal?.aborted).toBe(true);
+  });
 });

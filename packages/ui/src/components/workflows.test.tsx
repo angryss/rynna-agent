@@ -55,3 +55,12 @@ it.each([
   expect(sent).toBe(expected);
   expect(new TextEncoder().encode(sent).length).toBeLessThanOrEqual(16000);
 });
+
+it.each(['running', 'pausing'] as const)('offers Stop for a %s workflow and waits for host settlement', async (status) => {
+  const run = { id: 'run', status, revision: 4, cursor: 0, workflow, start: { goal: 'Build', criteria: [], limits: { steps: 50, tool_calls: 512, active_seconds: 1800 } }, consumed: { steps: 1, tool_calls: 64, active_seconds: 300 }, events: [] } as unknown as WorkflowRun;
+  const client: AgentClient = { respond: vi.fn(), listWorkflows: vi.fn().mockResolvedValue(metadata), listWorkflowRuns: vi.fn().mockResolvedValue([run]), controlWorkflow: vi.fn().mockResolvedValue({ ...run, status: 'cancelling', revision: 5 }) };
+  render(<WorkflowPanel client={client} profile="work" session="session" project={null} selection={{ provider: 'fake', model: 'fake', thinking: 'default' }} selected="rynna-default" context="" onSelection={vi.fn()} onRun={vi.fn()} />);
+  await userEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+  expect(client.controlWorkflow).toHaveBeenCalledWith('run', { profile: 'work', session_id: 'session', expected_revision: 4, action: 'cancel' });
+  expect(await screen.findByRole('button', { name: 'Stopping…' })).toBeDisabled();
+});
