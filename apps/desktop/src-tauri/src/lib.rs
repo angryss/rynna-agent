@@ -1093,16 +1093,13 @@ async fn save_mcp_settings(
     let mut profiles = profiles.lock().await;
     ensure_memory_profile(&catalog, &profiles, &profile)?;
     let store = provider_settings.lock().await;
-    let saved_profile = profile.clone();
-    let settings = offload(
-        McpSettingsStore::new(store.mcp_settings_path()),
-        move |store| {
-            store
-                .save(&saved_profile, settings)
-                .map_err(|error| error.to_string())
-        },
-    )
-    .await?;
+    // Kept inline: the runtime update below must not be separated from this write by
+    // an await, or a dropped command future could persist settings while the running
+    // profile keeps the old tool source. Tauri's borrowed State makes the server's
+    // spawn-the-whole-section approach impractical here.
+    let settings = McpSettingsStore::new(store.mcp_settings_path())
+        .save(&profile, settings)
+        .map_err(|error| error.to_string())?;
     let source = Some(Arc::new(McpToolSource(settings.clone())) as Arc<dyn rynna_core::ToolSource>);
     if profiles.contains(&profile) {
         profiles
@@ -1147,16 +1144,10 @@ async fn save_memory_settings(
     let mut profiles = profiles.lock().await;
     ensure_memory_profile(&catalog, &profiles, &profile)?;
     let store = provider_settings.lock().await;
-    let saved_profile = profile.clone();
-    let settings = offload(
-        MemorySettingsStore::new(store.memory_settings_path()),
-        move |store| {
-            store
-                .save(&saved_profile, settings)
-                .map_err(|error| error.to_string())
-        },
-    )
-    .await?;
+    // Kept inline for the same reason as save_mcp_settings.
+    let settings = MemorySettingsStore::new(store.memory_settings_path())
+        .save(&profile, settings)
+        .map_err(|error| error.to_string())?;
     let memory = configured_memory(&settings).map_err(|error| error.to_string())?;
     if profiles.contains(&profile) {
         profiles

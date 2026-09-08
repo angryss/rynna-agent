@@ -756,6 +756,20 @@ async fn save_mcp_settings(
     let Json(input) = request.map_err(|_| {
         mcp_settings_error(McpSettingsError::Invalid("invalid mcp settings request"))
     })?;
+    // The write and the runtime update that follows it are one unit. Awaiting the
+    // blocking write introduced a point where a client disconnect could drop this
+    // handler, leaving settings persisted while the running profile kept the old
+    // tool source. A spawned task is not cancelled when the caller goes away.
+    tokio::spawn(save_mcp_settings_inner(state, profile, input))
+        .await
+        .map_err(|_| mcp_settings_error(McpSettingsError::Write))?
+}
+
+async fn save_mcp_settings_inner(
+    state: AppState,
+    profile: String,
+    input: McpSettings,
+) -> Result<Json<McpSettings>, ApiError> {
     // Serialize against catalog rename/delete, then lock runtime and credentials in that order.
     let catalog = match &state.catalog {
         Some(catalog) => Some(catalog.lock().await),
@@ -828,6 +842,18 @@ async fn save_memory_settings(
             "invalid memory settings request",
         ))
     })?;
+    // The write and the runtime update that follows it are one unit; see
+    // save_mcp_settings for why a client disconnect must not split them.
+    tokio::spawn(save_memory_settings_inner(state, profile, input))
+        .await
+        .map_err(|_| memory_settings_error(MemorySettingsError::Write))?
+}
+
+async fn save_memory_settings_inner(
+    state: AppState,
+    profile: String,
+    input: MemorySettings,
+) -> Result<Json<MemorySettingsResponse>, ApiError> {
     // Serialize against catalog rename/delete, then lock runtime and credentials in that order.
     let catalog = match &state.catalog {
         Some(catalog) => Some(catalog.lock().await),
