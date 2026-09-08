@@ -610,6 +610,24 @@ impl ProviderError {
     }
 }
 
+/// True when a rejected request's body says the prompt exceeded the context window.
+///
+/// Providers report this as an ordinary 400, which is otherwise indistinguishable
+/// from a malformed request. Callers need the difference: compacting or shortening
+/// the conversation fixes one and not the other.
+pub fn context_overflow_signal(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    [
+        "context_length_exceeded",
+        "maximum context length",
+        "prompt is too long",
+        "context window",
+        "too many tokens",
+    ]
+    .iter()
+    .any(|signal| body.contains(signal))
+}
+
 /// Maps an HTTP status onto a retry classification shared by every provider adapter.
 pub fn classify_status(status: u16) -> ProviderErrorKind {
     match status {

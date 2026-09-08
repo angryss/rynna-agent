@@ -1322,6 +1322,17 @@ impl From<AgentError> for ApiError {
                 code: "invalid_request",
                 message: error.to_string(),
             },
+            // A context overflow is the caller's to fix, and the fix is specific:
+            // the generic provider message would send them looking in the wrong place.
+            AgentError::Provider(provider)
+                if provider.kind() == rynna_core::ProviderErrorKind::ContextOverflow =>
+            {
+                Self {
+                    status: StatusCode::BAD_REQUEST,
+                    code: "context_overflow",
+                    message: "the conversation exceeded the model's context window; shorten it, start a new session, or lower the configured context size".to_owned(),
+                }
+            }
             AgentError::Provider(_)
             | AgentError::InvalidProviderResponse
             | AgentError::EmptyProviderResponse

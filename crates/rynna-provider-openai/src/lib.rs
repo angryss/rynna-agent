@@ -10,7 +10,7 @@ use rynna_core::{
     ModelProvider, PrefixCacheOptimizer, ProviderContext, ProviderError, Role, ServerCompaction,
     ToolCall, ToolDefinition,
 };
-use rynna_core::{ProviderErrorKind, classify_status};
+use rynna_core::{ProviderErrorKind, classify_status, context_overflow_signal};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -134,6 +134,14 @@ fn cache_technology_for(base_url: &str) -> CacheTechnology {
     } else {
         CacheTechnology::Generic
     }
+}
+
+/// Upgrades an otherwise-opaque rejection to `ContextOverflow` when the body says so.
+fn classify_body(error: ProviderError, body: &str) -> ProviderError {
+    if error.kind() == ProviderErrorKind::Permanent && context_overflow_signal(body) {
+        return error.with_kind(ProviderErrorKind::ContextOverflow);
+    }
+    error
 }
 
 fn retry_after_of(response: &reqwest::Response) -> Option<std::time::Duration> {
@@ -398,12 +406,16 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let retry_after = retry_after_of(&response);
         let body = read_response_body(response).await?;
         if !status.is_success() {
-            return Err(ProviderError::new(format!(
-                "provider returned {status}: {}",
-                truncate(&String::from_utf8_lossy(&body), MAX_ERROR_BODY_CHARS)
-            ))
-            .with_status(status.as_u16())
-            .with_retry_after(retry_after));
+            let body = String::from_utf8_lossy(&body);
+            return Err(classify_body(
+                ProviderError::new(format!(
+                    "provider returned {status}: {}",
+                    truncate(&body, MAX_ERROR_BODY_CHARS)
+                ))
+                .with_status(status.as_u16())
+                .with_retry_after(retry_after),
+                &body,
+            ));
         }
         response_completion(&body)
     }
@@ -452,12 +464,15 @@ impl ModelProvider for OpenAiCompatibleProvider {
         if !status.is_success() {
             let body = read_response_body(response).await?;
             let body = String::from_utf8_lossy(&body);
-            return Err(ProviderError::new(format!(
-                "provider returned {status}: {}",
-                truncate(&body, MAX_ERROR_BODY_CHARS)
-            ))
-            .with_status(status.as_u16())
-            .with_retry_after(retry_after));
+            return Err(classify_body(
+                ProviderError::new(format!(
+                    "provider returned {status}: {}",
+                    truncate(&body, MAX_ERROR_BODY_CHARS)
+                ))
+                .with_status(status.as_u16())
+                .with_retry_after(retry_after),
+                &body,
+            ));
         }
 
         let body = read_response_body(response).await?;
@@ -509,12 +524,15 @@ impl ModelProvider for OpenAiCompatibleProvider {
         if !status.is_success() {
             let body = read_response_body(response).await?;
             let body = String::from_utf8_lossy(&body);
-            return Err(ProviderError::new(format!(
-                "provider returned {status}: {}",
-                truncate(&body, MAX_ERROR_BODY_CHARS)
-            ))
-            .with_status(status.as_u16())
-            .with_retry_after(retry_after));
+            return Err(classify_body(
+                ProviderError::new(format!(
+                    "provider returned {status}: {}",
+                    truncate(&body, MAX_ERROR_BODY_CHARS)
+                ))
+                .with_status(status.as_u16())
+                .with_retry_after(retry_after),
+                &body,
+            ));
         }
 
         let mut pending = Vec::new();

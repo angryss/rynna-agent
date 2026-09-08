@@ -1172,3 +1172,39 @@ async fn a_long_retry_after_stops_retrying_rather_than_sleeping() {
         Some(std::time::Duration::from_secs(120))
     );
 }
+
+#[tokio::test]
+async fn a_context_overflow_is_distinguished_from_other_client_errors() {
+    let server = MockServer::start().await;
+    // Providers report an oversized prompt as an ordinary 400, which is otherwise
+    // indistinguishable from a malformed request. The caller needs the difference.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": {
+                "code": "context_length_exceeded",
+                "message": "This model's maximum context length is 200000 tokens",
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = chat_provider(&server).complete(hello()).await.unwrap_err();
+    assert_eq!(error.kind(), rynna_core::ProviderErrorKind::ContextOverflow);
+    assert!(!error.is_transient(), "compaction fixes this, not a retry");
+}
+
+#[tokio::test]
+async fn an_ordinary_client_error_is_not_treated_as_a_context_overflow() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("unknown parameter"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = chat_provider(&server).complete(hello()).await.unwrap_err();
+    assert_eq!(error.kind(), rynna_core::ProviderErrorKind::Permanent);
+}

@@ -12,7 +12,7 @@ use rynna_core::{
     ModelProvider, PrefixCacheOptimizer, ProviderContext, ProviderError, Role, ServerCompaction,
     ToolCall,
 };
-use rynna_core::{ProviderErrorKind, classify_status};
+use rynna_core::{ProviderErrorKind, classify_status, context_overflow_signal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -1015,12 +1015,21 @@ async fn http_error(response: reqwest::Response, api_key: &str) -> ProviderError
         Err(error) => return error,
     };
     let text = String::from_utf8_lossy(&body).replace(api_key, "[REDACTED]");
-    ProviderError::new(format!(
+    let error = ProviderError::new(format!(
         "Anthropic returned {status}: {}",
         text.chars().take(512).collect::<String>()
     ))
     .with_status(status.as_u16())
-    .with_retry_after(retry_after)
+    .with_retry_after(retry_after);
+    classify_body(error, &text)
+}
+
+/// Upgrades an otherwise-opaque rejection to `ContextOverflow` when the body says so.
+fn classify_body(error: ProviderError, body: &str) -> ProviderError {
+    if error.kind() == ProviderErrorKind::Permanent && context_overflow_signal(body) {
+        return error.with_kind(ProviderErrorKind::ContextOverflow);
+    }
+    error
 }
 
 fn retry_after_of(response: &reqwest::Response) -> Option<std::time::Duration> {
