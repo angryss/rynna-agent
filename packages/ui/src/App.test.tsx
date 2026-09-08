@@ -107,6 +107,34 @@ describe('App', () => {
 
   });
 
+  it('warns that conversations are no longer saved once the store is full', async () => {
+    // A quota-exceeded store must not break the conversation, but the user has to
+    // be told: the server keeps no history, so the transcript is lost on reload.
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        clear: () => {},
+        getItem: () => null,
+        removeItem: () => {},
+        setItem: () => { throw new DOMException('exceeded the quota', 'QuotaExceededError'); },
+      },
+    });
+    const client: AgentClient = {
+      respond: vi.fn().mockResolvedValue({
+        message: { role: 'assistant', content: 'Saved nowhere.' },
+      }),
+    };
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await user.type(screen.getByLabelText('Message Rynna'), 'Remember this');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByText('Saved nowhere.')).toBeInTheDocument();
+    const warning = await screen.findByRole('alert');
+    expect(warning).toHaveTextContent('no longer being saved');
+  });
+
   it('follows streamed replies until the reader scrolls up, and resumes at the bottom', async () => {
     let emit: Parameters<AgentClient['respond']>[1];
     const client: AgentClient = { respond: vi.fn((_request, onDelta) => {

@@ -32,10 +32,16 @@ export function readSessions(storage?: Pick<Storage, 'getItem'>): Session[] {
   }
 }
 
+export interface WriteResult {
+  sessions: Session[];
+  /** False when the store rejected the write, so this transcript is not saved. */
+  persisted: boolean;
+}
+
 export function writeSessions(
   sessions: Session[],
   storage?: Pick<Storage, 'getItem' | 'setItem'>,
-): Session[] {
+): WriteResult {
   let merged = sessions;
   try {
     const target = storage ?? window.localStorage;
@@ -43,10 +49,12 @@ export function writeSessions(
     merged = mergeSessions(sessions, stored ? decodeSessions(stored) : [])
       .filter(session => !isSessionDeleted(session.id, target));
     target.setItem(STORAGE_KEY, JSON.stringify(merged));
-    return merged;
+    return { sessions: merged, persisted: true };
   } catch {
-    // A full or unavailable local store must not prevent the conversation itself.
-    return merged;
+    // A full or unavailable local store must not prevent the conversation itself,
+    // but the caller has to tell the user: the server keeps no history, so an
+    // unreported failure here loses the transcript silently.
+    return { sessions: merged, persisted: false };
   }
 }
 
@@ -63,7 +71,7 @@ export function deleteSession(id: string, sessions: Session[], storage?: Pick<St
   const target = storage ?? window.localStorage;
   // Do not report success if the durable deletion marker cannot be saved.
   target.setItem(`${DELETED_PREFIX}${id}`, 'true');
-  return writeSessions(sessions.filter(session => session.id !== id), target);
+  return writeSessions(sessions.filter(session => session.id !== id), target).sessions;
 }
 
 export function mergeSessions(preferred: Session[], additional: Session[]): Session[] {

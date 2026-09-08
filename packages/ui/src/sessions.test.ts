@@ -75,7 +75,7 @@ describe('sessions', () => {
       setItem: (_key: string, next: string) => { value = next; },
     };
 
-    expect(writeSessions([local], storage)).toEqual([local, stored]);
+    expect(writeSessions([local], storage).sessions).toEqual([local, stored]);
     expect(readSessions(storage)).toEqual([local, stored]);
   });
 
@@ -95,9 +95,9 @@ describe('sessions', () => {
     expect(deleteSession(first.id, [first], storage)).toEqual([second]);
     expect(readSessions(storage)).toEqual([second]);
     expect(JSON.parse(values.get('rynna-sessions-v1')!)).toEqual([second]);
-    expect(writeSessions([first, second], storage)).toEqual([second]);
+    expect(writeSessions([first, second], storage).sessions).toEqual([second]);
     deleteSession(second.id, [first, second], storage);
-    expect(writeSessions([first, second], storage)).toEqual([]);
+    expect(writeSessions([first, second], storage).sessions).toEqual([]);
     expect(readSessions(storage)).toEqual([]);
   });
 
@@ -123,5 +123,37 @@ describe('sessions', () => {
     expect(renamed[0]?.project).toBe('new-name');
     expect(renamed[0]?.messages).toEqual(session.messages);
     expect(reconcileProjectSessions([session], 'work', ['old-name'], [])[0]?.project).toBeNull();
+  });
+
+  it('reports that a full store did not persist the transcript', () => {
+    const session: Session = {
+      id: 'unsaved', name: 'Unsaved', profile: 'work', project: null,
+      messages: [{ role: 'user', content: 'Please keep this' }],
+      created_at: '2026-09-05T12:00:00.000Z', updated_at: '2026-09-05T12:00:00.000Z',
+    };
+    const full = {
+      getItem: () => null,
+      setItem: () => { throw new DOMException('exceeded the quota', 'QuotaExceededError'); },
+    };
+
+    const result = writeSessions([session], full);
+    // The conversation must survive in memory, but the caller has to learn it is unsaved:
+    // the server keeps no history, so an unreported failure loses the transcript on reload.
+    expect(result.persisted).toBe(false);
+    expect(result.sessions).toEqual([session]);
+  });
+
+  it('reports success when the store accepts the write', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const session: Session = {
+      id: 'saved', name: 'Saved', profile: 'work', project: null, messages: [],
+      created_at: '2026-09-05T12:00:00.000Z', updated_at: '2026-09-05T12:00:00.000Z',
+    };
+
+    expect(writeSessions([session], storage).persisted).toBe(true);
   });
 });
