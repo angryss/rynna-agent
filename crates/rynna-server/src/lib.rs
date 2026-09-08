@@ -709,15 +709,42 @@ fn mcp_settings_error(error: McpSettingsError) -> ApiError {
     }
 }
 
+/// Runs one blocking settings-store operation off the async runtime.
+///
+/// These stores read and write TOML under an exclusive `flock`, which would
+/// otherwise stall a runtime worker thread for the duration of the I/O. Callers
+/// keep holding their tokio guards across this await, so lock ordering and the
+/// serialization it provides are unchanged.
+///
+/// `join_failure` is returned only if the blocking task panics or the runtime is
+/// shutting down; neither is reachable through normal request handling.
+async fn offload<S, T, E, F>(store: S, join_failure: E, operation: F) -> Result<T, E>
+where
+    S: Send + 'static,
+    T: Send + 'static,
+    E: Send + 'static,
+    F: FnOnce(S) -> Result<T, E> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(move || operation(store)).await {
+        Ok(result) => result,
+        Err(_) => Err(join_failure),
+    }
+}
+
 async fn get_mcp_settings(
     State(state): State<AppState>,
     AxumPath(profile): AxumPath<String>,
 ) -> Result<Json<McpSettings>, ApiError> {
     ensure_known_profile(&state, &profile).await?;
     let store = provider_store(&state)?.lock().await;
-    let settings = McpSettingsStore::new(store.mcp_settings_path())
-        .load(&profile)
-        .map_err(mcp_settings_error)?;
+    // Settings I/O takes a blocking file lock, so it must not run on a runtime worker.
+    let settings = offload(
+        McpSettingsStore::new(store.mcp_settings_path()),
+        McpSettingsError::Read,
+        move |store| store.load(&profile),
+    )
+    .await
+    .map_err(mcp_settings_error)?;
     Ok(Json(settings))
 }
 
@@ -743,9 +770,15 @@ async fn save_mcp_settings(
         return Err(provider_settings_error("mcp profile is not defined"));
     }
     let store = provider_store(&state)?.lock().await;
-    let settings = McpSettingsStore::new(store.mcp_settings_path())
-        .save(&profile, input)
-        .map_err(mcp_settings_error)?;
+    let saved_profile = profile.clone();
+    // Settings I/O takes a blocking file lock, so it must not run on a runtime worker.
+    let settings = offload(
+        McpSettingsStore::new(store.mcp_settings_path()),
+        McpSettingsError::Write,
+        move |store| store.save(&saved_profile, input),
+    )
+    .await
+    .map_err(mcp_settings_error)?;
     let source = Some(Arc::new(McpToolSource(settings.clone())) as Arc<dyn rynna_core::ToolSource>);
     // Newly created or renamed catalog profiles become runnable on restart.
     if profiles.contains(&profile) {
@@ -774,9 +807,14 @@ async fn get_memory_settings(
 ) -> Result<Json<MemorySettingsResponse>, ApiError> {
     ensure_known_profile(&state, &profile).await?;
     let store = provider_store(&state)?.lock().await;
-    let settings = MemorySettingsStore::new(store.memory_settings_path())
-        .load(&profile)
-        .map_err(memory_settings_error)?;
+    // Settings I/O takes a blocking file lock, so it must not run on a runtime worker.
+    let settings = offload(
+        MemorySettingsStore::new(store.memory_settings_path()),
+        MemorySettingsError::Read,
+        move |store| store.load(&profile),
+    )
+    .await
+    .map_err(memory_settings_error)?;
     Ok(Json(settings.response()))
 }
 
@@ -804,9 +842,15 @@ async fn save_memory_settings(
         return Err(provider_settings_error("memory profile is not defined"));
     }
     let store = provider_store(&state)?.lock().await;
-    let settings = MemorySettingsStore::new(store.memory_settings_path())
-        .save(&profile, input)
-        .map_err(memory_settings_error)?;
+    let saved_profile = profile.clone();
+    // Settings I/O takes a blocking file lock, so it must not run on a runtime worker.
+    let settings = offload(
+        MemorySettingsStore::new(store.memory_settings_path()),
+        MemorySettingsError::Write,
+        move |store| store.save(&saved_profile, input),
+    )
+    .await
+    .map_err(memory_settings_error)?;
     let memory = configured_memory(&settings).map_err(|_| {
         memory_settings_error(MemorySettingsError::Invalid(
             "could not configure memory provider",
@@ -1262,6 +1306,11 @@ async fn respond_stream(
             code: "invalid_request",
             message: error.to_string(),
         })?;
+    // Deliberately unbounded. `on_delta` is a synchronous FnMut and cannot await a
+    // bounded send, so the only alternative is `try_send`, where a full channel
+    // either drops a delta (corrupting the transcript) or aborts a live response
+    // because the client briefly stalled. The disconnect abort below bounds this
+    // channel's lifetime instead, which is the property that actually matters.
     let (sender, receiver) = mpsc::unbounded_channel();
 
     tokio::spawn(async move {

@@ -1046,6 +1046,23 @@ fn ensure_memory_profile(
     }
 }
 
+/// Runs one blocking settings-store operation off the async runtime.
+///
+/// These stores read and write TOML under an exclusive `flock`. Tauri commands
+/// are async, so doing that inline would stall a runtime worker for the whole
+/// I/O. Callers keep holding their tokio guards across this await, so lock
+/// ordering is unchanged.
+async fn offload<S, T, F>(store: S, operation: F) -> Result<T, String>
+where
+    S: Send + 'static,
+    T: Send + 'static,
+    F: FnOnce(S) -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || operation(store))
+        .await
+        .map_err(|_| "settings task failed".to_owned())?
+}
+
 #[tauri::command]
 async fn get_mcp_settings(
     catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
@@ -1057,9 +1074,11 @@ async fn get_mcp_settings(
     let runtime = profiles.lock().await;
     ensure_memory_profile(&catalog, &runtime, &profile)?;
     let store = provider_settings.lock().await;
-    McpSettingsStore::new(store.mcp_settings_path())
-        .load(&profile)
-        .map_err(|error| error.to_string())
+    offload(
+        McpSettingsStore::new(store.mcp_settings_path()),
+        move |store| store.load(&profile).map_err(|error| error.to_string()),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1074,9 +1093,16 @@ async fn save_mcp_settings(
     let mut profiles = profiles.lock().await;
     ensure_memory_profile(&catalog, &profiles, &profile)?;
     let store = provider_settings.lock().await;
-    let settings = McpSettingsStore::new(store.mcp_settings_path())
-        .save(&profile, settings)
-        .map_err(|error| error.to_string())?;
+    let saved_profile = profile.clone();
+    let settings = offload(
+        McpSettingsStore::new(store.mcp_settings_path()),
+        move |store| {
+            store
+                .save(&saved_profile, settings)
+                .map_err(|error| error.to_string())
+        },
+    )
+    .await?;
     let source = Some(Arc::new(McpToolSource(settings.clone())) as Arc<dyn rynna_core::ToolSource>);
     if profiles.contains(&profile) {
         profiles
@@ -1097,10 +1123,16 @@ async fn get_memory_settings(
     let runtime = profiles.lock().await;
     ensure_memory_profile(&catalog, &runtime, &profile)?;
     let store = provider_settings.lock().await;
-    MemorySettingsStore::new(store.memory_settings_path())
-        .load(&profile)
-        .map(|settings| settings.response())
-        .map_err(|error| error.to_string())
+    offload(
+        MemorySettingsStore::new(store.memory_settings_path()),
+        move |store| {
+            store
+                .load(&profile)
+                .map(|settings| settings.response())
+                .map_err(|error| error.to_string())
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1115,9 +1147,16 @@ async fn save_memory_settings(
     let mut profiles = profiles.lock().await;
     ensure_memory_profile(&catalog, &profiles, &profile)?;
     let store = provider_settings.lock().await;
-    let settings = MemorySettingsStore::new(store.memory_settings_path())
-        .save(&profile, settings)
-        .map_err(|error| error.to_string())?;
+    let saved_profile = profile.clone();
+    let settings = offload(
+        MemorySettingsStore::new(store.memory_settings_path()),
+        move |store| {
+            store
+                .save(&saved_profile, settings)
+                .map_err(|error| error.to_string())
+        },
+    )
+    .await?;
     let memory = configured_memory(&settings).map_err(|error| error.to_string())?;
     if profiles.contains(&profile) {
         profiles
