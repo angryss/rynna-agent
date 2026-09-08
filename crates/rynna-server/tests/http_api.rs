@@ -1782,3 +1782,51 @@ async fn session_title_endpoint_uses_the_requested_profile() {
         .unwrap();
     assert!(!response.status().is_success());
 }
+
+#[tokio::test]
+async fn exhausting_the_turn_budget_is_reported_separately_from_a_tool_failure() {
+    // A model that never stops calling tools exhausts the turn budget. That is the
+    // agent reaching a configured bound, not a broken tool, and `tool_loop_error`
+    // sends the reader looking for a tool that is working fine.
+    struct AlwaysCallsATool;
+    #[async_trait]
+    impl ModelProvider for AlwaysCallsATool {
+        async fn complete(&self, _request: CompletionRequest) -> Result<Completion, ProviderError> {
+            Ok(Completion::with_tool_calls(vec![rynna_core::ToolCall {
+                id: "call-1".to_owned(),
+                name: "echo".to_owned(),
+                arguments: serde_json::json!({}),
+            }]))
+        }
+    }
+    struct Echo;
+    #[async_trait]
+    impl rynna_core::Tool for Echo {
+        fn definition(&self) -> rynna_core::ToolDefinition {
+            rynna_core::ToolDefinition::new("echo", "Echo", serde_json::json!({"type": "object"}))
+        }
+        async fn execute(&self, _arguments: Value) -> Result<Value, rynna_core::ToolError> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    let agent = Agent::with_tools(
+        Arc::new(AlwaysCallsATool),
+        "You are Rynna.",
+        vec![Arc::new(Echo) as Arc<dyn rynna_core::Tool>],
+    )
+    .unwrap();
+    let response = router(agent)
+        .oneshot(
+            Request::post("/v1/respond")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"prompt":"Keep going"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["error"]["code"], "agent_budget_exhausted");
+}

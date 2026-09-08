@@ -1325,12 +1325,19 @@ impl From<AgentError> for ApiError {
                 code: "provider_error",
                 message: "model provider request failed".to_owned(),
             },
-            AgentError::ToolDiscovery(_)
-            | AgentError::ToolLoopLimit(_)
+            // Running out of turns, calls, or time is the agent reaching a bound,
+            // not a tool failing. `tool_loop_error` reads as the latter and sends
+            // the reader looking for a broken tool, so give exhaustion its own code.
+            AgentError::ToolLoopLimit(_)
             | AgentError::ToolCallLimit(_)
             | AgentError::ToolResultByteLimit(_)
             | AgentError::ToolExecutionDeadline(_)
             | AgentError::ToolLoopDeadline(_) => Self {
+                status: StatusCode::BAD_GATEWAY,
+                code: "agent_budget_exhausted",
+                message: error.to_string(),
+            },
+            AgentError::ToolDiscovery(_) => Self {
                 status: StatusCode::BAD_GATEWAY,
                 code: "tool_loop_error",
                 message: error.to_string(),
