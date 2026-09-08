@@ -209,3 +209,96 @@ allowed_patterns = ["**/*"]
         .stdout(predicate::str::contains("does not exist"))
         .stdout(predicate::str::contains("2 of 2 checks need attention"));
 }
+
+#[test]
+fn a_bare_skill_name_in_the_search_root_passes() {
+    // The runtime resolves bare names under <catalog>/skills, so doctor must too:
+    // reporting a valid, runnable profile as broken is worse than not checking.
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let config = directory.path().join("config.toml");
+    let skill = directory.path().join("skills").join("code-review");
+    std::fs::create_dir_all(&skill).expect("create skill");
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: code-review\ndescription: Review code\n---\n\nReview it.\n",
+    )
+    .expect("write skill");
+    std::fs::write(
+        &config,
+        r#"
+version = 1
+default_profile = "work"
+[providers.ollama]
+kind = "openai-compatible"
+api_base = "http://localhost:11434/v1"
+[profiles.work]
+provider = "ollama"
+model = "llama3"
+active_skills = ["code-review"]
+"#,
+    )
+    .expect("write catalog");
+
+    doctor(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No problems found"));
+}
+
+#[test]
+fn a_skill_that_does_not_resolve_fails() {
+    let (_directory, config) = catalog(
+        r#"
+version = 1
+default_profile = "work"
+[providers.ollama]
+kind = "openai-compatible"
+api_base = "http://localhost:11434/v1"
+[profiles.work]
+provider = "ollama"
+model = "llama3"
+active_skills = ["definitely-not-a-real-skill"]
+"#,
+    );
+    doctor(&config).assert().failure();
+}
+
+#[test]
+fn a_command_program_that_is_a_directory_fails() {
+    // exists() alone is not enough: the provider spawns this path.
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let config = directory.path().join("config.toml");
+    let not_a_program = directory.path().join("bin");
+    std::fs::create_dir(&not_a_program).expect("create directory");
+    std::fs::write(
+        &config,
+        format!(
+            r#"
+version = 1
+default_profile = "work"
+[providers.ollama]
+kind = "openai-compatible"
+api_base = "http://localhost:11434/v1"
+[profiles.work]
+provider = "ollama"
+model = "llama3"
+capabilities = ["shell"]
+[capabilities.shell]
+kind = "command"
+working_directory = "{}"
+timeout_seconds = 30
+max_output_bytes = 1024
+[capabilities.shell.programs]
+tool = "{}"
+"#,
+            directory.path().display(),
+            not_a_program.display()
+        ),
+    )
+    .expect("write catalog");
+
+    doctor(&config)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("is not a file"));
+}

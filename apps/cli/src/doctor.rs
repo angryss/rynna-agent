@@ -128,24 +128,15 @@ fn check_providers(
             }),
             None if provider.provider_kind == ProviderKind::ClaudeSubscription => {
                 let program = &provider.claude_program;
-                if program.is_absolute() {
-                    findings.push(if program.exists() {
-                        Finding {
-                            profile: profile.to_owned(),
-                            check: "claude-program",
-                            severity: Severity::Ok,
-                            detail: format!("{} exists", program.display()),
-                        }
-                    } else {
-                        Finding {
-                            profile: profile.to_owned(),
-                            check: "claude-program",
-                            severity: Severity::Failure,
-                            detail: format!("{} does not exist", program.display()),
-                        }
-                    });
+                let bare = program.components().count() == 1;
+                if !bare {
+                    // Absolute paths, and relative paths with components, are used
+                    // directly by the provider; a relative one resolves against the
+                    // working directory, never PATH. Both must be runnable files.
+                    findings.push(runnable_program(profile, "claude-program", program));
                 } else if !on_path(program) {
-                    // Resolution happens in the child's environment, which may differ.
+                    // A bare name is resolved in the child's environment, which may
+                    // differ from ours, so a miss here is a warning rather than a failure.
                     findings.push(Finding {
                         profile: profile.to_owned(),
                         check: "claude-program",
@@ -185,34 +176,9 @@ fn check_capabilities(
                     findings,
                 );
                 for (alias, path) in &command.programs {
-                    if path.exists() && is_executable(path) {
-                        findings.push(Finding {
-                            profile: profile.to_owned(),
-                            check: "command-program",
-                            severity: Severity::Ok,
-                            detail: format!("`{alias}` maps to {}", path.display()),
-                        });
-                    } else if !path.exists() {
-                        findings.push(Finding {
-                            profile: profile.to_owned(),
-                            check: "command-program",
-                            severity: Severity::Failure,
-                            detail: format!(
-                                "`{alias}` maps to {}, which does not exist",
-                                path.display()
-                            ),
-                        });
-                    } else {
-                        findings.push(Finding {
-                            profile: profile.to_owned(),
-                            check: "command-program",
-                            severity: Severity::Failure,
-                            detail: format!(
-                                "`{alias}` maps to {}, which is not executable",
-                                path.display()
-                            ),
-                        });
-                    }
+                    let mut finding = runnable_program(profile, "command-program", path);
+                    finding.detail = format!("`{alias}` -> {}", finding.detail);
+                    findings.push(finding);
                 }
             }
         }
@@ -224,23 +190,59 @@ fn check_skills(
     resolved: &rynna_config::ResolvedProfile,
     findings: &mut Vec<Finding>,
 ) {
-    for skill in &resolved.profile.active_skills {
-        let manifest = resolved.skills_directory.join(skill).join("SKILL.md");
-        findings.push(if manifest.exists() {
-            Finding {
-                profile: profile.to_owned(),
-                check: "skill",
-                severity: Severity::Ok,
-                detail: format!("skill `{skill}` is readable"),
-            }
-        } else {
-            Finding {
-                profile: profile.to_owned(),
-                check: "skill",
-                severity: Severity::Failure,
-                detail: format!("skill `{skill}` has no {}", manifest.display()),
-            }
-        });
+    if resolved.profile.active_skills.is_empty() {
+        return;
+    }
+    // Resolution has several forms (bare names across four search roots, `~/`
+    // prefixes, absolute paths, and paths relative to the catalog), so ask the real
+    // loader rather than reimplementing it here, where it would silently drift.
+    match rynna_skills::SkillsTool::load(
+        &resolved.profile.active_skills,
+        &resolved.skills_directory,
+    ) {
+        Ok(_) => findings.push(Finding {
+            profile: profile.to_owned(),
+            check: "skills",
+            severity: Severity::Ok,
+            detail: format!(
+                "{} active skill(s) load",
+                resolved.profile.active_skills.len()
+            ),
+        }),
+        Err(error) => findings.push(Finding {
+            profile: profile.to_owned(),
+            check: "skills",
+            severity: Severity::Failure,
+            detail: error.to_string(),
+        }),
+    }
+}
+
+/// A program is usable only if it is a file and carries an execute bit.
+fn runnable_program(profile: &str, check: &'static str, path: &Path) -> Finding {
+    let (severity, detail) = if !path.exists() {
+        (
+            Severity::Failure,
+            format!("{} does not exist", path.display()),
+        )
+    } else if !path.is_file() {
+        (
+            Severity::Failure,
+            format!("{} is not a file", path.display()),
+        )
+    } else if !is_executable(path) {
+        (
+            Severity::Failure,
+            format!("{} is not executable", path.display()),
+        )
+    } else {
+        (Severity::Ok, format!("{} is runnable", path.display()))
+    };
+    Finding {
+        profile: profile.to_owned(),
+        check,
+        severity,
+        detail,
     }
 }
 
