@@ -135,6 +135,32 @@ describe('App', () => {
     expect(warning).toHaveTextContent('no longer being saved');
   });
 
+  it('does not advise deleting conversations when the store is blocked, not full', async () => {
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        clear: () => {},
+        getItem: () => null,
+        removeItem: () => {},
+        setItem: () => { throw new DOMException('denied', 'SecurityError'); },
+      },
+    });
+    const client: AgentClient = {
+      respond: vi.fn().mockResolvedValue({
+        message: { role: 'assistant', content: 'Saved nowhere.' },
+      }),
+    };
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await user.type(screen.getByLabelText('Message Rynna'), 'Remember this');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    const warning = await screen.findByRole('alert');
+    expect(warning).toHaveTextContent('not allowing Rynna to save');
+    expect(warning).not.toHaveTextContent('Delete some saved conversations');
+  });
+
   it('follows streamed replies until the reader scrolls up, and resumes at the bottom', async () => {
     let emit: Parameters<AgentClient['respond']>[1];
     const client: AgentClient = { respond: vi.fn((_request, onDelta) => {

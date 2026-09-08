@@ -174,7 +174,7 @@ export function App({ client }: AppProps) {
   const [context, setContext] = useState<ContextResponse | null>(null);
   const [compacting, setCompacting] = useState(false);
   const [contextNotice, setContextNotice] = useState('');
-  const [storageFull, setStorageFull] = useState(false);
+  const [storageFailure, setStorageFailure] = useState<'quota' | 'unavailable' | null>(null);
   const [customModel, setCustomModel] = useState('');
   const [mlxApiBase, setMlxApiBase] = useState('http://127.0.0.1:8000/v1');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
@@ -182,10 +182,10 @@ export function App({ client }: AppProps) {
   const providerMutationRevision = useRef(0);
 
   useEffect(() => {
-    const { sessions: merged, persisted } = writeSessions(sessions);
+    const { sessions: merged, persisted, failure } = writeSessions(sessions);
     // The server keeps no history, so a rejected write means this transcript is
     // only in memory. Say so instead of losing it silently on reload.
-    setStorageFull(!persisted && sessions.length > 0);
+    setStorageFailure(!persisted && sessions.length > 0 ? failure ?? 'unavailable' : null);
     if (merged.length !== sessions.length || merged.some((session, index) => session.id !== sessions[index]?.id)) setSessions(merged);
   }, [sessions]);
 
@@ -1165,11 +1165,11 @@ export function App({ client }: AppProps) {
                 )}
               </div>
 
-              {storageFull ? (
+              {storageFailure ? (
                 <p className="storage-warning" role="alert">
-                  This browser’s storage is full, so conversations are no longer being saved.
-                  Rynna keeps no history on the server, so anything from here on is lost when you reload.
-                  Delete some saved conversations to start saving again.
+                  {storageFailure === 'quota'
+                    ? 'This browser’s storage is full, so conversations are no longer being saved. Rynna keeps no history on the server, so anything from here on is lost when you reload. Delete some saved conversations to start saving again.'
+                    : 'This browser is not allowing Rynna to save conversations, so anything from here on is lost when you reload. Private browsing and blocked site data are the usual causes.'}
                 </p>
               ) : null}
               {contextNotice ? <p className="context-notice" role="status">{contextNotice}</p> : null}

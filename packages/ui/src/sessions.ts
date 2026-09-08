@@ -32,10 +32,25 @@ export function readSessions(storage?: Pick<Storage, 'getItem'>): Session[] {
   }
 }
 
+/** Why a write failed. Quota is recoverable by deleting sessions; the rest are not. */
+export type WriteFailure = 'quota' | 'unavailable';
+
 export interface WriteResult {
   sessions: Session[];
   /** False when the store rejected the write, so this transcript is not saved. */
   persisted: boolean;
+  /** Set only when `persisted` is false. */
+  failure?: WriteFailure;
+}
+
+function writeFailure(error: unknown): WriteFailure {
+  // Browsers disagree on the name, and Firefox historically used code 22.
+  const quota =
+    error instanceof DOMException &&
+    (error.name === 'QuotaExceededError' ||
+      error.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+      error.code === 22);
+  return quota ? 'quota' : 'unavailable';
 }
 
 export function writeSessions(
@@ -50,11 +65,12 @@ export function writeSessions(
       .filter(session => !isSessionDeleted(session.id, target));
     target.setItem(STORAGE_KEY, JSON.stringify(merged));
     return { sessions: merged, persisted: true };
-  } catch {
+  } catch (error) {
     // A full or unavailable local store must not prevent the conversation itself,
     // but the caller has to tell the user: the server keeps no history, so an
-    // unreported failure here loses the transcript silently.
-    return { sessions: merged, persisted: false };
+    // unreported failure here loses the transcript silently. The cause matters,
+    // because only a full store is fixed by deleting saved conversations.
+    return { sessions: merged, persisted: false, failure: writeFailure(error) };
   }
 }
 

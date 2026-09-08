@@ -140,7 +140,22 @@ describe('sessions', () => {
     // The conversation must survive in memory, but the caller has to learn it is unsaved:
     // the server keeps no history, so an unreported failure loses the transcript on reload.
     expect(result.persisted).toBe(false);
+    expect(result.failure).toBe('quota');
     expect(result.sessions).toEqual([session]);
+  });
+
+  it('distinguishes a blocked store from a full one', () => {
+    // Deleting conversations cannot fix a SecurityError, so it must not be advised.
+    const blocked = {
+      getItem: () => null,
+      setItem: () => { throw new DOMException('denied', 'SecurityError'); },
+    };
+    const session: Session = {
+      id: 'blocked', name: 'Blocked', profile: 'work', project: null, messages: [],
+      created_at: '2026-09-05T12:00:00.000Z', updated_at: '2026-09-05T12:00:00.000Z',
+    };
+
+    expect(writeSessions([session], blocked).failure).toBe('unavailable');
   });
 
   it('reports success when the store accepts the write', () => {
