@@ -18,6 +18,7 @@ use rynna_tools_filesystem::{FileSystemConfig, FileSystemToolset};
 use tracing_subscriber::EnvFilter;
 
 mod chat_ui;
+mod doctor;
 mod model_picker;
 mod model_selection;
 mod provider_ui;
@@ -88,6 +89,12 @@ enum Command {
     Projects {
         #[command(subcommand)]
         command: ProjectCommand,
+    },
+    /// Check configuration without contacting model providers.
+    Doctor {
+        /// Report encoding written to stdout.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
     },
 }
 
@@ -167,6 +174,9 @@ async fn main() -> Result<()> {
     if let Command::Projects { command } = command {
         return manage_projects(&mut catalog, &default_profile, command);
     }
+    if let Command::Doctor { output } = command {
+        return doctor::run(&catalog, &default_profile, output);
+    }
     let include_all_profiles = matches!(&command, Command::Serve { .. });
     let mut profiles = configured_profiles(
         &catalog,
@@ -216,6 +226,7 @@ async fn main() -> Result<()> {
         Command::Projects { .. } => {
             unreachable!("projects returned before provider configuration")
         }
+        Command::Doctor { .. } => unreachable!("doctor returned before provider configuration"),
     };
     rynna_core::flush_memory_writes().await;
     result

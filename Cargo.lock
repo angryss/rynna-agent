@@ -4028,6 +4028,7 @@ dependencies = [
  "rynna-skills",
  "rynna-tools-command",
  "rynna-tools-filesystem",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
