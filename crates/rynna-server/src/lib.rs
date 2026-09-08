@@ -1222,7 +1222,9 @@ enum StreamResponseEvent {
     Thinking { content: String },
     Content { content: String },
     Done { message: Message },
-    Error { message: String },
+    // The code is what a client can branch on; without it a streamed failure is
+    // only human-readable, and streaming is the primary web flow.
+    Error { code: &'static str, message: String },
 }
 
 impl From<&CompletionDelta> for StreamResponseEvent {
@@ -1282,9 +1284,13 @@ async fn respond_stream(
         };
         let event = match result {
             Ok(message) => StreamResponseEvent::Done { message },
-            Err(error) => StreamResponseEvent::Error {
-                message: ApiError::from(error).message,
-            },
+            Err(error) => {
+                let error = ApiError::from(error);
+                StreamResponseEvent::Error {
+                    code: error.code,
+                    message: error.message,
+                }
+            }
         };
         let _ = sender.send(event);
     });
