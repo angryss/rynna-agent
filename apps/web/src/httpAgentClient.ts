@@ -373,6 +373,16 @@ function isRespondResponse(value: unknown): value is RespondResponse {
 }
 
 function isCompletionDelta(value: unknown): value is CompletionDelta {
+  if (value && typeof value === 'object' && 'kind' in value) {
+    if (value.kind === 'tool_finished') return 'id' in value && typeof value.id === 'string';
+    if (value.kind === 'tool_started') {
+      const call = 'call' in value ? value.call : null;
+      return Boolean(call && typeof call === 'object' &&
+        'id' in call && typeof call.id === 'string' &&
+        'name' in call && typeof call.name === 'string' &&
+        'arguments' in call);
+    }
+  }
   return Boolean(
     value &&
       typeof value === 'object' &&

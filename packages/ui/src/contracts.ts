@@ -50,7 +50,9 @@ export interface RespondResponse {
 
 export type CompletionDelta =
   | { kind: 'thinking'; content: string }
-  | { kind: 'content'; content: string };
+  | { kind: 'content'; content: string }
+  | { kind: 'tool_started'; call: { id: string; name: string; arguments: unknown } }
+  | { kind: 'tool_finished'; id: string };
 
 export type CompletionDeltaHandler = (delta: CompletionDelta) => void;
 

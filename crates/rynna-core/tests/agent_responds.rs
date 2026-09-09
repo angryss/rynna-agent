@@ -626,7 +626,21 @@ async fn respond_cancels_tools_at_the_aggregate_execution_deadline() {
     )
     .unwrap();
 
-    let error = agent.respond(&[], "Wait too long").await.unwrap_err();
+    let mut deltas = Vec::new();
+    let error = agent
+        .respond_stream(&[], "Wait too long", &mut |delta| {
+            deltas.push(delta.clone())
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        deltas.first(),
+        Some(CompletionDelta::ToolStarted(_))
+    ));
+    assert!(matches!(
+        deltas.last(),
+        Some(CompletionDelta::ToolFinished(_))
+    ));
 
     assert!(error.to_string().contains("tool execution deadline"));
 }
@@ -701,6 +715,9 @@ async fn respond_stream_forwards_deltas_before_the_provider_completes() {
 
     let reply = agent
         .respond_stream(&[], "Answer immediately", &mut |delta| match delta {
+            CompletionDelta::ToolStarted(_) | CompletionDelta::ToolFinished(_) => {
+                panic!("unexpected tool event")
+            }
             CompletionDelta::Thinking(_) => {
                 thinking_forwarded.fetch_add(1, Ordering::SeqCst);
             }
@@ -756,7 +773,9 @@ async fn respond_stream_emits_thinking_live_but_content_only_from_the_final_answ
             thinking_forwarded: Arc::clone(&thinking_forwarded),
         }),
         "Trusted policy.",
-        vec![Arc::new(CountingTool { executions })],
+        vec![Arc::new(CountingTool {
+            executions: Arc::clone(&executions),
+        })],
     )
     .unwrap();
     let mut deltas = Vec::new();
@@ -765,6 +784,13 @@ async fn respond_stream_emits_thinking_live_but_content_only_from_the_final_answ
         .respond_stream(&[], "Answer after inspecting", &mut |delta| {
             if matches!(delta, CompletionDelta::Thinking(_)) {
                 thinking_forwarded.fetch_add(1, Ordering::SeqCst);
+            }
+            match delta {
+                CompletionDelta::ToolStarted(_) => assert_eq!(executions.load(Ordering::SeqCst), 0),
+                CompletionDelta::ToolFinished(_) => {
+                    assert_eq!(executions.load(Ordering::SeqCst), 1)
+                }
+                _ => {}
             }
             deltas.push(delta.clone());
         })
@@ -776,6 +802,8 @@ async fn respond_stream_emits_thinking_live_but_content_only_from_the_final_answ
         deltas,
         vec![
             CompletionDelta::Thinking("intermediate thought".to_owned()),
+            CompletionDelta::ToolStarted(ToolCall::new("call-1", "count", json!({}))),
+            CompletionDelta::ToolFinished("call-1".to_owned()),
             CompletionDelta::Thinking("final thought".to_owned()),
             CompletionDelta::Content("final answer".to_owned()),
         ]

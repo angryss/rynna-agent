@@ -1291,6 +1291,8 @@ async fn respond(
 enum StreamResponseEvent {
     Thinking { content: String },
     Content { content: String },
+    ToolStarted { call: rynna_core::ToolCall },
+    ToolFinished { id: String },
     Done { message: Message },
     // The code is what a client can branch on; without it a streamed failure is
     // only human-readable, and streaming is the primary web flow.
@@ -1300,6 +1302,8 @@ enum StreamResponseEvent {
 impl From<&CompletionDelta> for StreamResponseEvent {
     fn from(delta: &CompletionDelta) -> Self {
         match delta {
+            CompletionDelta::ToolStarted(call) => Self::ToolStarted { call: call.clone() },
+            CompletionDelta::ToolFinished(id) => Self::ToolFinished { id: id.clone() },
             CompletionDelta::Thinking(content) => Self::Thinking {
                 content: content.clone(),
             },

@@ -383,3 +383,8 @@ select:disabled { opacity: .5; }
 
 .workflow-panel > label:first-child { flex-direction: row; align-items: center; gap: .75rem; font-size: .8rem; color: hsl(var(--muted-foreground)); }
 .workflow-panel > label:first-child select { width: auto; flex: 0 1 auto; }
+
+.running-command { display: flex; align-items: flex-start; gap: .65rem; color: hsl(var(--muted-foreground)); font-size: .9rem; line-height: 1.6; }
+.running-command svg { flex-shrink: 0; margin-top: .2rem; }
+.running-command span { min-width: 0; overflow-wrap: anywhere; }
+.running-command code { white-space: pre-wrap; font-size: inherit; }

@@ -1,3 +1,4 @@
+import type { CompletionDelta } from '@rynna/ui';
 import { describe, expect, it, vi } from 'vitest';
 
 import { TauriAgentClient } from './tauriAgentClient';
@@ -49,10 +50,12 @@ describe('TauriAgentClient', () => {
 
   it('streams typed thinking and content through a narrow Tauri channel', async () => {
     const channel = {
-      onmessage: null as ((message: { kind: 'thinking' | 'content'; content: string }) => void) | null,
+      onmessage: null as ((message: CompletionDelta) => void) | null,
     };
     const invoke = vi.fn().mockImplementation(async (_command, args) => {
       channel.onmessage?.({ kind: 'thinking', content: 'Inspect' });
+      channel.onmessage?.({ kind: 'tool_started', call: { id: 'cmd', name: 'run_command', arguments: { program: 'pwd' } } });
+      channel.onmessage?.({ kind: 'tool_finished', id: 'cmd' });
       channel.onmessage?.({ kind: 'content', content: 'Answer' });
       expect(args.onEvent).toBe(channel);
       return { message: { role: 'assistant', content: 'Answer' } };
@@ -66,6 +69,8 @@ describe('TauriAgentClient', () => {
     expect(invoke).toHaveBeenCalledWith('respond_stream', { request, onEvent: channel });
     expect(deltas).toEqual([
       { kind: 'thinking', content: 'Inspect' },
+      { kind: 'tool_started', call: { id: 'cmd', name: 'run_command', arguments: { program: 'pwd' } } },
+      { kind: 'tool_finished', id: 'cmd' },
       { kind: 'content', content: 'Answer' },
     ]);
     expect(response.message.content).toBe('Answer');

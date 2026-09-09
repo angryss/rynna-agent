@@ -328,6 +328,7 @@ impl ChatUi {
 
     fn append_completion_delta(&mut self, delta: &CompletionDelta) {
         match delta {
+            CompletionDelta::ToolStarted(_) | CompletionDelta::ToolFinished(_) => {}
             CompletionDelta::Thinking(delta) => {
                 if delta.is_empty() {
                     return;
@@ -1005,6 +1006,7 @@ pub async fn run(
                                 let delta_sender = sender.clone();
                                 let mut on_delta = move |delta: &CompletionDelta| {
                                     let delta = match delta {
+                                        CompletionDelta::ToolStarted(_) | CompletionDelta::ToolFinished(_) => return,
                                         CompletionDelta::Thinking(content) => {
                                             CompletionDelta::Thinking(
                                                 super::sanitize_terminal_text(content),
