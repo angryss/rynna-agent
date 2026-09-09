@@ -89,7 +89,7 @@ async fn request(
 #[tokio::test]
 async fn settings_are_local_only_default_to_none_and_never_return_secrets() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("providers.toml");
+    let path = dir.path().join("providers.yaml");
     let app = app(&path, Arc::new(Model::default()));
     for method in ["GET", "PUT"] {
         assert_eq!(
@@ -172,7 +172,7 @@ async fn saving_and_disabling_change_live_sync_and_stream_requests_and_survive_r
         .with_state(calls.clone());
     let server = tokio::spawn(async move { axum::serve(listener, memory_app).await.unwrap() });
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("providers.toml");
+    let path = dir.path().join("providers.yaml");
     let model = Arc::new(Model::default());
     let router = app(&path, model.clone());
     let settings =
@@ -233,9 +233,9 @@ async fn saving_and_disabling_change_live_sync_and_stream_requests_and_survive_r
 #[tokio::test]
 async fn failed_persistence_is_reported_and_does_not_enable_memory() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("providers.toml");
+    let path = dir.path().join("providers.yaml");
     let router = app(&path, Arc::new(Model::default()));
-    std::fs::create_dir(dir.path().join("memory.toml")).unwrap();
+    std::fs::create_dir(dir.path().join("memory.yaml")).unwrap();
     assert_eq!(
         request(
             &router,
@@ -254,7 +254,7 @@ async fn failed_persistence_is_reported_and_does_not_enable_memory() {
 async fn unknown_profiles_and_global_endpoint_cannot_read_or_write_memory() {
     let dir = tempfile::tempdir().unwrap();
     let router = app(
-        &dir.path().join("providers.toml"),
+        &dir.path().join("providers.yaml"),
         Arc::new(Model::default()),
     );
     for path in ["/v1/profiles/missing/memory", "/v1/settings/memory"] {
@@ -267,7 +267,7 @@ async fn unknown_profiles_and_global_endpoint_cannot_read_or_write_memory() {
             );
         }
     }
-    assert!(!dir.path().join("memory.toml").exists());
+    assert!(!dir.path().join("memory.yaml").exists());
 }
 
 #[tokio::test]
@@ -280,7 +280,7 @@ async fn two_profiles_route_to_their_own_banks_and_disabling_one_keeps_the_other
         .with_state(calls.clone());
     let server = tokio::spawn(async move { axum::serve(listener, memory_app).await.unwrap() });
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("providers.toml");
+    let path = dir.path().join("providers.yaml");
     let model = Arc::new(Model::default());
     let router = app(&path, model.clone());
     for name in ["test", "other"] {
@@ -367,18 +367,20 @@ async fn catalog_profile_rename_and_delete_move_and_remove_memory_settings() {
         memory::{MemorySettings, MemorySettingsStore},
     };
     let dir = tempfile::tempdir().unwrap();
-    let config_path = dir.path().join("config.toml");
+    let config_path = dir.path().join("config.yaml");
     std::fs::write(
         &config_path,
         r#"
-version = 1
-default_profile = "test"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.test]
-provider = "ollama"
-model = "model"
+version: 1
+default_profile: test
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  test:
+    provider: ollama
+    model: model
 "#,
     )
     .unwrap();
@@ -391,7 +393,7 @@ model = "model"
     .unwrap();
     let router = rynna_server::router_with_profiles_provider_settings_and_catalog(
         profiles,
-        ProviderSettingsStore::load(dir.path().join("providers.toml")).unwrap(),
+        ProviderSettingsStore::load(dir.path().join("providers.yaml")).unwrap(),
         catalog,
     );
     let draft = json!({"name":"new", "providers":[{"provider":"ollama", "model":"model"}], "active_skills":[], "mcp_servers":[], "capabilities":[]});
@@ -416,7 +418,7 @@ model = "model"
             .0,
         StatusCode::OK
     );
-    let store = MemorySettingsStore::new(dir.path().join("memory.toml"));
+    let store = MemorySettingsStore::new(dir.path().join("memory.yaml"));
     assert!(matches!(store.load("new").unwrap(), MemorySettings::None));
     assert!(
         matches!(store.load("renamed").unwrap(), MemorySettings::Hindsight { api_key: Some(key), .. } if key == "new-secret")
@@ -474,7 +476,7 @@ async fn sync_and_sse_forward_session_ids_to_hindsight_documents() {
     let server = tokio::spawn(async move { axum::serve(listener, memory_app).await.unwrap() });
     let dir = tempfile::tempdir().unwrap();
     let router = app(
-        &dir.path().join("providers.toml"),
+        &dir.path().join("providers.yaml"),
         Arc::new(Model::default()),
     );
     request(

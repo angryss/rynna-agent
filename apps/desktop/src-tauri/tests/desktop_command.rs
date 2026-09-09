@@ -120,27 +120,29 @@ async fn desktop_profile_commands_list_and_dispatch_profiles() {
 #[test]
 fn desktop_profile_mutations_do_not_attach_existing_agents_and_preserve_runtime_default() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.alpha]
-provider = "ollama"
-model = "qwen3:8b"
-[profiles.work]
-provider = "ollama"
-model = "qwen3:14b"
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    provider: ollama
+    model: qwen3:8b
+  work:
+    provider: ollama
+    model: qwen3:14b
 "#,
     )
     .unwrap();
     let mut catalog = ProfileCatalog::load(&path).unwrap();
     let mut provider_settings =
-        ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+        ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     for profile in ["new", "work"] {
         provider_settings
             .add(
@@ -253,21 +255,27 @@ model = "qwen3:14b"
 
 #[test]
 fn desktop_profile_catalog_lists_unused_custom_provider_ids_and_runtime_only_profiles() {
-    let catalog = ProfileCatalog::from_toml(
+    let catalog = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[providers.unused-custom]
-kind = "openai-compatible"
-api_base = "https://custom.example/v1"
-[profiles.alpha]
-providers = [
-  { provider = "ollama", model = "qwen3:8b", enabled = true, default = true },
-  { provider = "ollama", model = "qwen3:14b", enabled = false },
-]
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+  unused-custom:
+    kind: openai-compatible
+    api_base: https://custom.example/v1
+profiles:
+  alpha:
+    providers:
+    - provider: ollama
+      model: qwen3:8b
+      enabled: true
+      default: true
+    - provider: ollama
+      model: qwen3:14b
+      enabled: false
 "#,
     )
     .unwrap();
@@ -742,26 +750,28 @@ async fn desktop_composition_executes_command_capabilities_without_leaking_paths
     let program = directory.path().join("inspect");
     std::fs::write(&program, "#!/bin/sh\nprintf 'desktop-command-result'\n").unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let catalog = ProfileCatalog::from_toml(&format!(
+    let catalog = ProfileCatalog::from_yaml(&format!(
         r#"
-version = 1
-default_profile = "desktop"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[profiles.desktop]
-provider = "local"
-model = "test"
-capabilities = ["host"]
-
-[capabilities.host]
-kind = "command"
-working_directory = "{}"
-programs = {{ inspect = "{}" }}
-timeout_seconds = 5
-max_output_bytes = 8192
+version: 1
+default_profile: desktop
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  desktop:
+    provider: local
+    model: test
+    capabilities:
+    - host
+capabilities:
+  host:
+    kind: command
+    working_directory: '{}'
+    programs:
+      inspect: '{}'
+    timeout_seconds: 5
+    max_output_bytes: 8192
 "#,
         directory.path().display(),
         program.display()
@@ -811,11 +821,11 @@ fn desktop_failed_mcp_rename_keeps_all_settings_and_allows_retry() {
     };
     for failure in ["malformed", "directory", "destination"] {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.toml");
-        std::fs::write(&config_path, "version = 1\ndefault_profile = 'work'\n[providers.ollama]\nkind = 'openai-compatible'\napi_base = 'http://127.0.0.1:11434/v1'\n[profiles.work]\nprovider = 'ollama'\nmodel = 'model'\n").unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "version: 1\ndefault_profile: work\nproviders:\n  ollama:\n    kind: openai-compatible\n    api_base: http://127.0.0.1:11434/v1\nprofiles:\n  work:\n    provider: ollama\n    model: model\n").unwrap();
         let mut catalog = ProfileCatalog::load(&config_path).unwrap();
         let mut runtime = AgentProfiles::new("work", [profile("work", "original reply")]).unwrap();
-        let mut providers = ProviderSettingsStore::load(dir.path().join("providers.toml")).unwrap();
+        let mut providers = ProviderSettingsStore::load(dir.path().join("providers.yaml")).unwrap();
         providers
             .add(
                 "work",
@@ -832,7 +842,7 @@ fn desktop_failed_mcp_rename_keeps_all_settings_and_allows_retry() {
         mcp.save("work", serde_json::from_value(serde_json::json!({"mcpServers":{"tools":{"transport":"stdio","command":"original","enabled":false}}})).unwrap()).unwrap();
         let original_mcp = std::fs::read(&mcp_path).unwrap();
         match failure {
-            "malformed" => std::fs::write(&mcp_path, "malformed = [").unwrap(),
+            "malformed" => std::fs::write(&mcp_path, "malformed: [").unwrap(),
             "directory" => {
                 std::fs::remove_file(&mcp_path).unwrap();
                 std::fs::create_dir(&mcp_path).unwrap();
@@ -845,7 +855,7 @@ fn desktop_failed_mcp_rename_keeps_all_settings_and_allows_retry() {
         let paths = [
             config_path.clone(),
             providers.memory_settings_path(),
-            dir.path().join("providers.toml"),
+            dir.path().join("providers.yaml"),
         ];
         let before = paths
             .iter()
@@ -952,22 +962,25 @@ async fn desktop_composition_loads_only_the_selected_profiles_skills() {
         "---\nname: review\ndescription: Review code\n---\nPrivate review instructions",
     )
     .unwrap();
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     std::fs::write(
         &config,
         r#"
-version = 1
-default_profile = "work"
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.work]
-provider = "local"
-model = "test"
-active_skills = ["review"]
-[profiles.personal]
-provider = "local"
-model = "test"
+version: 1
+default_profile: work
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  work:
+    provider: local
+    model: test
+    active_skills:
+    - review
+  personal:
+    provider: local
+    model: test
 "#,
     )
     .unwrap();

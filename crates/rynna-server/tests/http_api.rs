@@ -519,7 +519,7 @@ async fn web_router_does_not_hide_unknown_api_routes_behind_the_spa() {
 #[tokio::test]
 async fn provider_settings_endpoints_start_empty_and_persist_crud() {
     let directory = tempfile::tempdir().unwrap();
-    let settings_path = directory.path().join("providers.toml");
+    let settings_path = directory.path().join("providers.yaml");
     let settings = ProviderSettingsStore::load(&settings_path).unwrap();
     let profiles = AgentProfiles::new("local", vec![profile("local", "Local.")]).unwrap();
     let app = router_with_profiles_and_provider_settings(profiles, settings);
@@ -615,7 +615,7 @@ async fn provider_settings_endpoints_start_empty_and_persist_crud() {
 #[tokio::test]
 async fn provider_settings_reject_non_loopback_clients() {
     let directory = tempfile::tempdir().unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let profiles = AgentProfiles::new("local", vec![profile("local", "Local.")]).unwrap();
     let app = router_with_profiles_and_provider_settings(profiles, settings);
     let mut request = Request::post("/v1/profiles/local/providers")
@@ -636,7 +636,7 @@ async fn provider_settings_reject_non_loopback_clients() {
 #[tokio::test]
 async fn provider_settings_report_persistence_failures_as_server_errors() {
     let directory = tempfile::tempdir().unwrap();
-    let settings_path = directory.path().join("providers.toml");
+    let settings_path = directory.path().join("providers.yaml");
     let settings = ProviderSettingsStore::load(&settings_path).unwrap();
     std::fs::create_dir(&settings_path).unwrap();
     let profiles = AgentProfiles::new("local", vec![profile("local", "Local.")]).unwrap();
@@ -659,7 +659,7 @@ async fn provider_settings_report_persistence_failures_as_server_errors() {
 #[tokio::test]
 async fn concurrent_openai_creates_authenticate_only_once() {
     let directory = tempfile::tempdir().unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let login_log = directory.path().join("login.log");
     let codex = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/fake_codex_concurrent_login.sh");
@@ -701,7 +701,7 @@ async fn openai_provider_can_reuse_existing_chatgpt_credentials_without_starting
     use std::os::unix::fs::PermissionsExt;
 
     let directory = tempfile::tempdir().unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let invocation_log = directory.path().join("invocation.log");
     let codex = directory.path().join("codex");
     std::fs::write(
@@ -768,24 +768,26 @@ async fn openai_provider_can_reuse_existing_chatgpt_credentials_without_starting
 #[tokio::test]
 async fn profiles_endpoint_creates_updates_and_deletes_catalog_profiles() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.alpha]
-provider = "ollama"
-model = "qwen3:8b"
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
     let catalog = ProfileCatalog::load(&path).unwrap();
     let profiles = AgentProfiles::new("alpha", vec![profile("alpha", "Alpha.")]).unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let app = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog);
 
     let created = app
@@ -888,7 +890,7 @@ model = "qwen3:8b"
     let listed: Value = serde_json::from_slice(&listed_body).unwrap();
     assert_eq!(listed["profiles"].as_array().unwrap().len(), 1);
     assert_eq!(listed["profiles"][0]["name"], "alpha");
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     assert!(settings.list("work").is_empty());
     assert!(settings.list("renamed-work").is_empty());
 }
@@ -896,24 +898,26 @@ model = "qwen3:8b"
 #[tokio::test]
 async fn updated_project_metadata_is_available_to_subsequent_runtime_requests() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.alpha]
-provider = "ollama"
-model = "qwen3:8b"
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
     let catalog = ProfileCatalog::load(&path).unwrap();
     let profiles = AgentProfiles::new("alpha", vec![profile("alpha", "Alpha.")]).unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let app = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog);
 
     let updated = app
@@ -970,18 +974,20 @@ async fn created_profile_metadata_is_not_attached_to_an_existing_runtime_agent()
     }
 
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.alpha]
-provider = "ollama"
-model = "qwen3:8b"
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
@@ -1011,7 +1017,7 @@ model = "qwen3:8b"
         )],
     )
     .unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let app = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog);
     let new_profile = serde_json::json!({
         "name": "new",
@@ -1049,18 +1055,20 @@ model = "qwen3:8b"
 #[tokio::test]
 async fn updated_catalog_metadata_does_not_replace_running_profile_metadata() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.alpha]
-provider = "ollama"
-model = "qwen3:8b"
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
@@ -1089,7 +1097,7 @@ model = "qwen3:8b"
         )],
     )
     .unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let app = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog);
 
     let updated = app
@@ -1129,23 +1137,29 @@ model = "qwen3:8b"
 #[tokio::test]
 async fn profile_catalog_response_includes_unused_custom_provider_ids() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[providers.unused-custom]
-kind = "openai-compatible"
-api_base = "https://custom.example/v1"
-[profiles.alpha]
-providers = [
-  { provider = "ollama", model = "qwen3:8b", enabled = true, default = true },
-  { provider = "ollama", model = "qwen3:14b", enabled = false },
-]
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+  unused-custom:
+    kind: openai-compatible
+    api_base: https://custom.example/v1
+profiles:
+  alpha:
+    providers:
+    - provider: ollama
+      model: qwen3:8b
+      enabled: true
+      default: true
+    - provider: ollama
+      model: qwen3:14b
+      enabled: false
 "#,
     )
     .unwrap();
@@ -1159,7 +1173,7 @@ providers = [
         context_window: None,
     });
     let profiles = AgentProfiles::new("alpha", vec![alpha]).unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let response = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog)
         .oneshot(Request::get("/v1/profiles").body(Body::empty()).unwrap())
         .await
@@ -1187,21 +1201,23 @@ providers = [
 #[tokio::test]
 async fn profile_mutations_preserve_runtime_default_and_active_delete_selects_a_runtime_fallback() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.alpha]
-provider = "ollama"
-model = "qwen3:8b"
-[profiles.work]
-provider = "ollama"
-model = "qwen3:14b"
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    provider: ollama
+    model: qwen3:8b
+  work:
+    provider: ollama
+    model: qwen3:14b
 "#,
     )
     .unwrap();
@@ -1215,7 +1231,7 @@ model = "qwen3:14b"
         ],
     )
     .unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let app = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog);
 
     let created = app
@@ -1262,18 +1278,20 @@ model = "qwen3:14b"
 #[tokio::test]
 async fn profile_persistence_errors_are_5xx_and_validation_errors_remain_4xx() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.alpha]
-provider = "ollama"
-model = "qwen3:8b"
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
@@ -1281,7 +1299,7 @@ model = "qwen3:8b"
     std::fs::remove_file(&path).unwrap();
     std::fs::create_dir(&path).unwrap();
     let profiles = AgentProfiles::new("alpha", vec![profile("alpha", "Alpha.")]).unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let app = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog);
     let body = r#"{"name":"new","providers":[{"provider":"ollama","model":"qwen3"}],"active_skills":[],"mcp_servers":[],"capabilities":[]}"#;
     let persistence = app
@@ -1299,21 +1317,23 @@ model = "qwen3:8b"
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.alpha]
-provider = "ollama"
-model = "qwen3:8b"
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
     let catalog = ProfileCatalog::load(&path).unwrap();
     let profiles = AgentProfiles::new("alpha", vec![profile("alpha", "Alpha.")]).unwrap();
     let settings =
-        ProviderSettingsStore::load(directory.path().join("other-providers.toml")).unwrap();
+        ProviderSettingsStore::load(directory.path().join("other-providers.yaml")).unwrap();
     let validation = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog)
         .oneshot(local_provider_request(
             Request::post("/v1/profiles")
@@ -1448,7 +1468,7 @@ async fn both_http_response_modes_route_to_the_selected_pair() {
 #[tokio::test]
 async fn mlx_provider_settings_persist_crud() {
     let directory = tempfile::tempdir().unwrap();
-    let settings_path = directory.path().join("providers.toml");
+    let settings_path = directory.path().join("providers.yaml");
     let settings = ProviderSettingsStore::load(&settings_path).unwrap();
     let profiles = AgentProfiles::new("local", vec![profile("local", "Local.")]).unwrap();
     let app = router_with_profiles_and_provider_settings(profiles, settings);
@@ -1553,20 +1573,23 @@ async fn subagents_save_reload_and_update_only_the_selected_runtime_profile() {
         }
     }
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
-        r#"version = 1
-default_profile = "work"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.work]
-provider = "ollama"
-model = "local"
-[profiles.personal]
-provider = "ollama"
-model = "local"
+        r#"
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  work:
+    provider: ollama
+    model: local
+  personal:
+    provider: ollama
+    model: local
 "#,
     )
     .unwrap();
@@ -1580,7 +1603,7 @@ model = "local"
             .map(|resolved| (resolved.profile, Agent::new(Arc::new(ToolNames), "policy"))),
     )
     .unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let app = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog);
     for helpers in [
         serde_json::json!([{"name":"reviewer","description":"Review code","instructions":"Find bugs"}]),
@@ -1657,7 +1680,7 @@ async fn public_profile_lists_redact_helper_instructions_but_local_admin_can_edi
     )
     .unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let settings = ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+    let settings = ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
     let app = router_with_profiles_provider_settings_and_catalog(profiles, settings, catalog);
     for peer in [
         None,

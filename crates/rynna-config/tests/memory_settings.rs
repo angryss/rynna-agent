@@ -18,7 +18,7 @@ fn hindsight(base: &str, cloud: bool, key: Option<&str>) -> MemorySettings {
 #[test]
 fn default_none_and_cloud_key_round_trip_preserve_and_disable() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("memory.toml");
+    let path = directory.path().join("memory.yaml");
     let store = MemorySettingsStore::new(&path);
     assert!(matches!(store.load("test").unwrap(), MemorySettings::None));
     assert!(!path.exists());
@@ -36,9 +36,9 @@ fn default_none_and_cloud_key_round_trip_preserve_and_disable() {
         matches!(saved, MemorySettings::Hindsight { api_key: Some(ref key), .. } if key == "test-secret")
     );
     // Private response has no secret-bearing field.
-    let response = toml::to_string(&saved.response()).unwrap();
+    let response = serde_yaml_ng::to_string(&saved.response()).unwrap();
     assert!(!response.contains("test-secret"));
-    assert!(response.contains("api_key_configured = true"));
+    assert!(response.contains("api_key_configured: true"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -62,7 +62,7 @@ fn default_none_and_cloud_key_round_trip_preserve_and_disable() {
 #[test]
 fn self_hosted_optional_key_can_be_cleared_and_never_moves_to_another_host() {
     let dir = tempfile::tempdir().unwrap();
-    let store = MemorySettingsStore::new(dir.path().join("memory.toml"));
+    let store = MemorySettingsStore::new(dir.path().join("memory.yaml"));
     store
         .save(
             "test",
@@ -94,7 +94,7 @@ fn self_hosted_optional_key_can_be_cleared_and_never_moves_to_another_host() {
 #[test]
 fn invalid_settings_leave_saved_state_unchanged() {
     let dir = tempfile::tempdir().unwrap();
-    let store = MemorySettingsStore::new(dir.path().join("memory.toml"));
+    let store = MemorySettingsStore::new(dir.path().join("memory.yaml"));
     store
         .save("test", hindsight(HINDSIGHT_CLOUD_URL, true, Some("secret")))
         .unwrap();
@@ -127,8 +127,8 @@ fn invalid_settings_leave_saved_state_unchanged() {
 #[test]
 fn corrupt_file_and_write_failure_do_not_leak_credentials_or_report_success() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("memory.toml");
-    std::fs::write(&path, "api_key = super-secret-invalid-toml").unwrap();
+    let path = dir.path().join("memory.yaml");
+    std::fs::write(&path, "api_key: 'super-secret-invalid-yaml").unwrap();
     let store = MemorySettingsStore::new(&path);
     assert!(
         !store
@@ -138,14 +138,14 @@ fn corrupt_file_and_write_failure_do_not_leak_credentials_or_report_success() {
             .to_string()
             .contains("super-secret")
     );
-    let unwritable = MemorySettingsStore::new(path.join("memory.toml"));
+    let unwritable = MemorySettingsStore::new(path.join("memory.yaml"));
     assert!(unwritable.save("test", MemorySettings::None).is_err());
 }
 
 #[test]
 fn profile_settings_credentials_and_disabling_are_isolated() {
     let dir = tempfile::tempdir().unwrap();
-    let store = MemorySettingsStore::new(dir.path().join("memory.toml"));
+    let store = MemorySettingsStore::new(dir.path().join("memory.yaml"));
     store
         .save(
             "work",
@@ -183,7 +183,7 @@ fn profile_settings_credentials_and_disabling_are_isolated() {
 #[test]
 fn rename_moves_only_its_profile_and_delete_does_not_leak_into_recreated_profiles() {
     let dir = tempfile::tempdir().unwrap();
-    let store = MemorySettingsStore::new(dir.path().join("memory.toml"));
+    let store = MemorySettingsStore::new(dir.path().join("memory.yaml"));
     store
         .save(
             "work",
@@ -211,8 +211,9 @@ fn rename_moves_only_its_profile_and_delete_does_not_leak_into_recreated_profile
 #[test]
 fn unreleased_global_settings_are_not_implicitly_shared_with_any_profile() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("memory.toml");
-    let previous = toml::to_string(&hindsight(HINDSIGHT_CLOUD_URL, true, Some("secret"))).unwrap();
+    let path = dir.path().join("memory.yaml");
+    let previous =
+        serde_yaml_ng::to_string(&hindsight(HINDSIGHT_CLOUD_URL, true, Some("secret"))).unwrap();
     std::fs::write(&path, &previous).unwrap();
     let store = MemorySettingsStore::new(&path);
     assert!(
@@ -230,17 +231,18 @@ fn unreleased_global_settings_are_not_implicitly_shared_with_any_profile() {
 #[test]
 fn repairs_invalid_profiles_without_changing_other_profiles() {
     for invalid in [
-        "kind = 'unknown'",
-        "kind = 'hindsight'\ndeployment = 'self_hosted'\napi_base = 'not-a-url'\nbank_id = 'bank'",
+        "kind: unknown",
+        "kind: hindsight\ndeployment: self_hosted\napi_base: not-a-url\nbank_id: bank",
     ] {
         for replacement in [
             MemorySettings::None,
             hindsight("http://localhost:8888", false, None),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("memory.toml");
+            let path = dir.path().join("memory.yaml");
+            let invalid = invalid.replace("\n", "\n    ");
             let source = format!(
-                "version = 1\n[profiles.broken]\n{invalid}\n[profiles.other]\nkind = 'hindsight'\ndeployment = 'cloud'\napi_base = '{HINDSIGHT_CLOUD_URL}'\nbank_id = 'other-bank'\napi_key = 'other-secret'\n[profiles.also_broken]\nkind = 'future-provider'\n"
+                "version: 1\nprofiles:\n  broken:\n    {invalid}\n  other:\n    kind: hindsight\n    deployment: cloud\n    api_base: {HINDSIGHT_CLOUD_URL}\n    bank_id: other-bank\n    api_key: other-secret\n  also_broken:\n    kind: future-provider\n"
             );
             std::fs::write(&path, &source).unwrap();
             let store = MemorySettingsStore::new(&path);
@@ -248,9 +250,9 @@ fn repairs_invalid_profiles_without_changing_other_profiles() {
             assert!(store.load("other").is_ok());
             store.save("broken", replacement).unwrap();
             assert!(store.load("broken").is_ok());
-            let before: toml::Value = toml::from_str(&source).unwrap();
-            let after: toml::Value =
-                toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            let before: serde_yaml_ng::Value = serde_yaml_ng::from_str(&source).unwrap();
+            let after: serde_yaml_ng::Value =
+                serde_yaml_ng::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
             assert_eq!(before["profiles"]["other"], after["profiles"]["other"]);
             assert_eq!(
                 before["profiles"]["also_broken"],
@@ -263,10 +265,44 @@ fn repairs_invalid_profiles_without_changing_other_profiles() {
 #[test]
 fn malformed_file_cannot_be_overwritten_by_a_single_profile_save() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("memory.toml");
-    let source = "version = 1\n[profiles.other]\napi_key = 'unterminated-secret";
+    let path = dir.path().join("memory.yaml");
+    let source = "version: 1\nprofiles:\n  other:\n    api_key: 'unterminated-secret";
     std::fs::write(&path, source).unwrap();
     let store = MemorySettingsStore::new(&path);
     assert!(store.save("broken", MemorySettings::None).is_err());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+}
+
+#[test]
+fn legacy_memory_file_cannot_be_silently_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.yaml");
+    let legacy = dir.path().join("memory.toml");
+    std::fs::write(&legacy, "private legacy settings").unwrap();
+    let store = MemorySettingsStore::new(&path);
+    assert!(
+        store
+            .load("work")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("convert it to YAML")
+    );
+    assert!(store.save("work", MemorySettings::None).is_err());
+    assert!(!path.exists());
+    assert_eq!(
+        std::fs::read_to_string(legacy).unwrap(),
+        "private legacy settings"
+    );
+}
+
+#[test]
+fn duplicate_profiles_cannot_be_overwritten_by_a_single_profile_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.yaml");
+    let source = "version: 1\nprofiles:\n  other:\n    kind: none\n  other:\n    kind: none\n";
+    std::fs::write(&path, source).unwrap();
+    let store = MemorySettingsStore::new(&path);
+    assert!(store.save("work", MemorySettings::None).is_err());
     assert_eq!(std::fs::read_to_string(path).unwrap(), source);
 }

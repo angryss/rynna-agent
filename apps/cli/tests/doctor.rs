@@ -4,7 +4,7 @@ use predicates::prelude::*;
 /// Writes a catalog and returns its path plus the owning directory.
 fn catalog(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(&path, body).expect("write catalog");
     (directory, path)
 }
@@ -18,14 +18,16 @@ fn doctor(config: &std::path::Path) -> Command {
 }
 
 const HEALTHY: &str = r#"
-version = 1
-default_profile = "local"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://localhost:11434/v1"
-[profiles.local]
-provider = "ollama"
-model = "llama3"
+version: 1
+default_profile: local
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  local:
+    provider: ollama
+    model: llama3
 "#;
 
 #[test]
@@ -41,15 +43,17 @@ fn a_healthy_catalog_reports_no_problems_and_exits_zero() {
 fn a_missing_credential_variable_fails_without_naming_its_value() {
     let (_directory, config) = catalog(
         r#"
-version = 1
-default_profile = "work"
-[providers.remote]
-kind = "anthropic-messages"
-api_base = "https://api.anthropic.com"
-api_key_env = "DOCTOR_TEST_KEY"
-[profiles.work]
-provider = "remote"
-model = "claude-opus-5"
+version: 1
+default_profile: work
+providers:
+  remote:
+    kind: anthropic-messages
+    api_base: https://api.anthropic.com
+    api_key_env: DOCTOR_TEST_KEY
+profiles:
+  work:
+    provider: remote
+    model: claude-opus-5
 "#,
     );
     doctor(&config)
@@ -63,15 +67,17 @@ model = "claude-opus-5"
 fn a_set_credential_variable_passes_and_its_value_never_appears() {
     let (_directory, config) = catalog(
         r#"
-version = 1
-default_profile = "work"
-[providers.remote]
-kind = "anthropic-messages"
-api_base = "https://api.anthropic.com"
-api_key_env = "DOCTOR_TEST_KEY"
-[profiles.work]
-provider = "remote"
-model = "claude-opus-5"
+version: 1
+default_profile: work
+providers:
+  remote:
+    kind: anthropic-messages
+    api_base: https://api.anthropic.com
+    api_key_env: DOCTOR_TEST_KEY
+profiles:
+  work:
+    provider: remote
+    model: claude-opus-5
 "#,
     );
     let mut command = doctor(&config);
@@ -87,25 +93,30 @@ model = "claude-opus-5"
 #[test]
 fn a_missing_filesystem_root_fails() {
     let directory = tempfile::tempdir().expect("temporary directory");
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     let missing = directory.path().join("absent");
     std::fs::write(
         &config,
         format!(
             r#"
-version = 1
-default_profile = "work"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://localhost:11434/v1"
-[profiles.work]
-provider = "ollama"
-model = "llama3"
-capabilities = ["files"]
-[capabilities.files]
-kind = "filesystem"
-root = "{}"
-allowed_patterns = ["**/*"]
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  work:
+    provider: ollama
+    model: llama3
+    capabilities:
+    - files
+capabilities:
+  files:
+    kind: filesystem
+    root: '{}'
+    allowed_patterns:
+    - '**/*'
 "#,
             missing.display()
         ),
@@ -121,26 +132,31 @@ allowed_patterns = ["**/*"]
 #[test]
 fn an_existing_filesystem_root_passes() {
     let directory = tempfile::tempdir().expect("temporary directory");
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     let root = directory.path().join("workspace");
     std::fs::create_dir(&root).expect("create root");
     std::fs::write(
         &config,
         format!(
             r#"
-version = 1
-default_profile = "work"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://localhost:11434/v1"
-[profiles.work]
-provider = "ollama"
-model = "llama3"
-capabilities = ["files"]
-[capabilities.files]
-kind = "filesystem"
-root = "{}"
-allowed_patterns = ["**/*"]
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  work:
+    provider: ollama
+    model: llama3
+    capabilities:
+    - files
+capabilities:
+  files:
+    kind: filesystem
+    root: '{}'
+    allowed_patterns:
+    - '**/*'
 "#,
             root.display()
         ),
@@ -176,26 +192,31 @@ fn json_output_is_machine_readable() {
 #[test]
 fn every_problem_is_reported_in_one_run() {
     let directory = tempfile::tempdir().expect("temporary directory");
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     // Two independent problems: the run must not stop at the first.
     std::fs::write(
         &config,
         format!(
             r#"
-version = 1
-default_profile = "work"
-[providers.remote]
-kind = "anthropic-messages"
-api_base = "https://api.anthropic.com"
-api_key_env = "DOCTOR_TEST_KEY"
-[profiles.work]
-provider = "remote"
-model = "claude-opus-5"
-capabilities = ["files"]
-[capabilities.files]
-kind = "filesystem"
-root = "{}"
-allowed_patterns = ["**/*"]
+version: 1
+default_profile: work
+providers:
+  remote:
+    kind: anthropic-messages
+    api_base: https://api.anthropic.com
+    api_key_env: DOCTOR_TEST_KEY
+profiles:
+  work:
+    provider: remote
+    model: claude-opus-5
+    capabilities:
+    - files
+capabilities:
+  files:
+    kind: filesystem
+    root: '{}'
+    allowed_patterns:
+    - '**/*'
 "#,
             directory.path().join("absent").display()
         ),
@@ -215,7 +236,7 @@ fn a_bare_skill_name_in_the_search_root_passes() {
     // The runtime resolves bare names under <catalog>/skills, so doctor must too:
     // reporting a valid, runnable profile as broken is worse than not checking.
     let directory = tempfile::tempdir().expect("temporary directory");
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     let skill = directory.path().join("skills").join("code-review");
     std::fs::create_dir_all(&skill).expect("create skill");
     std::fs::write(
@@ -226,15 +247,18 @@ fn a_bare_skill_name_in_the_search_root_passes() {
     std::fs::write(
         &config,
         r#"
-version = 1
-default_profile = "work"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://localhost:11434/v1"
-[profiles.work]
-provider = "ollama"
-model = "llama3"
-active_skills = ["code-review"]
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  work:
+    provider: ollama
+    model: llama3
+    active_skills:
+    - code-review
 "#,
     )
     .expect("write catalog");
@@ -249,15 +273,18 @@ active_skills = ["code-review"]
 fn a_skill_that_does_not_resolve_fails() {
     let (_directory, config) = catalog(
         r#"
-version = 1
-default_profile = "work"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://localhost:11434/v1"
-[profiles.work]
-provider = "ollama"
-model = "llama3"
-active_skills = ["definitely-not-a-real-skill"]
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  work:
+    provider: ollama
+    model: llama3
+    active_skills:
+    - definitely-not-a-real-skill
 "#,
     );
     doctor(&config).assert().failure();
@@ -267,29 +294,33 @@ active_skills = ["definitely-not-a-real-skill"]
 fn a_command_program_that_is_a_directory_fails() {
     // exists() alone is not enough: the provider spawns this path.
     let directory = tempfile::tempdir().expect("temporary directory");
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     let not_a_program = directory.path().join("bin");
     std::fs::create_dir(&not_a_program).expect("create directory");
     std::fs::write(
         &config,
         format!(
             r#"
-version = 1
-default_profile = "work"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://localhost:11434/v1"
-[profiles.work]
-provider = "ollama"
-model = "llama3"
-capabilities = ["shell"]
-[capabilities.shell]
-kind = "command"
-working_directory = "{}"
-timeout_seconds = 30
-max_output_bytes = 1024
-[capabilities.shell.programs]
-tool = "{}"
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  work:
+    provider: ollama
+    model: llama3
+    capabilities:
+    - shell
+capabilities:
+  shell:
+    kind: command
+    working_directory: '{}'
+    timeout_seconds: 30
+    max_output_bytes: 1024
+    programs:
+      tool: '{}'
 "#,
             directory.path().display(),
             not_a_program.display()

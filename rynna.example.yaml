@@ -1,0 +1,128 @@
+version: 1
+default_profile: local
+# Reusable connections. Keep API keys in environment variables, never this file.
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+  # MLX uses this local endpoint by default when api_base is omitted.
+  mlx:
+    kind: mlx
+    api_base: http://127.0.0.1:8000/v1
+  work-openai:
+    kind: openai-compatible
+    api_base: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+  openrouter:
+    kind: openai-compatible
+    api_base: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+  anthropic-api:
+    kind: anthropic-messages
+    api_base: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+  claude-subscription:
+    kind: claude-subscription
+    claude_program: claude
+# Profiles scope models, tools, skills, projects, subagents, and workflows.
+profiles:
+  local:
+    provider: ollama
+    model: qwen3:8b
+    system_prompt: You are Rynna, a careful and capable local AI software agent.
+    default_project_directory: .
+    # A project default must be one of its directories.
+    projects:
+    - name: rynna
+      directories:
+      - .
+      - ../shared
+      default_directory: .
+    # Installed skill names or directories, e.g. [code-review, ./skills/rust].
+    active_skills: []
+    capabilities:
+    - workspace
+    subagents:
+    - name: reviewer
+      description: Review code changes for correctness and missing tests.
+      instructions: Inspect the requested changes and report actionable issues with file references.
+    # Optional workflow; the built-in rynna-default is always available.
+    workflows:
+    - id: implement-review
+      name: Implement and review
+      description: Implement a goal and check every success criterion.
+      revision: 1
+      steps:
+      - id: implement
+        role: work
+        executor: instructions
+        instructions: Implement the goal using the permitted tools and address verification feedback.
+      - id: verify
+        role: verify
+        executor: instructions
+        instructions: Check every criterion and return the requested structured evidence.
+        repeat_target: implement
+  mlx:
+    provider: mlx
+    model: mlx-community/Qwen3.8-27B-8bit
+    capabilities:
+    - workspace
+  work:
+    provider: work-openai
+    model: gpt-5
+    system_prompt: You are Rynna, a careful AI software agent working in a professional environment.
+    active_skills: []
+    mcp_servers:
+    - github
+    capabilities:
+    - workspace
+  openrouter:
+    provider: openrouter
+    model: openai/gpt-5.2
+    capabilities:
+    - workspace
+  anthropic:
+    provider: anthropic-api
+    model: claude-sonnet-4-5
+    capabilities:
+    - workspace
+  # Claude Code account profiles cannot activate capabilities, skills, or MCP.
+  claude-account:
+    provider: claude-subscription
+    model: sonnet
+# Native capability roots resolve from the process working directory.
+capabilities:
+  workspace:
+    kind: filesystem
+    root: .
+    read_only: false
+    allowed_patterns: []
+    # Omit denied_patterns/protected_patterns to retain secure defaults.
+    max_read_bytes: 1048576
+    max_results: 1000
+    max_traversal_files: 10000
+    max_traversal_depth: 32
+    max_search_bytes: 16777216
+  # Opt-in command capability: add host-commands to a profile to activate it.
+  # Unix only; use platform-correct absolute program paths.
+  # host-commands:
+  #   kind: command
+  #   working_directory: .
+  #   programs:
+  #     uname: /usr/bin/uname
+  #     sw_vers: /usr/bin/sw_vers
+  #   timeout_seconds: 5
+  #   max_output_bytes: 65536
+
+# Legacy metadata only; executable MCP servers belong in mcp.yaml.
+mcp_servers:
+  github:
+    transport: stdio
+    command: docker
+    args:
+    - run
+    - --rm
+    - -i
+    - ghcr.io/github/github-mcp-server
+    env:
+    - GITHUB_PERSONAL_ACCESS_TOKEN

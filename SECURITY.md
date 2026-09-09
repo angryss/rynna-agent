@@ -18,12 +18,12 @@ Native filesystem capabilities must use the narrowest practical `root` and shoul
 
 ## MCP servers
 
-MCP settings are profile-specific and stored in private `mcp.toml` beside provider
+MCP settings are profile-specific and stored in private `mcp.yaml` beside provider
 settings. HTTP reads and writes require loopback access; the public profile list
 does not expose commands or environment values. Local MCP commands run with the
 Rynna process’s OS permissions and are not restricted by native tool allowlists.
 Their environment is limited to ordinary path/home/temp resolution variables and
 explicit `env` values. Remote tokens are read from `bearer_token_env`; HTTP redirects
 are disabled. Tool results remain untrusted tool messages. Subscription providers
-never discover or execute external MCP tools. Keep `mcp.toml` out of source control
+never discover or execute external MCP tools. Keep `mcp.yaml` out of source control
 and static web directories; its editor intentionally displays configured values.

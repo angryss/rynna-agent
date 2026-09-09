@@ -471,7 +471,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, ui: &ProviderUi) {
         Paragraph::new(concat!(
             "Rynna Settings — Providers\n",
             "Provider settings record credential readiness only.\n",
-            "Runtime provider/profile/model routing remains authoritative in config.toml and loads at startup."
+            "Runtime provider/profile/model routing remains authoritative in config.yaml and loads at startup."
         ))
             .style(
                 Style::default()
@@ -713,7 +713,7 @@ mod tests {
     fn provider_ui_refreshes_the_selected_profile_scope() {
         let directory = tempfile::tempdir().unwrap();
         let mut store =
-            ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+            ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
         store
             .add(
                 "work",
@@ -740,7 +740,7 @@ mod tests {
         assert!(screen.contains("credential readiness only"), "{screen}");
         assert!(
             screen.contains(
-                "Runtime provider/profile/model routing remains authoritative in config.toml"
+                "Runtime provider/profile/model routing remains authoritative in config.yaml"
             ),
             "{screen}"
         );

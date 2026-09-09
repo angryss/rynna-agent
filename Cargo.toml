@@ -47,7 +47,7 @@ sha2 = "0.11"
 thiserror = "2"
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
-toml = "1.1"
+serde_yaml_ng = "0.10"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["fs", "trace"] }
 tracing = "0.1"

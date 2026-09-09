@@ -26,7 +26,7 @@ mod provider_ui;
 #[derive(Parser)]
 #[command(name = "rynna", version, about = "An AI software agent")]
 struct Cli {
-    /// TOML configuration file. Uses the platform default when omitted.
+    /// YAML configuration file. Uses the platform default when omitted.
     #[arg(long, env = "RYNNA_CONFIG", global = true)]
     config: Option<PathBuf>,
     /// Provider settings file. Uses the platform default when omitted.
@@ -191,7 +191,7 @@ async fn main() -> Result<()> {
     )?;
 
     let mcp_store =
-        rynna_config::mcp::McpSettingsStore::new(provider_config.with_file_name("mcp.toml"));
+        rynna_config::mcp::McpSettingsStore::new(provider_config.with_file_name("mcp.yaml"));
     for profile in profiles.profiles() {
         let settings = mcp_store.load(&profile.name)?;
         profiles.set_tool_source(
@@ -200,7 +200,7 @@ async fn main() -> Result<()> {
         )?;
     }
     let memory_store = rynna_config::memory::MemorySettingsStore::new(
-        provider_config.with_file_name("memory.toml"),
+        provider_config.with_file_name("memory.yaml"),
     );
     for profile in profiles.profiles() {
         let memory = rynna_memory_hindsight::configured_memory(&memory_store.load(&profile.name)?)?;
