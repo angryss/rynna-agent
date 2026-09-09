@@ -254,7 +254,7 @@ select:disabled { opacity: .5; }
 .thinking-block summary { cursor: pointer; font-weight: 510; user-select: none; }
 .thinking-block summary:hover { color: hsl(var(--foreground)); }
 .thinking-block summary:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 3px; }
-.thinking-block p { margin: .65rem 0 0; padding-left: 1rem; border-left: 2px solid hsl(var(--border)); line-height: 1.5; white-space: pre-wrap; }
+.thinking-block p { max-height: 12em; overflow-y: auto; overflow-wrap: anywhere; scrollbar-gutter: stable; overscroll-behavior: contain; margin: .65rem 0 0; padding-left: 1rem; border-left: 2px solid hsl(var(--border)); line-height: 1.5; white-space: pre-wrap; }
 
 .composer { padding: .75rem; border: 1px solid hsl(var(--border)); border-radius: .85rem; background: hsl(var(--card) / .9); box-shadow: 0 1.25rem 4rem hsl(228 24% 10% / .12); backdrop-filter: blur(18px); }
 .request-error { margin: 0 0 .75rem; padding: .75rem 1rem; border: 1px solid hsl(var(--destructive) / .4); border-radius: .65rem; color: hsl(var(--destructive-foreground)); background: hsl(var(--destructive) / .08); font-size: .88rem; }

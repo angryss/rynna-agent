@@ -1,3 +1,4 @@
+import { ThinkingContent } from './components/thinking-content';
 import { SlashCommandInput, slashCommands } from './components/slash-command-input';
 import { newSessionId } from './sessions';
 import { WorkflowSettings } from './components/workflow-settings';
@@ -1042,7 +1043,7 @@ export function App({ client }: AppProps) {
                         }}
                       >
                         <summary>Thinking</summary>
-                        <p>{message.content}</p>
+                        <ThinkingContent content={message.content} expanded={message.expanded} />
                       </details>
                     ) : (
                       <article className={`message message-${message.role}`} key={`${message.role}-${index}`}>
