@@ -38,7 +38,8 @@ async fn provider_error_body_removes_terminal_control_characters() {
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(ResponseTemplate::new(500).set_body_string(malicious))
-        .expect(1)
+        // A 500 is transient, so it is now attempted three times before giving up.
+        .expect(3)
         .mount(&server)
         .await;
 

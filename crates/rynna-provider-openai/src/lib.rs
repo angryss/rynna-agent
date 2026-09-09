@@ -4,11 +4,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::{Client, Url};
+use rynna_core::retry::{Backoff, parse_retry_after};
 use rynna_core::{
     CacheOptimizer, Completion, CompletionDelta, CompletionRequest, ContextPlan, Message,
     ModelProvider, PrefixCacheOptimizer, ProviderContext, ProviderError, Role, ServerCompaction,
     ToolCall, ToolDefinition,
 };
+use rynna_core::{ProviderErrorKind, classify_status, context_overflow_signal};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -131,6 +133,79 @@ fn cache_technology_for(base_url: &str) -> CacheTechnology {
         CacheTechnology::Ollama
     } else {
         CacheTechnology::Generic
+    }
+}
+
+/// Upgrades an otherwise-opaque rejection to `ContextOverflow` when the body says so.
+fn classify_body(error: ProviderError, body: &str) -> ProviderError {
+    if error.kind() == ProviderErrorKind::Permanent && context_overflow_signal(body) {
+        return error.with_kind(ProviderErrorKind::ContextOverflow);
+    }
+    error
+}
+
+fn retry_after_of(response: &reqwest::Response) -> Option<std::time::Duration> {
+    parse_retry_after(
+        response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+    )
+}
+
+fn request_error(error: reqwest::Error) -> ProviderError {
+    // Connect and timeout faults usually clear on their own; decode faults do not.
+    let kind = if error.is_timeout() || error.is_connect() {
+        ProviderErrorKind::Transient
+    } else {
+        ProviderErrorKind::Permanent
+    };
+    ProviderError::new(format!("request failed: {error}")).with_kind(kind)
+}
+
+/// Sends `builder`, retrying only transient failures and only before any response
+/// body is read, so a streamed turn is never restarted after deltas have been
+/// emitted. Non-retryable responses are returned intact for the caller's existing
+/// error path, which keeps the response body in the message.
+async fn send_with_retry(
+    builder: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, ProviderError> {
+    let mut backoff = Backoff::new();
+    loop {
+        // Clone up front: a consumed builder cannot be reissued.
+        let Some(attempt) = builder.try_clone() else {
+            // Non-cloneable bodies cannot be retried safely.
+            return builder.send().await.map_err(request_error);
+        };
+        let transport_error = match attempt.send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success()
+                    || classify_status(status.as_u16()) != ProviderErrorKind::Transient
+                {
+                    return Ok(response);
+                }
+                // Decide while the response is still in hand, so giving up returns
+                // this exact response (body included) to the caller's error path
+                // rather than spending another request to rediscover it.
+                let probe = ProviderError::new(String::new())
+                    .with_status(status.as_u16())
+                    .with_retry_after(retry_after_of(&response));
+                match backoff.next_delay(&probe) {
+                    Some(delay) => {
+                        drop(response);
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    None => return Ok(response),
+                }
+            }
+            Err(error) => request_error(error),
+        };
+        let Some(delay) = backoff.next_delay(&transport_error) else {
+            return Err(transport_error);
+        };
+        tokio::time::sleep(delay).await;
     }
 }
 
@@ -326,17 +401,21 @@ impl ModelProvider for OpenAiCompatibleProvider {
         if let Some(api_key) = &self.api_key {
             request_builder = request_builder.bearer_auth(api_key);
         }
-        let response = request_builder
-            .send()
-            .await
-            .map_err(|error| ProviderError::new(format!("request failed: {error}")))?;
+        let response = send_with_retry(request_builder).await?;
         let status = response.status();
+        let retry_after = retry_after_of(&response);
         let body = read_response_body(response).await?;
         if !status.is_success() {
-            return Err(ProviderError::new(format!(
-                "provider returned {status}: {}",
-                truncate(&String::from_utf8_lossy(&body), MAX_ERROR_BODY_CHARS)
-            )));
+            let body = String::from_utf8_lossy(&body);
+            return Err(classify_body(
+                ProviderError::new(format!(
+                    "provider returned {status}: {}",
+                    truncate(&body, MAX_ERROR_BODY_CHARS)
+                ))
+                .with_status(status.as_u16())
+                .with_retry_after(retry_after),
+                &body,
+            ));
         }
         response_completion(&body)
     }
@@ -379,19 +458,21 @@ impl ModelProvider for OpenAiCompatibleProvider {
             request_builder = request_builder.bearer_auth(api_key);
         }
 
-        let response = request_builder
-            .send()
-            .await
-            .map_err(|error| ProviderError::new(format!("request failed: {error}")))?;
+        let response = send_with_retry(request_builder).await?;
         let status = response.status();
-
+        let retry_after = retry_after_of(&response);
         if !status.is_success() {
             let body = read_response_body(response).await?;
             let body = String::from_utf8_lossy(&body);
-            return Err(ProviderError::new(format!(
-                "provider returned {status}: {}",
-                truncate(&body, MAX_ERROR_BODY_CHARS)
-            )));
+            return Err(classify_body(
+                ProviderError::new(format!(
+                    "provider returned {status}: {}",
+                    truncate(&body, MAX_ERROR_BODY_CHARS)
+                ))
+                .with_status(status.as_u16())
+                .with_retry_after(retry_after),
+                &body,
+            ));
         }
 
         let body = read_response_body(response).await?;
@@ -437,18 +518,21 @@ impl ModelProvider for OpenAiCompatibleProvider {
             request_builder = request_builder.bearer_auth(api_key);
         }
 
-        let mut response = request_builder
-            .send()
-            .await
-            .map_err(|error| ProviderError::new(format!("request failed: {error}")))?;
+        let mut response = send_with_retry(request_builder).await?;
         let status = response.status();
+        let retry_after = retry_after_of(&response);
         if !status.is_success() {
             let body = read_response_body(response).await?;
             let body = String::from_utf8_lossy(&body);
-            return Err(ProviderError::new(format!(
-                "provider returned {status}: {}",
-                truncate(&body, MAX_ERROR_BODY_CHARS)
-            )));
+            return Err(classify_body(
+                ProviderError::new(format!(
+                    "provider returned {status}: {}",
+                    truncate(&body, MAX_ERROR_BODY_CHARS)
+                ))
+                .with_status(status.as_u16())
+                .with_retry_after(retry_after),
+                &body,
+            ));
         }
 
         let mut pending = Vec::new();

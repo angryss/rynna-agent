@@ -8,7 +8,7 @@ impl WorkflowExecutor for Executor {
     async fn preflight(&self, _: &Run) -> Result<(), String> {
         Ok(())
     }
-    async fn execute(&self, _: &Run, _: usize) -> Result<ExecutionResult, String> {
+    async fn execute(&self, _: &Run, _: usize) -> Result<ExecutionResult, ExecutionError> {
         std::future::pending().await
     }
 }

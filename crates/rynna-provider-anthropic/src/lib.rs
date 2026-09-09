@@ -6,11 +6,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::{Client, Url};
+use rynna_core::retry::{Backoff, parse_retry_after};
 use rynna_core::{
     CacheOptimizer, Completion, CompletionDelta, CompletionRequest, ContextPlan, Message,
     ModelProvider, PrefixCacheOptimizer, ProviderContext, ProviderError, Role, ServerCompaction,
     ToolCall,
 };
+use rynna_core::{ProviderErrorKind, classify_status, context_overflow_signal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -581,16 +583,15 @@ impl ModelProvider for AnthropicMessagesProvider {
         {
             return self.complete(plan.request).await;
         }
-        let response = self
-            .client
-            .post(self.messages_url.clone())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", COMPACTION_BETA)
-            .json(&self.request(plan.request, false, plan.server_compaction_threshold)?)
-            .send()
-            .await
-            .map_err(request_error)?;
+        let response = send_with_retry(
+            self.client
+                .post(self.messages_url.clone())
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("anthropic-beta", COMPACTION_BETA)
+                .json(&self.request(plan.request, false, plan.server_compaction_threshold)?),
+        )
+        .await?;
         let bytes = checked_body(response, &self.api_key).await?;
         let parsed: MessagesResponse = serde_json::from_slice(&bytes)
             .map_err(|e| ProviderError::new(format!("invalid Anthropic response: {e}")))?;
@@ -608,7 +609,7 @@ impl ModelProvider for AnthropicMessagesProvider {
         if uses_compaction {
             request_builder = request_builder.header("anthropic-beta", COMPACTION_BETA);
         }
-        let response = request_builder.send().await.map_err(request_error)?;
+        let response = send_with_retry(request_builder).await?;
         let bytes = checked_body(response, &self.api_key).await?;
         let parsed: MessagesResponse = serde_json::from_slice(&bytes)
             .map_err(|e| ProviderError::new(format!("invalid Anthropic response: {e}")))?;
@@ -630,7 +631,7 @@ impl ModelProvider for AnthropicMessagesProvider {
         if uses_compaction {
             request_builder = request_builder.header("anthropic-beta", COMPACTION_BETA);
         }
-        let mut response = request_builder.send().await.map_err(request_error)?;
+        let mut response = send_with_retry(request_builder).await?;
         if !response.status().is_success() {
             return Err(http_error(response, &self.api_key).await);
         }
@@ -1008,15 +1009,82 @@ async fn checked_body(
 }
 async fn http_error(response: reqwest::Response, api_key: &str) -> ProviderError {
     let status = response.status();
+    let retry_after = retry_after_of(&response);
     let body = match read_limited(response).await {
         Ok(body) => body,
         Err(error) => return error,
     };
     let text = String::from_utf8_lossy(&body).replace(api_key, "[REDACTED]");
-    ProviderError::new(format!(
+    let error = ProviderError::new(format!(
         "Anthropic returned {status}: {}",
         text.chars().take(512).collect::<String>()
     ))
+    .with_status(status.as_u16())
+    .with_retry_after(retry_after);
+    classify_body(error, &text)
+}
+
+/// Upgrades an otherwise-opaque rejection to `ContextOverflow` when the body says so.
+fn classify_body(error: ProviderError, body: &str) -> ProviderError {
+    if error.kind() == ProviderErrorKind::Permanent && context_overflow_signal(body) {
+        return error.with_kind(ProviderErrorKind::ContextOverflow);
+    }
+    error
+}
+
+fn retry_after_of(response: &reqwest::Response) -> Option<std::time::Duration> {
+    parse_retry_after(
+        response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+    )
+}
+
+/// Sends `builder`, retrying only transient failures and only before any response
+/// body is read, so a streamed turn is never restarted after deltas have been
+/// emitted. Non-retryable responses are returned intact for the caller's existing
+/// error path, which keeps the response body in the message.
+async fn send_with_retry(
+    builder: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, ProviderError> {
+    let mut backoff = Backoff::new();
+    loop {
+        // Clone up front: a consumed builder cannot be reissued.
+        let Some(attempt) = builder.try_clone() else {
+            // Non-cloneable bodies cannot be retried safely.
+            return builder.send().await.map_err(request_error);
+        };
+        let transport_error = match attempt.send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success()
+                    || classify_status(status.as_u16()) != ProviderErrorKind::Transient
+                {
+                    return Ok(response);
+                }
+                // Decide while the response is still in hand, so giving up returns
+                // this exact response (body included) to the caller's error path
+                // rather than spending another request to rediscover it.
+                let probe = ProviderError::new(String::new())
+                    .with_status(status.as_u16())
+                    .with_retry_after(retry_after_of(&response));
+                match backoff.next_delay(&probe) {
+                    Some(delay) => {
+                        drop(response);
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    None => return Ok(response),
+                }
+            }
+            Err(error) => request_error(error),
+        };
+        let Some(delay) = backoff.next_delay(&transport_error) else {
+            return Err(transport_error);
+        };
+        tokio::time::sleep(delay).await;
+    }
 }
 async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, ProviderError> {
     let mut body = Vec::new();
@@ -1034,7 +1102,13 @@ fn too_large() -> ProviderError {
     ))
 }
 fn request_error(e: reqwest::Error) -> ProviderError {
-    ProviderError::new(format!("Anthropic request failed: {e}"))
+    // Connect and timeout faults usually clear on their own; decode faults do not.
+    let kind = if e.is_timeout() || e.is_connect() {
+        ProviderErrorKind::Transient
+    } else {
+        ProviderErrorKind::Permanent
+    };
+    ProviderError::new(format!("Anthropic request failed: {e}")).with_kind(kind)
 }
 
 async fn read_version_output<R: AsyncRead + Unpin>(reader: R) -> std::io::Result<Vec<u8>> {
