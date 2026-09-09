@@ -32,10 +32,31 @@ export function readSessions(storage?: Pick<Storage, 'getItem'>): Session[] {
   }
 }
 
+/** Why a write failed. Quota is recoverable by deleting sessions; the rest are not. */
+export type WriteFailure = 'quota' | 'unavailable';
+
+export interface WriteResult {
+  sessions: Session[];
+  /** False when the store rejected the write, so this transcript is not saved. */
+  persisted: boolean;
+  /** Set only when `persisted` is false. */
+  failure?: WriteFailure;
+}
+
+function writeFailure(error: unknown): WriteFailure {
+  // Browsers disagree on the name, and Firefox historically used code 22.
+  const quota =
+    error instanceof DOMException &&
+    (error.name === 'QuotaExceededError' ||
+      error.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+      error.code === 22);
+  return quota ? 'quota' : 'unavailable';
+}
+
 export function writeSessions(
   sessions: Session[],
   storage?: Pick<Storage, 'getItem' | 'setItem'>,
-): Session[] {
+): WriteResult {
   let merged = sessions;
   try {
     const target = storage ?? window.localStorage;
@@ -43,10 +64,13 @@ export function writeSessions(
     merged = mergeSessions(sessions, stored ? decodeSessions(stored) : [])
       .filter(session => !isSessionDeleted(session.id, target));
     target.setItem(STORAGE_KEY, JSON.stringify(merged));
-    return merged;
-  } catch {
-    // A full or unavailable local store must not prevent the conversation itself.
-    return merged;
+    return { sessions: merged, persisted: true };
+  } catch (error) {
+    // A full or unavailable local store must not prevent the conversation itself,
+    // but the caller has to tell the user: the server keeps no history, so an
+    // unreported failure here loses the transcript silently. The cause matters,
+    // because only a full store is fixed by deleting saved conversations.
+    return { sessions: merged, persisted: false, failure: writeFailure(error) };
   }
 }
 
@@ -63,7 +87,7 @@ export function deleteSession(id: string, sessions: Session[], storage?: Pick<St
   const target = storage ?? window.localStorage;
   // Do not report success if the durable deletion marker cannot be saved.
   target.setItem(`${DELETED_PREFIX}${id}`, 'true');
-  return writeSessions(sessions.filter(session => session.id !== id), target);
+  return writeSessions(sessions.filter(session => session.id !== id), target).sessions;
 }
 
 export function mergeSessions(preferred: Session[], additional: Session[]): Session[] {

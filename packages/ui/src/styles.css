@@ -370,6 +370,10 @@ select:disabled { opacity: .5; }
 
 .context-usage { font-size: 0.75rem; color: hsl(var(--muted-foreground)); white-space: nowrap; margin-right: auto; }
 .context-notice { font-size: 0.8125rem; color: hsl(var(--muted-foreground)); }
+/* Persistent: it stays until writes succeed, because every later turn is also unsaved.
+   Body text keeps the theme's checked foreground/background contrast; the destructive
+   colour carries urgency through a tint and rule instead of as a text colour. */
+.storage-warning { font-size: 0.8125rem; color: hsl(var(--foreground)); background: hsl(var(--destructive) / 0.12); border-left: 3px solid hsl(var(--destructive)); padding: 0.5rem 0.75rem; border-radius: var(--radius); }
 
 .context-window-control { display: grid; gap: 0.25rem; font-size: 0.75rem; max-width: 12rem; }
 .composer-actions { flex-wrap: wrap; }
