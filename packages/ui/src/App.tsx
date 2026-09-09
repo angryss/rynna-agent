@@ -1,3 +1,4 @@
+import { ThinkingContent } from './components/thinking-content';
 import { ArrowUp, Square } from 'lucide-react';
 import type { ContextResponse } from './contracts';
 import { SlashCommandInput, slashCommands } from './components/slash-command-input';
@@ -1149,7 +1150,7 @@ export function App({ client }: AppProps) {
                         }}
                       >
                         <summary>Thinking</summary>
-                        <p>{message.content}</p>
+                        <ThinkingContent content={message.content} expanded={message.expanded} />
                       </details>
                     ) : (
                       <article className={`message message-${message.role}`} key={`${message.role}-${index}`}>

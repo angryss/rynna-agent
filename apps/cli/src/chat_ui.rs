@@ -13,10 +13,11 @@ use futures_util::StreamExt;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarState, StatefulWidget, Widget, Wrap},
 };
 use rynna_core::{AgentProfiles, CompletionDelta, Message};
 use tokio::sync::mpsc;
@@ -24,6 +25,7 @@ use tokio::sync::mpsc;
 const USER_BACKGROUND: Color = Color::Rgb(52, 52, 52);
 const COMMAND_COLUMN_WIDTH: usize = 18;
 const MAX_COMPOSER_CONTENT_HEIGHT: u16 = 8;
+const MAX_THINKING_LINES: u16 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SlashCommand {
@@ -129,6 +131,7 @@ struct DisplayMessage {
     kind: MessageKind,
     content: String,
     expanded: bool,
+    scroll_from_bottom: u16,
 }
 
 struct ChatUi {
@@ -170,6 +173,7 @@ impl ChatUi {
             kind,
             content: content.into(),
             expanded: false,
+            scroll_from_bottom: 0,
         });
         self.scroll_from_bottom = 0;
     }
@@ -338,6 +342,7 @@ impl ChatUi {
                         kind: MessageKind::Thinking,
                         content: delta.clone(),
                         expanded: true,
+                        scroll_from_bottom: 0,
                     });
                 }
                 self.scroll_from_bottom = 0;
@@ -363,6 +368,25 @@ impl ChatUi {
                 }
                 self.append_assistant_delta(delta);
             }
+        }
+    }
+
+    fn scroll_thinking(&mut self, up: bool, width: u16) {
+        if let Some(message) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|message| message.kind == MessageKind::Thinking && message.expanded)
+        {
+            let maximum = thinking_paragraph(message)
+                .line_count(width.saturating_sub(3).max(1))
+                .saturating_sub(usize::from(MAX_THINKING_LINES))
+                .min(usize::from(u16::MAX)) as u16;
+            message.scroll_from_bottom = if up {
+                message.scroll_from_bottom.saturating_add(5).min(maximum)
+            } else {
+                message.scroll_from_bottom.saturating_sub(5)
+            };
         }
     }
 
@@ -588,6 +612,52 @@ fn highlighted_user_line(mut line: Line<'static>, width: u16) -> Line<'static> {
     line.style(Style::default().fg(Color::White).bg(USER_BACKGROUND))
 }
 
+fn thinking_paragraph(message: &DisplayMessage) -> Paragraph<'_> {
+    Paragraph::new(message.content.as_str()).wrap(Wrap { trim: false })
+}
+
+fn thinking_lines(message: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
+    if width < 4 {
+        return Vec::new();
+    }
+    let paragraph = thinking_paragraph(message);
+    let total = paragraph.line_count(width - 3);
+    let height = total.min(usize::from(MAX_THINKING_LINES)) as u16;
+    let maximum = total
+        .saturating_sub(usize::from(height))
+        .min(usize::from(u16::MAX)) as u16;
+    let offset = maximum.saturating_sub(message.scroll_from_bottom);
+    let area = Rect::new(0, 0, width - 2, height);
+    let mut buffer = Buffer::empty(area);
+    paragraph
+        .scroll((offset, 0))
+        .render(Rect::new(0, 0, width - 3, height), &mut buffer);
+    if maximum > 0 {
+        Scrollbar::default()
+            .begin_symbol(None)
+            .end_symbol(None)
+            .render(
+                area,
+                &mut buffer,
+                &mut ScrollbarState::new(total)
+                    .position(usize::from(offset))
+                    .viewport_content_length(usize::from(height)),
+            );
+    }
+    (0..height)
+        .map(|y| {
+            let mut text = String::from("  ");
+            let mut x = 0;
+            while x < area.width {
+                let symbol = buffer[(x, y)].symbol();
+                text.push_str(symbol);
+                x += Line::from(symbol).width().max(1) as u16;
+            }
+            Line::styled(text, Style::default().fg(Color::DarkGray))
+        })
+        .collect()
+}
+
 fn transcript_text(ui: &ChatUi, width: u16) -> Text<'static> {
     let mut lines = vec![Line::styled(
         "Rynna",
@@ -635,13 +705,7 @@ fn transcript_text(ui: &ChatUi, width: u16) -> Text<'static> {
                     Span::styled(label, Style::default().fg(Color::DarkGray)),
                 ]));
                 if message.expanded {
-                    lines.push(Line::styled(
-                        format!("  {first}"),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                    lines.extend(content.map(|line| {
-                        Line::styled(format!("  {line}"), Style::default().fg(Color::DarkGray))
-                    }));
+                    lines.extend(thinking_lines(message, width));
                 }
             }
             MessageKind::Assistant => {
@@ -710,7 +774,7 @@ fn render(frame: &mut Frame<'_>, ui: &ChatUi) {
 
     let state = if ui.busy { "Thinking…" } else { "Ready" };
     let controls = if commands.is_empty() {
-        "  Enter send · F2 models · Alt-Enter newline · Ctrl-T thinking · PgUp/PgDn scroll · Ctrl-C exit"
+        "  Enter send · F2 models · Alt-Enter newline · Ctrl-T thinking · Alt-PgUp/PgDn thinking scroll · PgUp/PgDn scroll · Ctrl-C exit"
     } else {
         "  ↑/↓ select · Tab complete · Enter run · Ctrl-C exit"
     };
@@ -882,6 +946,10 @@ pub async fn run(
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) { break; }
                         match key.code {
+                            KeyCode::PageUp | KeyCode::PageDown if !ui.picker.open && key.modifiers.contains(KeyModifiers::ALT) => {
+                                ui.scroll_thinking(key.code == KeyCode::PageUp, session.terminal.size()?.width);
+                                None
+                            }
                             KeyCode::PageUp if !ui.picker.open => { ui.scroll_from_bottom = ui.scroll_from_bottom.saturating_add(5); None }
                             KeyCode::PageDown if !ui.picker.open => { ui.scroll_from_bottom = ui.scroll_from_bottom.saturating_sub(5); None }
                             _ => ui.handle_key(key),
@@ -1457,6 +1525,46 @@ mod tests {
         assert!(!ui.messages()[0].expanded);
         assert_eq!(ui.messages()[1].kind, MessageKind::Assistant);
         assert_eq!(ui.messages()[1].content, "Answer");
+    }
+
+    #[test]
+    fn thinking_viewport_caps_wrapped_lines_and_scrolls_without_losing_content() {
+        use super::{Text, thinking_lines};
+        let mut ui = ChatUi::new("local", "test-model");
+        let content = (1..=20)
+            .map(|n| format!("step {n:02}\n"))
+            .collect::<String>()
+            + "latest";
+        ui.append_completion_delta(&CompletionDelta::Thinking(content.clone()));
+        let tail = thinking_lines(&ui.messages[0], 40);
+        assert_eq!(tail.len(), 8);
+        let text = Text::from(tail).to_string();
+        assert!(text.contains("latest"), "{text}");
+        assert!(!text.contains("step 01"), "{text}");
+        ui.scroll_thinking(true, 40);
+        ui.scroll_thinking(true, 40);
+        ui.scroll_thinking(true, 40);
+        let earlier = Text::from(thinking_lines(&ui.messages[0], 40)).to_string();
+        assert!(earlier.contains("step 01"), "{earlier}");
+        assert!(!earlier.contains("latest"), "{earlier}");
+        assert_eq!(ui.messages[0].content, content);
+        for _ in 0..4 {
+            ui.scroll_thinking(false, 40);
+        }
+        ui.append_completion_delta(&CompletionDelta::Thinking(" update".into()));
+        assert!(
+            Text::from(thinking_lines(&ui.messages[0], 40))
+                .to_string()
+                .contains("latest update")
+        );
+
+        ui.messages[0].content = "界 abc ".repeat(100) + "TAIL";
+        ui.messages[0].scroll_from_bottom = 0;
+        let wrapped = thinking_lines(&ui.messages[0], 20);
+        assert_eq!(wrapped.len(), 8);
+        assert!(wrapped.iter().all(|line| line.width() <= 20));
+        assert!(Text::from(wrapped).to_string().contains("TAIL"));
+        assert!(thinking_lines(&ui.messages[0], 2).is_empty());
     }
 
     #[test]

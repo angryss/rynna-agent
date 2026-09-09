@@ -252,7 +252,7 @@ select:disabled { opacity: .5; }
 .thinking-block summary { cursor: pointer; font-weight: 510; user-select: none; }
 .thinking-block summary:hover { color: hsl(var(--foreground)); }
 .thinking-block summary:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 3px; }
-.thinking-block p { margin: .75rem 0 0; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.thinking-block p { max-height: 12.8em; overflow-y: auto; scrollbar-gutter: stable; overscroll-behavior: contain; margin: .75rem 0 0; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .composer { position: sticky; bottom: 0; z-index: 10; flex-shrink: 0; padding: .65rem .75rem; border: 1px solid hsl(var(--border)); border-radius: 1.25rem; background: hsl(var(--muted)); box-shadow: 0 .85rem 0 .85rem hsl(var(--background)); }
 .composer:focus-within { border-color: hsl(var(--input)); }
