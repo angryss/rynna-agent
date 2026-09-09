@@ -10,13 +10,13 @@ Rynna needs distinct local, work, automation, and hosted configurations without 
 
 ## Decision
 
-Rynna uses a versioned TOML profile catalog owned by `rynna-config`.
+Rynna uses a versioned YAML profile catalog owned by `rynna-config`.
 
 - Providers are reusable named connection definitions with a provider kind, API base URL, and optional API-key environment-variable name.
 - Profiles select one provider and model and carry a trusted system prompt, active skill names, and active MCP server names.
-- MCP server definitions are named TOML tables. Profiles reference them by name; invalid references fail configuration loading.
+- MCP server definitions are named YAML mappings. Profiles reference them by name; invalid references fail configuration loading.
 - Secrets are not stored in the catalog. Provider definitions name an environment variable whose value is read only by composition roots.
-- The platform configuration path is `<config-dir>/rynna/config.toml`. Rynna preserves its previous local Ollama behavior when that file is absent.
+- The platform configuration path is `<config-dir>/rynna/config.yaml`. Rynna preserves its previous local Ollama behavior when that file and its legacy TOML predecessor are absent.
 - `--config`/`RYNNA_CONFIG` selects an explicit catalog. `--profile`/`RYNNA_PROFILE` selects the process default.
 - Existing provider/model/system-prompt CLI flags and environment variables override only the selected default profile.
 - The core owns transport-independent profile metadata and dispatch. CLI, Axum, and Tauri compose concrete providers around it.

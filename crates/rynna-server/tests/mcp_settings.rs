@@ -88,7 +88,7 @@ async fn request(
 #[tokio::test]
 async fn settings_are_local_profile_specific_validated_and_persistent() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("providers.toml");
+    let path = dir.path().join("providers.yaml");
     let app = app(&path, Arc::new(Model::default()));
     let config = json!({"mcpServers":{"tools":{"transport":"stdio","command":"does-not-run-on-save","enabled":false}}});
     for method in ["GET", "PUT"] {
@@ -148,7 +148,7 @@ async fn settings_are_local_profile_specific_validated_and_persistent() {
             .0,
         StatusCode::OK
     );
-    let store = rynna_config::mcp::McpSettingsStore::new(dir.path().join("mcp.toml"));
+    let store = rynna_config::mcp::McpSettingsStore::new(dir.path().join("mcp.yaml"));
     assert_eq!(store.load("test").unwrap().servers.len(), 1);
     assert!(store.load("unknown").unwrap().servers.is_empty());
     assert_eq!(
@@ -170,18 +170,20 @@ async fn settings_are_local_profile_specific_validated_and_persistent() {
 async fn catalog_profile_rename_and_delete_move_and_remove_mcp_settings() {
     use rynna_config::{ProfileCatalog, mcp::McpSettingsStore};
     let dir = tempfile::tempdir().unwrap();
-    let config_path = dir.path().join("config.toml");
+    let config_path = dir.path().join("config.yaml");
     std::fs::write(
         &config_path,
         r#"
-version = 1
-default_profile = "test"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.test]
-provider = "ollama"
-model = "model"
+version: 1
+default_profile: test
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  test:
+    provider: ollama
+    model: model
 "#,
     )
     .unwrap();
@@ -194,7 +196,7 @@ model = "model"
     .unwrap();
     let router = rynna_server::router_with_profiles_provider_settings_and_catalog(
         profiles,
-        ProviderSettingsStore::load(dir.path().join("providers.toml")).unwrap(),
+        ProviderSettingsStore::load(dir.path().join("providers.yaml")).unwrap(),
         catalog,
     );
     let draft = json!({"name":"new", "providers":[{"provider":"ollama", "model":"model"}], "active_skills":[], "mcp_servers":[], "capabilities":[]});
@@ -219,7 +221,7 @@ model = "model"
             .0,
         StatusCode::OK
     );
-    let store = McpSettingsStore::new(dir.path().join("mcp.toml"));
+    let store = McpSettingsStore::new(dir.path().join("mcp.yaml"));
     assert!(store.load("new").unwrap().servers.is_empty());
     assert_eq!(store.load("renamed").unwrap().servers.len(), 1);
     assert_eq!(
@@ -248,7 +250,7 @@ model = "model"
 async fn saved_changes_apply_to_the_selected_profiles_next_request() {
     let dir = tempfile::tempdir().unwrap();
     let app = app(
-        &dir.path().join("providers.toml"),
+        &dir.path().join("providers.yaml"),
         Arc::new(Model::default()),
     );
     let enabled = json!({"mcpServers":{"broken":{"transport":"stdio","command":"rynna-test-nonexistent-mcp-program"}}});
@@ -299,8 +301,8 @@ async fn failed_mcp_rename_preserves_catalog_credentials_memory_and_runtime_and_
     };
     for failure in ["malformed", "directory", "destination"] {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.toml");
-        std::fs::write(&config_path, "version = 1\ndefault_profile = 'test'\n[providers.ollama]\nkind = 'openai-compatible'\napi_base = 'http://127.0.0.1:11434/v1'\n[profiles.test]\nprovider = 'ollama'\nmodel = 'model'\n").unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "version: 1\ndefault_profile: test\nproviders:\n  ollama:\n    kind: openai-compatible\n    api_base: http://127.0.0.1:11434/v1\nprofiles:\n  test:\n    provider: ollama\n    model: model\n").unwrap();
         let catalog = ProfileCatalog::load(&config_path).unwrap();
         let profile = catalog.resolve("test").unwrap().profile;
         let runtime = AgentProfiles::new(
@@ -311,7 +313,7 @@ async fn failed_mcp_rename_preserves_catalog_credentials_memory_and_runtime_and_
             )],
         )
         .unwrap();
-        let mut providers = ProviderSettingsStore::load(dir.path().join("providers.toml")).unwrap();
+        let mut providers = ProviderSettingsStore::load(dir.path().join("providers.yaml")).unwrap();
         providers
             .add(
                 "test",
@@ -330,7 +332,7 @@ async fn failed_mcp_rename_preserves_catalog_credentials_memory_and_runtime_and_
             runtime, providers, catalog,
         );
         match failure {
-            "malformed" => std::fs::write(&mcp_path, "malformed = [").unwrap(),
+            "malformed" => std::fs::write(&mcp_path, "malformed: [").unwrap(),
             "directory" => {
                 std::fs::remove_file(&mcp_path).unwrap();
                 std::fs::create_dir(&mcp_path).unwrap();
@@ -342,8 +344,8 @@ async fn failed_mcp_rename_preserves_catalog_credentials_memory_and_runtime_and_
         }
         let paths = [
             config_path.clone(),
-            dir.path().join("providers.toml"),
-            dir.path().join("memory.toml"),
+            dir.path().join("providers.yaml"),
+            dir.path().join("memory.yaml"),
         ];
         let before = paths
             .iter()
@@ -397,14 +399,14 @@ async fn failed_mcp_rename_preserves_catalog_credentials_memory_and_runtime_and_
         assert_eq!(mcp.load("renamed").unwrap().servers.len(), 1);
         assert!(mcp.load("test").unwrap().servers.is_empty());
         assert_eq!(
-            ProviderSettingsStore::load(dir.path().join("providers.toml"))
+            ProviderSettingsStore::load(dir.path().join("providers.yaml"))
                 .unwrap()
                 .list("renamed")
                 .len(),
             1
         );
-        let memory_file = std::fs::read_to_string(dir.path().join("memory.toml")).unwrap();
-        assert!(memory_file.contains("profiles.renamed"));
-        assert!(!memory_file.contains("profiles.test"));
+        let memory_file = std::fs::read_to_string(dir.path().join("memory.yaml")).unwrap();
+        assert!(memory_file.contains("  renamed:"));
+        assert!(!memory_file.contains("  test:"));
     }
 }

@@ -4047,9 +4047,9 @@ dependencies = [
  "libc",
  "rynna-core",
  "serde",
+ "serde_yaml_ng",
  "tempfile",
  "thiserror 2.0.20",
- "toml 1.1.5+spec-1.1.0",
  "url",
  "windows-sys 0.61.2",
 ]

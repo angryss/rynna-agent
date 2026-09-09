@@ -7,10 +7,10 @@ them to a Rynna format.
 
 ## Add skills to a profile
 
-Place a skill on the machine running Rynna. For example, beside `config.toml`:
+Place a skill on the machine running Rynna. For example, beside `config.yaml`:
 
 ```text
-config.toml
+config.yaml
 skills/
   code-review/
     SKILL.md
@@ -40,15 +40,17 @@ Look for tests that exercise the changed behavior.
 
 In **Settings → Profiles**, select a profile, enter `code-review` in **Skills**,
 and save. Enter one name or directory per line. Alternatively edit the profile's
-existing catalog table:
+existing catalog mapping:
 
-```toml
-[profiles.work]
-# Keep the profile's existing model/provider configuration.
-active_skills = ["code-review", "./team-skills/rust"]
+```yaml
+profiles:
+  work:
+    active_skills:
+    - code-review
+    - ./team-skills/rust
 ```
 
-Only that profile receives these skills. Empty `active_skills = []` disables all
+Only that profile receives these skills. Empty `active_skills: []` disables all
 skills for the profile. New profiles start with none. Renaming preserves the
 selection; deleting a profile removes its selection, but never deletes packages.
 Restart Rynna after changing the selection or a `SKILL.md` file. This follows the
@@ -65,7 +67,7 @@ A bare name such as `code-review` is looked up in this order (first match wins):
 
 Use `./team-skills/code-review`, an absolute directory, `~/skills/code-review`,
 or a path ending in `/SKILL.md` to select a package explicitly. Relative paths
-resolve against the directory containing `config.toml`, including a custom
+resolve against the directory containing `config.yaml`, including a custom
 `--config`/`RYNNA_CONFIG` path. In-memory catalogs use the working directory.
 Discovery only resolves selected names; it never enables every installed package.
 Browser paths refer to the server's filesystem, not the browser's machine. Mount

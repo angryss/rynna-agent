@@ -711,7 +711,7 @@ fn mcp_settings_error(error: McpSettingsError) -> ApiError {
 
 /// Runs one blocking settings-store operation off the async runtime.
 ///
-/// These stores read and write TOML under an exclusive `flock`, which would
+/// These stores read and write YAML under an exclusive `flock`, which would
 /// otherwise stall a runtime worker thread for the duration of the I/O. Callers
 /// keep holding their tokio guards across this await, so lock ordering and the
 /// serialization it provides are unchanged.

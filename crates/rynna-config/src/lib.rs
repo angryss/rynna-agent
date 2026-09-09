@@ -28,6 +28,36 @@ const CONFIG_VERSION: u32 = 1;
 const PROVIDER_SETTINGS_VERSION: u32 = 1;
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// Decode through Value so duplicate keys in arbitrary profile/provider maps are
+// rejected before Serde's BTreeMap deserializer can silently replace an entry.
+fn parse_yaml<T: serde::de::DeserializeOwned>(source: &str) -> Result<T, serde_yaml_ng::Error> {
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(source)?;
+    serde_yaml_ng::from_value(value)
+}
+
+// Missing YAML must not silently discard an existing installation's settings.
+fn ensure_no_legacy_configuration(path: &Path) -> std::io::Result<()> {
+    if matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("yaml" | "yml")
+    ) && path.with_extension("toml").try_exists()?
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "legacy TOML configuration found; convert it to YAML and save it at the requested YAML path (see README migration instructions)",
+        ));
+    }
+    Ok(())
+}
+
+fn configuration_exists(path: &Path) -> std::io::Result<bool> {
+    let exists = path.try_exists()?;
+    if !exists {
+        ensure_no_legacy_configuration(path)?;
+    }
+    Ok(exists)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OpenAiAuthentication {
@@ -106,7 +136,7 @@ pub struct ProviderSettingsStore {
 impl ProviderSettingsStore {
     pub fn default_path() -> Result<PathBuf, ProviderSettingsError> {
         dirs::config_dir()
-            .map(|path| path.join("rynna").join("providers.toml"))
+            .map(|path| path.join("rynna").join("providers.yaml"))
             .ok_or(ProviderSettingsError::ConfigDirectoryUnavailable)
     }
 
@@ -127,11 +157,11 @@ impl ProviderSettingsStore {
     }
 
     pub fn mcp_settings_path(&self) -> PathBuf {
-        self.path.with_file_name("mcp.toml")
+        self.path.with_file_name("mcp.yaml")
     }
 
     pub fn memory_settings_path(&self) -> PathBuf {
-        self.path.with_file_name("memory.toml")
+        self.path.with_file_name("memory.yaml")
     }
 
     pub fn list(&self, profile: &str) -> Vec<ConfiguredProvider> {
@@ -263,7 +293,7 @@ impl ProviderSettingsStore {
             path: self.path.clone(),
             source,
         })?;
-        let lock_path = self.path.with_extension("toml.lock");
+        let lock_path = self.path.with_extension("yaml.lock");
         let mut options = fs::OpenOptions::new();
         options.create(true).read(true).write(true);
         #[cfg(unix)]
@@ -303,10 +333,11 @@ impl ProviderSettingsStore {
             path: self.path.clone(),
             source,
         })?;
-        let encoded = toml::to_string_pretty(&ProviderSettingsFile {
+        let encoded = serde_yaml_ng::to_string(&ProviderSettingsFile {
             version: PROVIDER_SETTINGS_VERSION,
             profiles: providers.clone(),
-        })?;
+        })
+        .map_err(ProviderSettingsError::Encode)?;
         let temporary =
             write_private_temporary_file(&self.path, encoded.as_bytes()).map_err(|source| {
                 ProviderSettingsError::Write {
@@ -325,7 +356,7 @@ impl ProviderSettingsStore {
 fn read_provider_settings(
     path: &Path,
 ) -> Result<BTreeMap<String, Vec<ConfiguredProvider>>, ProviderSettingsError> {
-    let providers = match path.try_exists() {
+    let providers = match configuration_exists(path) {
         Ok(false) => BTreeMap::new(),
         Ok(true) => {
             let source =
@@ -333,7 +364,7 @@ fn read_provider_settings(
                     path: path.to_owned(),
                     source,
                 })?;
-            let file: ProviderSettingsFile = toml::from_str(&source)?;
+            let file: ProviderSettingsFile = parse_yaml(&source)?;
             if file.version != PROVIDER_SETTINGS_VERSION {
                 return Err(ProviderSettingsError::UnsupportedVersion(file.version));
             }
@@ -384,7 +415,7 @@ fn write_private_temporary_file(destination: &Path, contents: &[u8]) -> std::io:
     let file_name = destination
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("providers.toml");
+        .unwrap_or("providers.yaml");
     for _ in 0..32 {
         let sequence = TEMPORARY_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let temporary = parent.join(format!(
@@ -601,10 +632,10 @@ fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
 
 #[derive(Debug, Error)]
 pub enum ProviderSettingsError {
-    #[error("provider settings are not valid TOML: {0}")]
-    Parse(#[from] toml::de::Error),
+    #[error("provider settings are not valid YAML: {0}")]
+    Parse(#[from] serde_yaml_ng::Error),
     #[error("provider settings could not be encoded: {0}")]
-    Encode(#[from] toml::ser::Error),
+    Encode(serde_yaml_ng::Error),
     #[error("provider settings version {0} is not supported")]
     UnsupportedVersion(u32),
     #[error("provider `{0}` is already configured")]
@@ -717,7 +748,7 @@ pub struct ProfileCatalog {
     default_profile: String,
     providers: BTreeMap<String, ProviderConfig>,
     profiles: BTreeMap<String, ProfileConfig>,
-    mcp_servers: BTreeMap<String, toml::Table>,
+    mcp_servers: BTreeMap<String, serde_yaml_ng::Mapping>,
     capabilities: BTreeMap<String, CapabilityConfig>,
 }
 
@@ -773,8 +804,8 @@ impl ProfileCatalog {
         }
     }
 
-    pub fn from_toml(source: &str) -> Result<Self, ConfigError> {
-        let file: ConfigFile = toml::from_str(source)?;
+    pub fn from_yaml(source: &str) -> Result<Self, ConfigError> {
+        let file: ConfigFile = parse_yaml(source)?;
         Self::from_file(file)
     }
 
@@ -784,14 +815,14 @@ impl ProfileCatalog {
             path: path.to_owned(),
             source,
         })?;
-        let mut catalog = Self::from_toml(&source)?;
+        let mut catalog = Self::from_yaml(&source)?;
         catalog.path = Some(path.to_owned());
         Ok(catalog)
     }
 
     pub fn default_path() -> Result<PathBuf, ConfigError> {
         dirs::config_dir()
-            .map(|path| path.join("rynna").join("config.toml"))
+            .map(|path| path.join("rynna").join("config.yaml"))
             .ok_or(ConfigError::ConfigDirectoryUnavailable)
     }
 
@@ -801,7 +832,7 @@ impl ProfileCatalog {
     }
 
     fn load_default_from(path: &Path) -> Result<Self, ConfigError> {
-        match path.try_exists() {
+        match configuration_exists(path) {
             Ok(true) => Self::load(path),
             Ok(false) => {
                 let mut catalog = Self::built_in();
@@ -947,7 +978,7 @@ impl ProfileCatalog {
             path: path.clone(),
             source,
         })?;
-        let lock_path = path.with_extension("toml.lock");
+        let lock_path = path.with_extension("yaml.lock");
         let mut options = fs::OpenOptions::new();
         options.create(true).read(true).write(true);
         #[cfg(unix)]
@@ -1003,7 +1034,7 @@ impl ProfileCatalog {
             path: path.clone(),
             source,
         })?;
-        let encoded = toml::to_string_pretty(&self.to_file())?;
+        let encoded = serde_yaml_ng::to_string(&self.to_file()).map_err(ConfigError::Encode)?;
         let temporary =
             write_private_temporary_file(path, encoded.as_bytes()).map_err(|source| {
                 ConfigError::Write {
@@ -1025,7 +1056,7 @@ impl ProfileCatalog {
             .collect()
     }
 
-    pub fn mcp_server(&self, name: &str) -> Option<&toml::Table> {
+    pub fn mcp_server(&self, name: &str) -> Option<&serde_yaml_ng::Mapping> {
         self.mcp_servers.get(name)
     }
 
@@ -1356,7 +1387,7 @@ struct ConfigFile {
     providers: BTreeMap<String, ProviderConfig>,
     profiles: BTreeMap<String, ProfileConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    mcp_servers: BTreeMap<String, toml::Table>,
+    mcp_servers: BTreeMap<String, serde_yaml_ng::Mapping>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     capabilities: BTreeMap<String, CapabilityConfig>,
 }
@@ -1483,8 +1514,8 @@ pub enum ConfigError {
     LastProfile,
     #[error("profile name `{0}` is reserved for a runtime-only profile")]
     ReservedProfile(String),
-    #[error("Rynna configuration is not valid TOML: {0}")]
-    Parse(#[from] toml::de::Error),
+    #[error("Rynna configuration is not valid YAML: {0}")]
+    Parse(#[from] serde_yaml_ng::Error),
     #[error("Rynna configuration version {0} is not supported")]
     UnsupportedVersion(u32),
     #[error("default profile `{0}` is not defined")]
@@ -1572,7 +1603,7 @@ pub enum ConfigError {
         source: std::io::Error,
     },
     #[error("failed to encode Rynna configuration: {0}")]
-    Encode(#[from] toml::ser::Error),
+    Encode(serde_yaml_ng::Error),
     #[error("the platform configuration directory is unavailable")]
     ConfigDirectoryUnavailable,
 }
@@ -1614,9 +1645,38 @@ mod tests {
     #[test]
     fn default_loading_propagates_filesystem_lookup_errors() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("config.toml");
-        symlink("config.toml", &path).unwrap();
+        let path = directory.path().join("config.yaml");
+        symlink("config.yaml", &path).unwrap();
 
         assert!(ProfileCatalog::load_default_from(&path).is_err());
+    }
+}
+
+#[cfg(test)]
+mod yaml_migration_tests {
+    use super::ProfileCatalog;
+
+    #[test]
+    fn default_catalog_requires_legacy_conversion_then_prefers_yaml() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.yaml");
+        let legacy = directory.path().join("config.toml");
+        std::fs::write(&legacy, "private legacy settings").unwrap();
+        let error = ProfileCatalog::load_default_from(&path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("convert it to YAML"));
+        assert!(!path.exists());
+        std::fs::write(&path, include_str!("../../../rynna.example.yaml")).unwrap();
+        assert_eq!(
+            ProfileCatalog::load_default_from(&path)
+                .unwrap()
+                .default_profile(),
+            "local"
+        );
+        assert_eq!(
+            std::fs::read_to_string(legacy).unwrap(),
+            "private legacy settings"
+        );
     }
 }

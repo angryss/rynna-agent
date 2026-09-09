@@ -132,7 +132,7 @@ struct MemorySettingsFile {
     version: u32,
     #[serde(default)]
     // Decode only the selected profile so invalid entries remain independently repairable.
-    profiles: BTreeMap<String, toml::Value>,
+    profiles: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 pub struct MemorySettingsStore {
@@ -148,16 +148,19 @@ impl MemorySettingsStore {
 
     pub(super) fn read_profiles(
         &self,
-    ) -> Result<BTreeMap<String, toml::Value>, MemorySettingsError> {
+    ) -> Result<BTreeMap<String, serde_yaml_ng::Value>, MemorySettingsError> {
         let source = match std::fs::read_to_string(&self.path) {
             Ok(source) => source,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                super::ensure_no_legacy_configuration(&self.path).map_err(|_| {
+                    MemorySettingsError::Invalid("legacy TOML configuration found; convert it to YAML at the requested settings path (see README migration instructions)")
+                })?;
                 return Ok(BTreeMap::new());
             }
             Err(_) => return Err(MemorySettingsError::Read),
         };
-        let file: MemorySettingsFile = toml::from_str(&source).map_err(|_| MemorySettingsError::Invalid(
-            "memory.toml must use version = 1 and [profiles.<name>] entries; assign any previous global settings to a profile"
+        let file: MemorySettingsFile = super::parse_yaml(&source).map_err(|_| MemorySettingsError::Invalid(
+            "memory.yaml must use version: 1 and a profiles mapping keyed by profile name; assign any previous global settings to a profile"
         ))?;
         if file.version != 1 {
             return Err(MemorySettingsError::Invalid(
@@ -189,9 +192,9 @@ impl MemorySettingsStore {
 
     fn write_profiles(
         &self,
-        profiles: BTreeMap<String, toml::Value>,
+        profiles: BTreeMap<String, serde_yaml_ng::Value>,
     ) -> Result<(), MemorySettingsError> {
-        let encoded = toml::to_string_pretty(&MemorySettingsFile {
+        let encoded = serde_yaml_ng::to_string(&MemorySettingsFile {
             version: 1,
             profiles,
         })
@@ -240,7 +243,7 @@ impl MemorySettingsStore {
         settings.validate()?;
         profiles.insert(
             profile.to_owned(),
-            toml::Value::try_from(&settings).map_err(|_| MemorySettingsError::Write)?,
+            serde_yaml_ng::to_value(&settings).map_err(|_| MemorySettingsError::Write)?,
         );
         self.write_profiles(profiles)?;
         Ok(settings)
@@ -286,8 +289,8 @@ fn validate_profile(profile: &str) -> Result<(), MemorySettingsError> {
     Ok(())
 }
 
-fn decode_settings(value: toml::Value) -> Result<MemorySettings, MemorySettingsError> {
-    let settings: MemorySettings = value.try_into().map_err(|_| {
+fn decode_settings(value: serde_yaml_ng::Value) -> Result<MemorySettings, MemorySettingsError> {
+    let settings: MemorySettings = serde_yaml_ng::from_value(value).map_err(|_| {
         MemorySettingsError::Invalid(
             "invalid memory settings for this profile; save replacement settings",
         )

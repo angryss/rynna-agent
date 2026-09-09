@@ -115,19 +115,34 @@ async fn exit_alias_quits_without_contacting_the_provider() {
 async fn chat_switches_provider_model_and_effort_while_preserving_history() {
     let server = MockServer::start().await;
     let directory = tempfile::tempdir().unwrap();
-    let config = directory.path().join("config.toml");
-    std::fs::write(&config, format!(r#"
-version = 1
-default_profile = "local"
-[providers.first]
-kind = "openai-compatible"
-api_base = "{}/v1"
-[providers.second]
-kind = "openai-compatible"
-api_base = "{}/v1"
-[profiles.local]
-providers = [{{provider = "second", model = "second-model"}}, {{provider = "first", model = "first-model", default = true}}]
-"#, server.uri(), server.uri())).unwrap();
+    let config = directory.path().join("config.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            r#"
+version: 1
+default_profile: local
+providers:
+  first:
+    kind: openai-compatible
+    api_base: '{}/v1'
+  second:
+    kind: openai-compatible
+    api_base: '{}/v1'
+profiles:
+  local:
+    providers:
+    - provider: second
+      model: second-model
+    - provider: first
+      model: first-model
+      default: true
+"#,
+            server.uri(),
+            server.uri()
+        ),
+    )
+    .unwrap();
     Mock::given(path("/v1/chat/completions"))
         .and(body_partial_json(json!({"model":"overridden-model"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(

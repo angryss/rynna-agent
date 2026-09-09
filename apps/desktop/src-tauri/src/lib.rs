@@ -1048,7 +1048,7 @@ fn ensure_memory_profile(
 
 /// Runs one blocking settings-store operation off the async runtime.
 ///
-/// These stores read and write TOML under an exclusive `flock`. Tauri commands
+/// These stores read and write YAML under an exclusive `flock`. Tauri commands
 /// are async, so doing that inline would stall a runtime worker for the whole
 /// I/O. Callers keep holding their tokio guards across this await, so lock
 /// ordering is unchanged.
@@ -1643,7 +1643,7 @@ mod tests {
     fn configured_openai_reuse_selects_the_normal_codex_account() {
         let directory = tempfile::tempdir().unwrap();
         let mut settings =
-            ProviderSettingsStore::load(directory.path().join("providers.toml")).unwrap();
+            ProviderSettingsStore::load(directory.path().join("providers.yaml")).unwrap();
         settings
             .add(
                 "work",

@@ -28,7 +28,7 @@ function McpEditor({ client, profile }: { client: AgentClient; profile: string }
       setDraft(JSON.stringify(settings, null, 2));
       setLoaded(true);
     }).catch(() => {
-      if (current) setError('Could not load MCP settings. Retry loading; if mcp.toml is invalid, repair it first.');
+      if (current) setError('Could not load MCP settings. Retry loading; if mcp.yaml is invalid, repair it first.');
     }).finally(() => { if (current) setLoading(false); });
     return () => { current = false; active.current = false; };
   }, [client, profile, attempt]);

@@ -49,14 +49,16 @@ async fn provider_error_body_removes_terminal_control_characters() {
         config.path(),
         format!(
             r#"
-version = 1
-default_profile = "fixture"
-[providers.fixture]
-kind = "openai-compatible"
-api_base = "{}/v1"
-[profiles.fixture]
-provider = "fixture"
-model = "test-model"
+version: 1
+default_profile: fixture
+providers:
+  fixture:
+    kind: openai-compatible
+    api_base: '{}/v1'
+profiles:
+  fixture:
+    provider: fixture
+    model: test-model
 "#,
             server.uri()
         ),
@@ -232,41 +234,41 @@ async fn run_uses_the_selected_profiles_provider_model_and_system_prompt() {
         .mount(&server)
         .await;
     let directory = tempfile::tempdir().unwrap();
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     std::fs::write(
         &config,
         format!(
             r#"
-version = 1
-default_profile = "local"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[providers.work]
-kind = "openai-compatible"
-api_base = "{server}/v1"
-
-[[profiles.local.providers]]
-provider = "local"
-model = "local-model"
-enabled = true
-default = true
-
-[[profiles.work.providers]]
-provider = "work"
-model = "work-model"
-enabled = true
-default = true
-[profiles.work]
-system_prompt = "Work profile policy"
-active_skills = []
-mcp_servers = ["filesystem"]
-
-[mcp_servers.filesystem]
-transport = "stdio"
-command = "mcp-filesystem"
+version: 1
+default_profile: local
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+  work:
+    kind: openai-compatible
+    api_base: '{server}/v1'
+profiles:
+  local:
+    providers:
+    - provider: local
+      model: local-model
+      enabled: true
+      default: true
+  work:
+    providers:
+    - provider: work
+      model: work-model
+      enabled: true
+      default: true
+    system_prompt: Work profile policy
+    active_skills: []
+    mcp_servers:
+    - filesystem
+mcp_servers:
+  filesystem:
+    transport: stdio
+    command: mcp-filesystem
 "#,
             server = server.uri()
         ),
@@ -304,34 +306,34 @@ async fn run_does_not_require_credentials_for_an_inactive_profile() {
         .mount(&server)
         .await;
     let directory = tempfile::tempdir().unwrap();
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     std::fs::write(
         &config,
         format!(
             r#"
-version = 1
-default_profile = "local"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "{server}/v1"
-
-[providers.remote]
-kind = "openai-compatible"
-api_base = "https://example.com/v1"
-api_key_env = "RYNNA_TEST_MISSING_REMOTE_KEY"
-
-[[profiles.local.providers]]
-provider = "local"
-model = "local-model"
-enabled = true
-default = true
-
-[[profiles.remote.providers]]
-provider = "remote"
-model = "remote-model"
-enabled = true
-default = true
+version: 1
+default_profile: local
+providers:
+  local:
+    kind: openai-compatible
+    api_base: '{server}/v1'
+  remote:
+    kind: openai-compatible
+    api_base: https://example.com/v1
+    api_key_env: RYNNA_TEST_MISSING_REMOTE_KEY
+profiles:
+  local:
+    providers:
+    - provider: local
+      model: local-model
+      enabled: true
+      default: true
+  remote:
+    providers:
+    - provider: remote
+      model: remote-model
+      enabled: true
+      default: true
 "#,
             server = server.uri()
         ),
@@ -394,30 +396,31 @@ async fn run_executes_the_selected_profiles_filesystem_capability() {
         .await;
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("README.md"), "# Rynna\n").unwrap();
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     std::fs::write(
         &config,
         format!(
             r#"
-version = 1
-default_profile = "local"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "{server}/v1"
-
-[[profiles.local.providers]]
-provider = "local"
-model = "test-model"
-enabled = true
-default = true
-[profiles.local]
-capabilities = ["workspace"]
-
-[capabilities.workspace]
-kind = "filesystem"
-root = "{root}"
-read_only = true
+version: 1
+default_profile: local
+providers:
+  local:
+    kind: openai-compatible
+    api_base: '{server}/v1'
+profiles:
+  local:
+    providers:
+    - provider: local
+      model: test-model
+      enabled: true
+      default: true
+    capabilities:
+    - workspace
+capabilities:
+  workspace:
+    kind: filesystem
+    root: '{root}'
+    read_only: true
 "#,
             server = server.uri(),
             root = directory.path().display()
@@ -487,32 +490,34 @@ async fn run_executes_the_selected_profiles_command_capability() {
     let program = directory.path().join("inspect-os");
     std::fs::write(&program, "#!/bin/sh\nprintf 'TestOS 26.6\\n'\n").unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     std::fs::write(
         &config,
         format!(
             r#"
-version = 1
-default_profile = "local"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "{server}/v1"
-
-[[profiles.local.providers]]
-provider = "local"
-model = "test-model"
-enabled = true
-default = true
-[profiles.local]
-capabilities = ["host-commands"]
-
-[capabilities.host-commands]
-kind = "command"
-working_directory = "{root}"
-programs = {{ inspect_os = "{program}" }}
-timeout_seconds = 5
-max_output_bytes = 8192
+version: 1
+default_profile: local
+providers:
+  local:
+    kind: openai-compatible
+    api_base: '{server}/v1'
+profiles:
+  local:
+    providers:
+    - provider: local
+      model: test-model
+      enabled: true
+      default: true
+    capabilities:
+    - host-commands
+capabilities:
+  host-commands:
+    kind: command
+    working_directory: '{root}'
+    programs:
+      inspect_os: '{program}'
+    timeout_seconds: 5
+    max_output_bytes: 8192
 "#,
             server = server.uri(),
             root = directory.path().display(),
@@ -568,11 +573,11 @@ async fn one_shot_run_drains_queued_memory_before_exiting() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("memory.toml"), format!("version = 1\n[profiles.default]\nkind = 'hindsight'\ndeployment = 'self_hosted'\napi_base = '{}'\nbank_id = 'test'\n", server.uri())).unwrap();
+    std::fs::write(dir.path().join("memory.yaml"), format!("version: 1\nprofiles:\n  default:\n    kind: hindsight\n    deployment: self_hosted\n    api_base: '{}'\n    bank_id: test\n", server.uri())).unwrap();
     Command::cargo_bin("rynna")
         .unwrap()
         .args(["run", "--prompt", "Remember this"])
-        .env("RYNNA_PROVIDER_CONFIG", dir.path().join("providers.toml"))
+        .env("RYNNA_PROVIDER_CONFIG", dir.path().join("providers.yaml"))
         .env("RYNNA_API_BASE", format!("{}/v1", server.uri()))
         .env("RYNNA_MODEL", "test-model")
         .assert()
@@ -632,20 +637,23 @@ async fn run_loads_selected_skill_through_the_real_provider_tool_loop() {
         "---\nname: review\ndescription: Review code\n---\nPrivate review instructions",
     )
     .unwrap();
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     std::fs::write(
         &config,
         format!(
             r#"
-version = 1
-default_profile = "work"
-[providers.local]
-kind = "openai-compatible"
-api_base = "{}/v1"
-[profiles.work]
-provider = "local"
-model = "test"
-active_skills = ["review"]
+version: 1
+default_profile: work
+providers:
+  local:
+    kind: openai-compatible
+    api_base: '{}/v1'
+profiles:
+  work:
+    provider: local
+    model: test
+    active_skills:
+    - review
 "#,
             server.uri()
         ),
@@ -657,7 +665,7 @@ active_skills = ["review"]
             "--config",
             config.to_str().unwrap(),
             "--provider-config",
-            directory.path().join("providers.toml").to_str().unwrap(),
+            directory.path().join("providers.yaml").to_str().unwrap(),
             "run",
             "--prompt",
             "Use $review",

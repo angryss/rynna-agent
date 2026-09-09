@@ -111,20 +111,22 @@ mod tests {
     #[tokio::test]
     async fn desktop_commands_repeat_and_complete_with_the_http_evidence_contract() {
         let dir = tempfile::tempdir().unwrap();
-        let mut catalog = rynna_config::ProfileCatalog::from_toml(
+        let mut catalog = rynna_config::ProfileCatalog::from_yaml(
             r#"
-version = 1
-default_profile = "default"
-[providers.fake]
-kind = "openai-compatible"
-api_base = "http://localhost:3999/v1"
-[profiles.default]
-provider = "fake"
-model = "fake"
-[[profiles.default.subagents]]
-name = "reviewer"
-description = "Verify results"
-instructions = "Use the requested evidence envelope."
+version: 1
+default_profile: default
+providers:
+  fake:
+    kind: openai-compatible
+    api_base: http://localhost:3999/v1
+profiles:
+  default:
+    provider: fake
+    model: fake
+    subagents:
+    - name: reviewer
+      description: Verify results
+      instructions: Use the requested evidence envelope.
 "#,
         )
         .unwrap();

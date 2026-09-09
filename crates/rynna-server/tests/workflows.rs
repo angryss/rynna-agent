@@ -49,7 +49,7 @@ async fn http_run_survives_observer_disconnect_retries_and_redacts_definitions()
     let profiles = AgentProfiles::new("default", [(profile, agent)]).unwrap();
     let app = rynna_server::router_with_profiles_and_provider_runtime(
         profiles,
-        ProviderSettingsStore::load(dir.path().join("providers.toml")).unwrap(),
+        ProviderSettingsStore::load(dir.path().join("providers.yaml")).unwrap(),
         "unused",
         dir.path().join("codex"),
     );
@@ -181,20 +181,22 @@ async fn every_run_response_redacts_captured_instructions_without_changing_stora
         assert_eq!(value["helpers"][0]["instructions"], "");
     }
     let dir = tempfile::tempdir().unwrap();
-    let mut catalog = rynna_config::ProfileCatalog::from_toml(
+    let mut catalog = rynna_config::ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "default"
-[providers.fake]
-kind = "openai-compatible"
-api_base = "http://localhost:3999/v1"
-[profiles.default]
-provider = "fake"
-model = "fake"
-[[profiles.default.subagents]]
-name = "reviewer"
-description = "Review"
-instructions = "PRIVATE_HELPER"
+version: 1
+default_profile: default
+providers:
+  fake:
+    kind: openai-compatible
+    api_base: http://localhost:3999/v1
+profiles:
+  default:
+    provider: fake
+    model: fake
+    subagents:
+    - name: reviewer
+      description: Review
+      instructions: PRIVATE_HELPER
 "#,
     )
     .unwrap();
@@ -214,7 +216,7 @@ instructions = "PRIVATE_HELPER"
     .unwrap();
     let app = rynna_server::router_with_profiles_provider_settings_and_catalog(
         profiles,
-        ProviderSettingsStore::load(dir.path().join("providers.toml")).unwrap(),
+        ProviderSettingsStore::load(dir.path().join("providers.yaml")).unwrap(),
         catalog,
     );
     let session = uuid::Uuid::new_v4();

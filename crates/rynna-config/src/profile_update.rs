@@ -40,7 +40,7 @@ pub enum ProfileUpdateError {
 #[derive(Serialize)]
 struct SettingsFile {
     version: u32,
-    profiles: BTreeMap<String, toml::Value>,
+    profiles: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 /// Stage every file before replacing any, and restore completed replacements on error.
@@ -139,7 +139,8 @@ impl StagedFile {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(_) => return Err(ProfileUpdateError::Persistence),
         };
-        let encoded = toml::to_string_pretty(value).map_err(|_| ProfileUpdateError::Persistence)?;
+        let encoded =
+            serde_yaml_ng::to_string(value).map_err(|_| ProfileUpdateError::Persistence)?;
         let replacement = TemporaryFileCleanup(
             write_private_temporary_file(path, encoded.as_bytes())
                 .map_err(|_| ProfileUpdateError::Persistence)?,
@@ -190,10 +191,10 @@ mod tests {
     #[test]
     fn later_replacement_failure_restores_earlier_files_exactly() {
         let dir = tempfile::tempdir().unwrap();
-        let first = dir.path().join("first.toml");
-        let last = dir.path().join("last.toml");
-        fs::write(&first, "# original formatting\nvalue = 'old'\n").unwrap();
-        fs::write(&last, "value = 'old'\n").unwrap();
+        let first = dir.path().join("first.yaml");
+        let last = dir.path().join("last.yaml");
+        fs::write(&first, "# original formatting\nvalue: 'old'\n").unwrap();
+        fs::write(&last, "value: old\n").unwrap();
         let before = fs::read(&first).unwrap();
         let value = BTreeMap::from([("value", "new")]);
         let mut writes = vec![

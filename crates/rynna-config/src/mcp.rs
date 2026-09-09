@@ -117,7 +117,7 @@ struct McpSettingsFile {
     version: u32,
     #[serde(default)]
     // Decode only the selected profile so invalid entries remain independently repairable.
-    profiles: BTreeMap<String, toml::Value>,
+    profiles: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 pub struct McpSettingsStore {
@@ -131,16 +131,23 @@ impl McpSettingsStore {
         }
     }
 
-    pub(super) fn read_profiles(&self) -> Result<BTreeMap<String, toml::Value>, McpSettingsError> {
+    pub(super) fn read_profiles(
+        &self,
+    ) -> Result<BTreeMap<String, serde_yaml_ng::Value>, McpSettingsError> {
         let source = match std::fs::read_to_string(&self.path) {
             Ok(source) => source,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                super::ensure_no_legacy_configuration(&self.path).map_err(|_| {
+                    McpSettingsError::Invalid("legacy TOML configuration found; convert it to YAML at the requested settings path (see README migration instructions)")
+                })?;
                 return Ok(BTreeMap::new());
             }
             Err(_) => return Err(McpSettingsError::Read),
         };
-        let file: McpSettingsFile = toml::from_str(&source).map_err(|_| {
-            McpSettingsError::Invalid("mcp.toml must use version = 1 and [profiles.<name>] entries")
+        let file: McpSettingsFile = super::parse_yaml(&source).map_err(|_| {
+            McpSettingsError::Invalid(
+                "mcp.yaml must use version: 1 and a profiles mapping keyed by profile name",
+            )
         })?;
         if file.version != 1 {
             return Err(McpSettingsError::Invalid(
@@ -172,9 +179,9 @@ impl McpSettingsStore {
 
     fn write_profiles(
         &self,
-        profiles: BTreeMap<String, toml::Value>,
+        profiles: BTreeMap<String, serde_yaml_ng::Value>,
     ) -> Result<(), McpSettingsError> {
-        let encoded = toml::to_string_pretty(&McpSettingsFile {
+        let encoded = serde_yaml_ng::to_string(&McpSettingsFile {
             version: 1,
             profiles,
         })
@@ -196,7 +203,7 @@ impl McpSettingsStore {
         settings.validate()?;
         profiles.insert(
             profile.to_owned(),
-            toml::Value::try_from(&settings).map_err(|_| McpSettingsError::Write)?,
+            serde_yaml_ng::to_value(&settings).map_err(|_| McpSettingsError::Write)?,
         );
         self.write_profiles(profiles)?;
         Ok(settings)
@@ -240,9 +247,8 @@ fn validate_profile(profile: &str) -> Result<(), McpSettingsError> {
     Ok(())
 }
 
-fn decode_settings(value: toml::Value) -> Result<McpSettings, McpSettingsError> {
-    let settings: McpSettings = value
-        .try_into()
+fn decode_settings(value: serde_yaml_ng::Value) -> Result<McpSettings, McpSettingsError> {
+    let settings: McpSettings = serde_yaml_ng::from_value(value)
         .map_err(|_| McpSettingsError::Invalid("invalid MCP server configuration"))?;
     settings.validate()?;
     Ok(settings)

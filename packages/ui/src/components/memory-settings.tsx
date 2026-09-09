@@ -237,7 +237,7 @@ export function MemorySettingsPanel({
         <>
           <p>
             Settings could not be loaded. Retry or save replacement settings for
-            this profile. If memory.toml has invalid syntax, repair the file first
+            this profile. If memory.yaml has invalid syntax, repair the file first
             to preserve other profiles.
           </p>
           <Button

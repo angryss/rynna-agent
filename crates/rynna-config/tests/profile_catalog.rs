@@ -6,27 +6,31 @@ use rynna_core::{Profile, ProfileProvider};
 
 #[test]
 fn parses_anthropic_api_and_subscription_profiles() {
-    let catalog = ProfileCatalog::from_toml(
+    let catalog = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "api"
-[providers.anthropic_api]
-kind = "anthropic-messages"
-api_base = "https://api.anthropic.com"
-api_key_env = "ANTHROPIC_API_KEY"
-[providers.claude_subscription]
-kind = "claude-subscription"
-claude_program = "/usr/local/bin/claude"
-[[profiles.api.providers]]
-provider = "anthropic_api"
-model = "claude-sonnet-4-5"
-enabled = true
-default = true
-[[profiles.subscription.providers]]
-provider = "claude_subscription"
-model = "sonnet"
-enabled = true
-default = true
+version: 1
+default_profile: api
+providers:
+  anthropic_api:
+    kind: anthropic-messages
+    api_base: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+  claude_subscription:
+    kind: claude-subscription
+    claude_program: /usr/local/bin/claude
+profiles:
+  api:
+    providers:
+    - provider: anthropic_api
+      model: claude-sonnet-4-5
+      enabled: true
+      default: true
+  subscription:
+    providers:
+    - provider: claude_subscription
+      model: sonnet
+      enabled: true
+      default: true
 "#,
     )
     .unwrap();
@@ -54,7 +58,7 @@ default = true
 #[test]
 fn anthropic_provider_settings_never_serialize_credentials() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("providers.toml");
+    let path = directory.path().join("providers.yaml");
     let mut store = ProviderSettingsStore::load(&path).unwrap();
     store
         .add(
@@ -65,7 +69,7 @@ fn anthropic_provider_settings_never_serialize_credentials() {
         )
         .unwrap();
     let encoded = std::fs::read_to_string(path).unwrap();
-    assert!(encoded.contains("kind = \"anthropic\""));
+    assert!(encoded.contains("kind: anthropic"));
     assert!(!encoded.contains("token"));
     assert!(!encoded.contains("api_key"));
 }
@@ -73,12 +77,12 @@ fn anthropic_provider_settings_never_serialize_credentials() {
 #[test]
 fn openrouter_provider_settings_persist_only_credential_readiness() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("providers.toml");
+    let path = directory.path().join("providers.yaml");
     let mut store = ProviderSettingsStore::load(&path).unwrap();
     store.add("work", ConfiguredProvider::OpenRouter).unwrap();
 
     let encoded = std::fs::read_to_string(&path).unwrap();
-    assert!(encoded.contains("kind = \"openrouter\""));
+    assert!(encoded.contains("kind: openrouter"));
     assert!(!encoded.contains("OPENROUTER_API_KEY"));
     assert_eq!(
         ProviderSettingsStore::load(path).unwrap().list("work"),
@@ -88,7 +92,7 @@ fn openrouter_provider_settings_persist_only_credential_readiness() {
 
 #[test]
 fn example_catalog_configures_openrouter_through_the_openai_compatible_adapter() {
-    let catalog = ProfileCatalog::from_toml(include_str!("../../../rynna.example.toml")).unwrap();
+    let catalog = ProfileCatalog::from_yaml(include_str!("../../../rynna.example.yaml")).unwrap();
     let profile = catalog.resolve("openrouter").unwrap();
 
     assert_eq!(profile.providers[0].name, "openrouter");
@@ -108,21 +112,22 @@ fn example_catalog_configures_openrouter_through_the_openai_compatible_adapter()
 
 #[test]
 fn claude_subscription_profiles_reject_rynna_context() {
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "subscription"
-
-[providers.claude_subscription]
-kind = "claude-subscription"
-
-[[profiles.subscription.providers]]
-provider = "claude_subscription"
-model = "sonnet"
-enabled = true
-default = true
-[profiles.subscription]
-active_skills = ["rust"]
+version: 1
+default_profile: subscription
+providers:
+  claude_subscription:
+    kind: claude-subscription
+profiles:
+  subscription:
+    providers:
+    - provider: claude_subscription
+      model: sonnet
+      enabled: true
+      default: true
+    active_skills:
+    - rust
 "#,
     )
     .unwrap_err();
@@ -136,21 +141,22 @@ active_skills = ["rust"]
 
 #[test]
 fn claude_subscription_provider_rejects_api_credentials_and_endpoint() {
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "claude"
-
-[providers.claude]
-kind = "claude-subscription"
-api_base = "https://api.anthropic.com"
-api_key_env = "ANTHROPIC_API_KEY"
-
-[[profiles.claude.providers]]
-provider = "claude"
-model = "sonnet"
-enabled = true
-default = true
+version: 1
+default_profile: claude
+providers:
+  claude:
+    kind: claude-subscription
+    api_base: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+profiles:
+  claude:
+    providers:
+    - provider: claude
+      model: sonnet
+      enabled: true
+      default: true
 "#,
     )
     .expect_err("subscription and direct API configuration must remain separate");
@@ -165,40 +171,46 @@ default = true
 
 #[test]
 fn parses_profile_provider_model_skills_and_mcp_servers() {
-    let catalog = ProfileCatalog::from_toml(
+    let catalog = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "work"
-
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-api_key_env = "OLLAMA_API_KEY"
-
-[[profiles.work.providers]]
-provider = "ollama"
-model = "qwen3:14b"
-enabled = true
-default = true
-[profiles.work]
-system_prompt = "You are Rynna at work."
-active_skills = ["rust", "github"]
-mcp_servers = ["filesystem"]
-capabilities = ["workspace"]
-
-[capabilities.workspace]
-kind = "filesystem"
-root = "."
-read_only = true
-denied_patterns = ["private/**"]
-max_traversal_files = 200
-max_traversal_depth = 12
-max_search_bytes = 4096
-
-[mcp_servers.filesystem]
-transport = "stdio"
-command = "mcp-filesystem"
-args = ["/workspace"]
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+    api_key_env: OLLAMA_API_KEY
+profiles:
+  work:
+    providers:
+    - provider: ollama
+      model: qwen3:14b
+      enabled: true
+      default: true
+    system_prompt: You are Rynna at work.
+    active_skills:
+    - rust
+    - github
+    mcp_servers:
+    - filesystem
+    capabilities:
+    - workspace
+capabilities:
+  workspace:
+    kind: filesystem
+    root: .
+    read_only: true
+    denied_patterns:
+    - private/**
+    max_traversal_files: 200
+    max_traversal_depth: 12
+    max_search_bytes: 4096
+mcp_servers:
+  filesystem:
+    transport: stdio
+    command: mcp-filesystem
+    args:
+    - /workspace
 "#,
     )
     .unwrap();
@@ -243,25 +255,29 @@ args = ["/workspace"]
 
 #[test]
 fn parses_ordered_profile_providers_for_runtime_fallback() {
-    let catalog = ProfileCatalog::from_toml(
+    let catalog = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "work"
-
-[providers.primary]
-kind = "openai-compatible"
-api_base = "https://primary.example/v1"
-
-[providers.secondary]
-kind = "anthropic-messages"
-api_base = "https://secondary.example"
-api_key_env = "ANTHROPIC_API_KEY"
-
-[profiles.work]
-providers = [
-  { provider = "primary", model = "primary-model", enabled = true, default = true },
-  { provider = "secondary", model = "secondary-model", enabled = true, default = false },
-]
+version: 1
+default_profile: work
+providers:
+  primary:
+    kind: openai-compatible
+    api_base: https://primary.example/v1
+  secondary:
+    kind: anthropic-messages
+    api_base: https://secondary.example
+    api_key_env: ANTHROPIC_API_KEY
+profiles:
+  work:
+    providers:
+    - provider: primary
+      model: primary-model
+      enabled: true
+      default: true
+    - provider: secondary
+      model: secondary-model
+      enabled: true
+      default: false
 "#,
     )
     .unwrap();
@@ -281,25 +297,30 @@ providers = [
 
 #[test]
 fn resolves_only_enabled_models_with_the_default_model_first() {
-    let catalog = ProfileCatalog::from_toml(
+    let catalog = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "work"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[providers.openai]
-kind = "openai-compatible"
-api_base = "https://api.openai.com/v1"
-
-[profiles.work]
-providers = [
-  { provider = "local", model = "qwen3:8b", enabled = false },
-  { provider = "local", model = "qwen3:14b", enabled = true },
-  { provider = "openai", model = "gpt-5", enabled = true, default = true },
-]
+version: 1
+default_profile: work
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+  openai:
+    kind: openai-compatible
+    api_base: https://api.openai.com/v1
+profiles:
+  work:
+    providers:
+    - provider: local
+      model: qwen3:8b
+      enabled: false
+    - provider: local
+      model: qwen3:14b
+      enabled: true
+    - provider: openai
+      model: gpt-5
+      enabled: true
+      default: true
 "#,
     )
     .unwrap();
@@ -315,20 +336,23 @@ providers = [
 
 #[test]
 fn rejects_multiple_default_models_for_one_profile() {
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "work"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[profiles.work]
-providers = [
-  { provider = "local", model = "qwen3:8b", default = true },
-  { provider = "local", model = "qwen3:14b", default = true },
-]
+version: 1
+default_profile: work
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  work:
+    providers:
+    - provider: local
+      model: qwen3:8b
+      default: true
+    - provider: local
+      model: qwen3:14b
+      default: true
 "#,
     )
     .unwrap_err();
@@ -338,22 +362,24 @@ providers = [
 
 #[test]
 fn rejects_duplicate_models_within_one_profile() {
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "local"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://localhost:11434/v1"
-[[profiles.local.providers]]
-provider = "ollama"
-model = "qwen3:8b"
-enabled = true
-default = true
-[[profiles.local.providers]]
-provider = "ollama"
-model = "qwen3:8b"
-enabled = false
+version: 1
+default_profile: local
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  local:
+    providers:
+    - provider: ollama
+      model: qwen3:8b
+      enabled: true
+      default: true
+    - provider: ollama
+      model: qwen3:8b
+      enabled: false
 "#,
     )
     .unwrap_err();
@@ -367,29 +393,32 @@ enabled = false
 
 #[test]
 fn parses_a_bounded_command_capability() {
-    let catalog = ProfileCatalog::from_toml(
+    let catalog = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "local"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[[profiles.local.providers]]
-provider = "local"
-model = "test-model"
-enabled = true
-default = true
-[profiles.local]
-capabilities = ["host-commands"]
-
-[capabilities.host-commands]
-kind = "command"
-working_directory = "."
-programs = { uname = "/usr/bin/uname", sw_vers = "/usr/bin/sw_vers" }
-timeout_seconds = 5
-max_output_bytes = 8192
+version: 1
+default_profile: local
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  local:
+    providers:
+    - provider: local
+      model: test-model
+      enabled: true
+      default: true
+    capabilities:
+    - host-commands
+capabilities:
+  host-commands:
+    kind: command
+    working_directory: .
+    programs:
+      uname: /usr/bin/uname
+      sw_vers: /usr/bin/sw_vers
+    timeout_seconds: 5
+    max_output_bytes: 8192
 "#,
     )
     .unwrap();
@@ -427,22 +456,23 @@ fn built_in_catalog_preserves_the_existing_local_ollama_defaults() {
 #[test]
 fn loads_a_profile_catalog_from_an_explicit_file() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "local"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://localhost:1234/v1"
-
-[[profiles.local.providers]]
-provider = "local"
-model = "test-model"
-enabled = true
-default = true
+version: 1
+default_profile: local
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://localhost:1234/v1
+profiles:
+  local:
+    providers:
+    - provider: local
+      model: test-model
+      enabled: true
+      default: true
 "#,
     )
     .unwrap();
@@ -459,22 +489,23 @@ default = true
 fn default_configuration_path_uses_the_platform_configuration_directory() {
     let path = ProfileCatalog::default_path().unwrap();
 
-    assert!(path.ends_with("rynna/config.toml"));
+    assert!(path.ends_with("rynna/config.yaml"));
 }
 
 #[test]
 fn rejects_profiles_that_reference_unknown_providers_or_mcp_servers() {
-    let unknown_provider = ProfileCatalog::from_toml(
+    let unknown_provider = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "broken"
-providers = {}
-
-[[profiles.broken.providers]]
-provider = "missing"
-model = "model"
-enabled = true
-default = true
+version: 1
+default_profile: broken
+providers: {}
+profiles:
+  broken:
+    providers:
+    - provider: missing
+      model: model
+      enabled: true
+      default: true
 "#,
     )
     .unwrap_err();
@@ -484,22 +515,23 @@ default = true
             .contains("references unknown provider `missing`")
     );
 
-    let unknown_mcp = ProfileCatalog::from_toml(
+    let unknown_mcp = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "broken"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[[profiles.broken.providers]]
-provider = "local"
-model = "model"
-enabled = true
-default = true
-[profiles.broken]
-mcp_servers = ["missing"]
+version: 1
+default_profile: broken
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  broken:
+    providers:
+    - provider: local
+      model: model
+      enabled: true
+      default: true
+    mcp_servers:
+    - missing
 "#,
     )
     .unwrap_err();
@@ -512,22 +544,23 @@ mcp_servers = ["missing"]
 
 #[test]
 fn rejects_profiles_that_reference_unknown_capabilities() {
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "broken"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[[profiles.broken.providers]]
-provider = "local"
-model = "model"
-enabled = true
-default = true
-[profiles.broken]
-capabilities = ["missing"]
+version: 1
+default_profile: broken
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  broken:
+    providers:
+    - provider: local
+      model: model
+      enabled: true
+      default: true
+    capabilities:
+    - missing
 "#,
     )
     .unwrap_err();
@@ -541,67 +574,68 @@ capabilities = ["missing"]
 
 #[test]
 fn filesystem_capabilities_are_unique_per_profile_not_globally() {
-    let valid = ProfileCatalog::from_toml(
+    let valid = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "one"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[[profiles.one.providers]]
-provider = "local"
-model = "model"
-enabled = true
-default = true
-[profiles.one]
-capabilities = ["workspace-one"]
-
-[[profiles.two.providers]]
-provider = "local"
-model = "model"
-enabled = true
-default = true
-[profiles.two]
-capabilities = ["workspace-two"]
-
-[capabilities.workspace-one]
-kind = "filesystem"
-root = "."
-
-[capabilities.workspace-two]
-kind = "filesystem"
-root = ".."
+version: 1
+default_profile: one
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  one:
+    providers:
+    - provider: local
+      model: model
+      enabled: true
+      default: true
+    capabilities:
+    - workspace-one
+  two:
+    providers:
+    - provider: local
+      model: model
+      enabled: true
+      default: true
+    capabilities:
+    - workspace-two
+capabilities:
+  workspace-one:
+    kind: filesystem
+    root: .
+  workspace-two:
+    kind: filesystem
+    root: ..
 "#,
     )
     .unwrap();
     assert_eq!(valid.resolve_all().unwrap().len(), 2);
 
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "broken"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[[profiles.broken.providers]]
-provider = "local"
-model = "model"
-enabled = true
-default = true
-[profiles.broken]
-capabilities = ["workspace-one", "workspace-two"]
-
-[capabilities.workspace-one]
-kind = "filesystem"
-root = "."
-
-[capabilities.workspace-two]
-kind = "filesystem"
-root = ".."
+version: 1
+default_profile: broken
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  broken:
+    providers:
+    - provider: local
+      model: model
+      enabled: true
+      default: true
+    capabilities:
+    - workspace-one
+    - workspace-two
+capabilities:
+  workspace-one:
+    kind: filesystem
+    root: .
+  workspace-two:
+    kind: filesystem
+    root: ..
 "#,
     )
     .unwrap_err();
@@ -614,36 +648,39 @@ root = ".."
 
 #[test]
 fn command_capabilities_are_unique_per_profile() {
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "broken"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[[profiles.broken.providers]]
-provider = "local"
-model = "model"
-enabled = true
-default = true
-[profiles.broken]
-capabilities = ["commands-one", "commands-two"]
-
-[capabilities.commands-one]
-kind = "command"
-working_directory = "."
-programs = { uname = "/usr/bin/uname" }
-timeout_seconds = 5
-max_output_bytes = 8192
-
-[capabilities.commands-two]
-kind = "command"
-working_directory = "."
-programs = { sw_vers = "/usr/bin/sw_vers" }
-timeout_seconds = 5
-max_output_bytes = 8192
+version: 1
+default_profile: broken
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  broken:
+    providers:
+    - provider: local
+      model: model
+      enabled: true
+      default: true
+    capabilities:
+    - commands-one
+    - commands-two
+capabilities:
+  commands-one:
+    kind: command
+    working_directory: .
+    programs:
+      uname: /usr/bin/uname
+    timeout_seconds: 5
+    max_output_bytes: 8192
+  commands-two:
+    kind: command
+    working_directory: .
+    programs:
+      sw_vers: /usr/bin/sw_vers
+    timeout_seconds: 5
+    max_output_bytes: 8192
 "#,
     )
     .unwrap_err();
@@ -658,40 +695,46 @@ max_output_bytes = 8192
 fn rejects_structurally_invalid_command_capabilities() {
     let invalid = [
         (
-            "programs = {}\ntimeout_seconds = 5\nmax_output_bytes = 8192",
+            "programs: {}\ntimeout_seconds: 5\nmax_output_bytes: 8192",
             "at least one program",
         ),
         (
-            "programs = { uname = \"uname\" }\ntimeout_seconds = 5\nmax_output_bytes = 8192",
+            "programs:\n  uname: uname\ntimeout_seconds: 5\nmax_output_bytes: 8192",
             "absolute path",
         ),
         (
-            "programs = { uname = \"/usr/bin/uname\" }\ntimeout_seconds = 0\nmax_output_bytes = 8192",
+            "programs:\n  uname: /usr/bin/uname\ntimeout_seconds: 0\nmax_output_bytes: 8192",
             "greater than zero",
         ),
     ];
 
     for (command_config, expected) in invalid {
-        let error = ProfileCatalog::from_toml(&format!(
+        let command_config = command_config
+            .lines()
+            .map(|line| format!("    {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let error = ProfileCatalog::from_yaml(&format!(
             r#"
-version = 1
-default_profile = "broken"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[[profiles.broken.providers]]
-provider = "local"
-model = "model"
-enabled = true
-default = true
-[profiles.broken]
-capabilities = ["commands"]
-
-[capabilities.commands]
-kind = "command"
-working_directory = "."
+version: 1
+default_profile: broken
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  broken:
+    providers:
+    - provider: local
+      model: model
+      enabled: true
+      default: true
+    capabilities:
+    - commands
+capabilities:
+  commands:
+    kind: command
+    working_directory: .
 {command_config}
 "#
         ))
@@ -703,29 +746,31 @@ working_directory = "."
 
 #[test]
 fn rejects_command_limits_above_the_safe_hard_maximum() {
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "broken"
-
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[[profiles.broken.providers]]
-provider = "local"
-model = "model"
-enabled = true
-default = true
-[profiles.broken]
-capabilities = ["commands"]
-
-[capabilities.commands]
-kind = "command"
-working_directory = "."
-programs = { uname = "/usr/bin/uname" }
-timeout_seconds = 301
-max_output_bytes = 8388609
+version: 1
+default_profile: broken
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  broken:
+    providers:
+    - provider: local
+      model: model
+      enabled: true
+      default: true
+    capabilities:
+    - commands
+capabilities:
+  commands:
+    kind: command
+    working_directory: .
+    programs:
+      uname: /usr/bin/uname
+    timeout_seconds: 301
+    max_output_bytes: 8388609
 "#,
     )
     .unwrap_err();
@@ -735,20 +780,21 @@ max_output_bytes = 8388609
 
 #[test]
 fn rejects_provider_urls_with_embedded_credentials() {
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "unsafe"
-
-[providers.remote]
-kind = "openai-compatible"
-api_base = "http://user:password@remote.example/v1"
-
-[[profiles.unsafe.providers]]
-provider = "remote"
-model = "model"
-enabled = true
-default = true
+version: 1
+default_profile: unsafe
+providers:
+  remote:
+    kind: openai-compatible
+    api_base: http://user:password@remote.example/v1
+profiles:
+  unsafe:
+    providers:
+    - provider: remote
+      model: model
+      enabled: true
+      default: true
 "#,
     )
     .unwrap_err();
@@ -763,7 +809,7 @@ default = true
 #[test]
 fn provider_settings_start_blank_and_support_add_update_and_delete() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("providers.toml");
+    let path = directory.path().join("providers.yaml");
     let mut store = ProviderSettingsStore::load(&path).unwrap();
 
     assert!(store.list("work").is_empty());
@@ -830,7 +876,7 @@ fn provider_settings_start_blank_and_support_add_update_and_delete() {
 #[test]
 fn provider_settings_are_isolated_by_profile() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("providers.toml");
+    let path = directory.path().join("providers.yaml");
     let mut store = ProviderSettingsStore::load(&path).unwrap();
 
     store
@@ -868,7 +914,7 @@ fn provider_settings_are_isolated_by_profile() {
 #[test]
 fn provider_settings_follow_profile_rename_and_delete() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("providers.toml");
+    let path = directory.path().join("providers.yaml");
     let mut store = ProviderSettingsStore::load(&path).unwrap();
     store
         .add(
@@ -890,12 +936,14 @@ fn provider_settings_follow_profile_rename_and_delete() {
 #[test]
 fn provider_settings_reject_the_obsolete_global_provider_format() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("providers.toml");
+    let path = directory.path().join("providers.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-providers = [{ kind = "ollama", api_base = "http://localhost:11434/v1" }]
+version: 1
+providers:
+- kind: ollama
+  api_base: http://localhost:11434/v1
 "#,
     )
     .unwrap();
@@ -908,19 +956,20 @@ providers = [{ kind = "ollama", api_base = "http://localhost:11434/v1" }]
 #[test]
 fn profile_catalog_migrates_the_legacy_single_provider_format() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
-        r#"version = 1
-default_profile = "alpha"
-
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[profiles.alpha]
-provider = "ollama"
-model = "qwen3:8b"
+        r#"
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
@@ -936,7 +985,7 @@ model = "qwen3:8b"
 #[test]
 fn provider_settings_reject_duplicates_unknown_updates_and_invalid_ollama_urls() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("providers.toml");
+    let path = directory.path().join("providers.yaml");
     let mut store = ProviderSettingsStore::load(path).unwrap();
     store
         .add(
@@ -973,7 +1022,7 @@ fn provider_settings_reject_duplicates_unknown_updates_and_invalid_ollama_urls()
             .contains("is not configured")
     );
     assert!(
-        ProviderSettingsStore::load(directory.path().join("invalid.toml"))
+        ProviderSettingsStore::load(directory.path().join("invalid.yaml"))
             .unwrap()
             .add(
                 "work",
@@ -990,7 +1039,7 @@ fn provider_settings_reject_duplicates_unknown_updates_and_invalid_ollama_urls()
 #[test]
 fn provider_settings_do_not_change_in_memory_when_persistence_fails() {
     let directory = tempfile::tempdir().unwrap();
-    let settings_path = directory.path().join("providers.toml");
+    let settings_path = directory.path().join("providers.yaml");
     let mut store = ProviderSettingsStore::load(&settings_path).unwrap();
     std::fs::create_dir(&settings_path).unwrap();
 
@@ -1024,8 +1073,8 @@ fn provider_settings_ignore_stale_temporary_file_symlinks() {
     use std::os::unix::fs::symlink;
 
     let directory = tempfile::tempdir().unwrap();
-    let settings_path = directory.path().join("providers.toml");
-    let temporary_path = settings_path.with_extension("toml.tmp");
+    let settings_path = directory.path().join("providers.yaml");
+    let temporary_path = settings_path.with_extension("yaml.tmp");
     let victim_path = directory.path().join("victim.txt");
     std::fs::write(&victim_path, "keep me").unwrap();
     symlink(&victim_path, temporary_path).unwrap();
@@ -1070,7 +1119,7 @@ fn secure_private_directory_rejects_parent_components_and_root() {
 #[test]
 fn provider_settings_merge_mutations_from_separate_store_instances() {
     let directory = tempfile::tempdir().unwrap();
-    let settings_path = directory.path().join("providers.toml");
+    let settings_path = directory.path().join("providers.yaml");
     let mut first = ProviderSettingsStore::load(&settings_path).unwrap();
     let mut second = ProviderSettingsStore::load(&settings_path).unwrap();
 
@@ -1099,9 +1148,9 @@ fn provider_settings_merge_mutations_from_separate_store_instances() {
 
 #[test]
 fn provider_settings_support_a_bare_relative_filename() {
-    let file_name = format!(".rynna-provider-settings-test-{}.toml", std::process::id());
+    let file_name = format!(".rynna-provider-settings-test-{}.yaml", std::process::id());
     let lock_name = format!(
-        ".rynna-provider-settings-test-{}.toml.lock",
+        ".rynna-provider-settings-test-{}.yaml.lock",
         std::process::id()
     );
     let _ = std::fs::remove_file(&file_name);
@@ -1149,21 +1198,25 @@ fn editable_profile(name: &str, model: &str) -> Profile {
 
 #[test]
 fn parses_profile_projects_and_defaults_profiles_to_the_current_directory() {
-    let catalog = ProfileCatalog::from_toml(
+    let catalog = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "work"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.work]
-provider = "ollama"
-model = "qwen3:8b"
-default_project_directory = "/projects/home"
-[[profiles.work.projects]]
-name = "rynna"
-directories = ["/projects/rynna", "/projects/shared"]
-default_directory = "/projects/rynna"
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  work:
+    provider: ollama
+    model: qwen3:8b
+    default_project_directory: /projects/home
+    projects:
+    - name: rynna
+      directories:
+      - /projects/rynna
+      - /projects/shared
+      default_directory: /projects/rynna
 "#,
     )
     .unwrap();
@@ -1175,16 +1228,18 @@ default_directory = "/projects/rynna"
     assert_eq!(profile.projects[0].name, "rynna");
     assert_eq!(profile.projects[0].directories.len(), 2);
 
-    let defaults = ProfileCatalog::from_toml(
+    let defaults = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "work"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.work]
-provider = "ollama"
-model = "qwen3:8b"
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  work:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
@@ -1201,18 +1256,20 @@ model = "qwen3:8b"
 
 #[test]
 fn rejects_retired_workspace_profile_fields() {
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "work"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.work]
-provider = "ollama"
-model = "qwen3:8b"
-default_workspace_directory = "/projects/home"
-workspaces = []
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  work:
+    provider: ollama
+    model: qwen3:8b
+    default_workspace_directory: /projects/home
+    workspaces: []
 "#,
     )
     .unwrap_err();
@@ -1222,20 +1279,23 @@ workspaces = []
 
 #[test]
 fn rejects_a_project_default_directory_outside_its_directory_list() {
-    let error = ProfileCatalog::from_toml(
+    let error = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "work"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.work]
-provider = "ollama"
-model = "qwen3:8b"
-[[profiles.work.projects]]
-name = "rynna"
-directories = ["/projects/rynna"]
-default_directory = "/projects/other"
+version: 1
+default_profile: work
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  work:
+    provider: ollama
+    model: qwen3:8b
+    projects:
+    - name: rynna
+      directories:
+      - /projects/rynna
+      default_directory: /projects/other
 "#,
     )
     .unwrap_err();
@@ -1245,20 +1305,23 @@ default_directory = "/projects/other"
 #[test]
 fn adds_updates_and_deletes_profiles_and_persists_them() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[[profiles.alpha.providers]]
-provider = "ollama"
-model = "qwen3:8b"
-enabled = true
-default = true
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    providers:
+    - provider: ollama
+      model: qwen3:8b
+      enabled: true
+      default: true
 "#,
     )
     .unwrap();
@@ -1289,20 +1352,23 @@ default = true
 #[test]
 fn adding_a_profile_does_not_change_memory_when_persistence_fails() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[[profiles.alpha.providers]]
-provider = "ollama"
-model = "qwen3:8b"
-enabled = true
-default = true
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    providers:
+    - provider: ollama
+      model: qwen3:8b
+      enabled: true
+      default: true
 "#,
     )
     .unwrap();
@@ -1328,20 +1394,23 @@ default = true
 #[test]
 fn profile_catalog_merges_mutations_from_separate_instances() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[[profiles.alpha.providers]]
-provider = "ollama"
-model = "qwen3:8b"
-enabled = true
-default = true
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    providers:
+    - provider: ollama
+      model: qwen3:8b
+      enabled: true
+      default: true
 "#,
     )
     .unwrap();
@@ -1367,21 +1436,24 @@ default = true
 
 #[test]
 fn profile_catalog_lists_all_catalog_provider_identifiers() {
-    let catalog = ProfileCatalog::from_toml(
+    let catalog = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[providers.unused_custom]
-kind = "openai-compatible"
-api_base = "https://custom.example/v1"
-[[profiles.alpha.providers]]
-provider = "ollama"
-model = "qwen3:8b"
-enabled = true
-default = true
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+  unused_custom:
+    kind: openai-compatible
+    api_base: https://custom.example/v1
+profiles:
+  alpha:
+    providers:
+    - provider: ollama
+      model: qwen3:8b
+      enabled: true
+      default: true
 "#,
     )
     .unwrap();
@@ -1392,25 +1464,29 @@ default = true
 #[test]
 fn reserved_runtime_profile_name_is_rejected_by_catalog_crud() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[[profiles.alpha.providers]]
-provider = "ollama"
-model = "qwen3:8b"
-enabled = true
-default = true
-[[profiles.openai-account.providers]]
-provider = "ollama"
-model = "legacy"
-enabled = true
-default = true
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    providers:
+    - provider: ollama
+      model: qwen3:8b
+      enabled: true
+      default: true
+  openai-account:
+    providers:
+    - provider: ollama
+      model: legacy
+      enabled: true
+      default: true
 "#,
     )
     .unwrap();
@@ -1454,20 +1530,23 @@ default = true
 #[test]
 fn rejects_deleting_the_last_profile() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "alpha"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[[profiles.alpha.providers]]
-provider = "ollama"
-model = "qwen3:8b"
-enabled = true
-default = true
+version: 1
+default_profile: alpha
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  alpha:
+    providers:
+    - provider: ollama
+      model: qwen3:8b
+      enabled: true
+      default: true
 "#,
     )
     .unwrap();
@@ -1480,19 +1559,22 @@ default = true
 #[test]
 fn profile_skills_persist_independently_through_rename_and_delete() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
         r#"
-version = 1
-default_profile = "personal"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.personal]
-provider = "ollama"
-model = "test"
-active_skills = ["personal-skill"]
+version: 1
+default_profile: personal
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  personal:
+    provider: ollama
+    model: test
+    active_skills:
+    - personal-skill
 "#,
     )
     .unwrap();
@@ -1539,18 +1621,22 @@ active_skills = ["personal-skill"]
 
 #[test]
 fn model_override_updates_the_resolved_default_and_matching_metadata() {
-    let catalog = ProfileCatalog::from_toml(
+    let catalog = ProfileCatalog::from_yaml(
         r#"
-version = 1
-default_profile = "local"
-[providers.local]
-kind = "openai-compatible"
-api_base = "http://localhost:11434/v1"
-[profiles.local]
-providers = [
-  { provider = "local", model = "first" },
-  { provider = "local", model = "default-model", default = true }
-]
+version: 1
+default_profile: local
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  local:
+    providers:
+    - provider: local
+      model: first
+    - provider: local
+      model: default-model
+      default: true
 "#,
     )
     .unwrap();
@@ -1565,21 +1651,23 @@ providers = [
 
 #[test]
 fn mlx_custom_models_round_trip_with_default_and_custom_endpoints() {
-    for endpoint in ["", "api_base = \"http://localhost:8080/v1\""] {
+    for endpoint in ["", "api_base: http://localhost:8080/v1"] {
         let source = format!(
             r#"
-version = 1
-default_profile = "local"
-[providers.mlx]
-kind = "mlx"
-{endpoint}
-[profiles.local]
-provider = "mlx"
-model = "mlx-community/Qwen3.8-27B-8bit"
+version: 1
+default_profile: local
+providers:
+  mlx:
+    kind: mlx
+    {endpoint}
+profiles:
+  local:
+    provider: mlx
+    model: mlx-community/Qwen3.8-27B-8bit
 "#
         );
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("config.toml");
+        let path = directory.path().join("config.yaml");
         std::fs::write(&path, source).unwrap();
         let mut catalog = ProfileCatalog::load(&path).unwrap();
         let mut profile = catalog.resolve("local").unwrap().profile;
@@ -1635,7 +1723,7 @@ fn built_in_catalog_accepts_custom_mlx_models_without_changing_ollama_default() 
 #[test]
 fn mlx_settings_validate_urls_and_persist_per_profile() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("providers.toml");
+    let path = directory.path().join("providers.yaml");
     let mut store = ProviderSettingsStore::load(&path).unwrap();
     for url in [
         "invalid",
@@ -1665,17 +1753,20 @@ fn mlx_settings_validate_urls_and_persist_per_profile() {
 #[test]
 fn subagents_persist_per_profile_and_follow_profile_lifecycle() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
-        r#"version = 1
-default_profile = "default"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.default]
-provider = "ollama"
-model = "qwen3:8b"
+        r#"
+version: 1
+default_profile: default
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  default:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
@@ -1727,17 +1818,20 @@ model = "qwen3:8b"
 #[test]
 fn invalid_subagents_do_not_modify_the_saved_catalog() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
+    let path = directory.path().join("config.yaml");
     std::fs::write(
         &path,
-        r#"version = 1
-default_profile = "default"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.default]
-provider = "ollama"
-model = "qwen3:8b"
+        r#"
+version: 1
+default_profile: default
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  default:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
@@ -1778,4 +1872,86 @@ model = "qwen3:8b"
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
+}
+
+#[test]
+fn yaml_catalog_preserves_multiline_prompts_and_string_model_names() {
+    let source = r#"
+version: 1
+default_profile: local
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  local:
+    provider: ollama
+    model: "123"
+    system_prompt: |
+      Review carefully.
+      Preserve user changes.
+"#;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("custom.yml");
+    std::fs::write(&path, source).unwrap();
+    let mut catalog = ProfileCatalog::load(&path).unwrap();
+    let profile = catalog.resolve("local").unwrap().profile;
+    assert_eq!(profile.providers[0].model, "123");
+    assert_eq!(
+        catalog.resolve("local").unwrap().system_prompt,
+        "Review carefully.\nPreserve user changes.\n"
+    );
+    catalog.update_profile("local", profile.clone()).unwrap();
+    assert_eq!(
+        ProfileCatalog::load(&path)
+            .unwrap()
+            .resolve("local")
+            .unwrap()
+            .profile,
+        profile
+    );
+}
+
+#[test]
+fn yaml_catalog_rejects_duplicate_mapping_keys() {
+    let source = "version: 1\nversion: 1\ndefault_profile: local\n";
+    assert!(ProfileCatalog::from_yaml(source).is_err());
+    let source = r#"
+version: 1
+default_profile: local
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  local:
+    provider: ollama
+    model: first
+  local:
+    provider: ollama
+    model: second
+"#;
+    assert!(ProfileCatalog::from_yaml(source).is_err());
+}
+
+#[test]
+fn legacy_provider_settings_require_conversion_and_yaml_takes_precedence() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("providers.yaml");
+    let legacy = directory.path().join("providers.toml");
+    std::fs::write(&legacy, "private legacy settings").unwrap();
+    let error = ProviderSettingsStore::load(&path).unwrap_err().to_string();
+    assert!(error.contains("convert it to YAML"));
+    assert!(!path.exists());
+    std::fs::write(&path, "version: 1\nprofiles: {}\n").unwrap();
+    assert!(
+        ProviderSettingsStore::load(&path)
+            .unwrap()
+            .list("local")
+            .is_empty()
+    );
+    assert_eq!(
+        std::fs::read_to_string(legacy).unwrap(),
+        "private legacy settings"
+    );
 }

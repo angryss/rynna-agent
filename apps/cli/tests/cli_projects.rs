@@ -5,14 +5,16 @@ fn write_config(path: &std::path::Path) {
     std::fs::write(
         path,
         r#"
-version = 1
-default_profile = "local"
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-[profiles.local]
-provider = "ollama"
-model = "qwen3:8b"
+version: 1
+default_profile: local
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  local:
+    provider: ollama
+    model: qwen3:8b
 "#,
     )
     .unwrap();
@@ -31,7 +33,7 @@ fn run(config: &std::path::Path, arguments: &[&str]) {
 #[test]
 fn project_commands_create_update_list_and_delete_profile_owned_projects() {
     let directory = tempfile::tempdir().unwrap();
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     write_config(&config);
 
     run(

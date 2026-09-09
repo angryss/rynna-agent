@@ -3,16 +3,14 @@ use rynna_core::workflows::default_workflow;
 #[test]
 fn catalog_workflows_round_trip_and_rollback() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("profiles.toml");
-    let source = std::fs::read_to_string("../../rynna.example.toml").unwrap();
-    std::fs::write(
-        &path,
-        source
-            .split("# Optional profile-owned workflow")
-            .next()
-            .unwrap(),
-    )
-    .unwrap();
+    let path = dir.path().join("profiles.yaml");
+    let source = std::fs::read_to_string("../../rynna.example.yaml").unwrap();
+    let mut config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&source).unwrap();
+    config["profiles"]["local"]
+        .as_mapping_mut()
+        .unwrap()
+        .remove("workflows");
+    std::fs::write(&path, serde_yaml_ng::to_string(&config).unwrap()).unwrap();
     let mut catalog = ProfileCatalog::load(&path).unwrap();
     let profile = catalog.default_profile().to_owned();
     assert_eq!(catalog.workflows(&profile).unwrap().len(), 1);
@@ -46,7 +44,7 @@ fn catalog_workflows_round_trip_and_rollback() {
     assert_eq!(catalog.workflows(&profile).unwrap().len(), 1);
     assert_eq!(catalog.workflows("isolated").unwrap()[1].id, "custom");
     let before = catalog.workflows("isolated").unwrap();
-    std::fs::rename(&path, dir.path().join("backup.toml")).unwrap();
+    std::fs::rename(&path, dir.path().join("backup.yaml")).unwrap();
     std::fs::create_dir(&path).unwrap();
     assert!(
         catalog
@@ -58,7 +56,7 @@ fn catalog_workflows_round_trip_and_rollback() {
 
 #[test]
 fn example_workflow_configuration_is_valid() {
-    let source = std::fs::read_to_string("../../rynna.example.toml").unwrap();
-    let catalog = ProfileCatalog::from_toml(&source).unwrap();
+    let source = std::fs::read_to_string("../../rynna.example.yaml").unwrap();
+    let catalog = ProfileCatalog::from_yaml(&source).unwrap();
     assert_eq!(catalog.workflows("local").unwrap().len(), 2);
 }

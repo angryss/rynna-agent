@@ -22,7 +22,7 @@ apps/
   desktop/             React/Vite frontend and Tauri host
   web/                 React/Vite web entrypoint and HTTP adapter
 crates/
-  rynna-config/      Versioned TOML profile catalog and validation
+  rynna-config/      Versioned YAML profile catalog and validation
   rynna-core/        Domain types, model-provider port, and agent orchestration
   rynna-mcp/         Profile-specific stdio and Streamable HTTP MCP tools
   rynna-provider-anthropic/ Anthropic Messages API and Claude subscription adapters
@@ -78,18 +78,18 @@ printf 'Draft a release checklist' | cargo run -p rynna-cli -- run --output json
 With a profile catalog, select a profile explicitly or list the available profiles without contacting a provider:
 
 ```bash
-cargo run -p rynna-cli -- --config rynna.example.toml profiles
-cargo run -p rynna-cli -- --config rynna.example.toml --profile local chat
-cargo run -p rynna-cli -- --config rynna.example.toml --profile work run --prompt "Review this change"
+cargo run -p rynna-cli -- --config rynna.example.yaml profiles
+cargo run -p rynna-cli -- --config rynna.example.yaml --profile local chat
+cargo run -p rynna-cli -- --config rynna.example.yaml --profile work run --prompt "Review this change"
 ```
 
 Select a named project for a new chat or run, or manage the selected profile's projects directly:
 
 ```bash
-cargo run -p rynna-cli -- --config rynna.example.toml --profile local --project rynna chat
-cargo run -p rynna-cli -- --config rynna.example.toml --profile local projects create product --directory /projects/app --directory /projects/api --default-directory /projects/app
-cargo run -p rynna-cli -- --config rynna.example.toml --profile local projects update product --default-directory /projects/api
-cargo run -p rynna-cli -- --config rynna.example.toml --profile local projects delete product
+cargo run -p rynna-cli -- --config rynna.example.yaml --profile local --project rynna chat
+cargo run -p rynna-cli -- --config rynna.example.yaml --profile local projects create product --directory /projects/app --directory /projects/api --default-directory /projects/app
+cargo run -p rynna-cli -- --config rynna.example.yaml --profile local projects update product --default-directory /projects/api
+cargo run -p rynna-cli -- --config rynna.example.yaml --profile local projects delete product
 ```
 
 Open the terminal provider settings interface with:
@@ -99,6 +99,41 @@ cargo run -p rynna-cli -- --configure-providers
 ```
 
 The TUI starts with an empty provider list and supports adding, editing, and deleting Ollama, MLX, OpenRouter, OpenAI, and Anthropic settings. Use `--provider-config <path>` to select a non-default provider settings file. OpenRouter reads `OPENROUTER_API_KEY` from the Rynna process environment. OpenAI can authenticate through an API key sent directly to Codex over stdin or through Codex's ChatGPT browser sign-in.
+
+## Migrating configuration from TOML
+
+Rynna reads and writes YAML application configuration. Default filenames are
+`config.yaml`, `providers.yaml`, `mcp.yaml`, and `memory.yaml` in the same
+platform configuration directory as before. MCP and memory files live beside
+the provider settings file, including with a custom `--provider-config` path.
+Explicit `--config` and `--provider-config` paths accept YAML content, including
+`.yml` filenames. Cargo and rustfmt configuration keep their required TOML format.
+
+For an existing installation, stop Rynna, back up the four TOML files privately,
+and convert their contents to YAML before restarting. Renaming the extension
+alone does not convert the contents. Keep the same keys, values, profile names,
+and `version: 1`; represent TOML tables as nested mappings and arrays of tables
+as YAML lists. Use [`rynna.example.yaml`](rynna.example.yaml) and the provider,
+MCP, and memory examples below as references. Preserve strings as strings
+(quote numeric-looking model names and other ambiguous scalar values).
+Save the converted files under the new names with owner-only permissions
+(`chmod 600` on Unix). Update custom config paths, environment variables, and
+service/container mounts, then validate the catalog with `rynna doctor --config
+/path/to/config.yaml`. Restart every Rynna process after converting all four files.
+
+When a YAML file is absent but its same-name `.toml` predecessor exists, Rynna
+reports a migration error instead of loading empty/default settings. Existing
+YAML takes precedence; TOML backups are never modified or automatically imported.
+
+Provider settings, for example, use lists under each profile:
+
+```yaml
+version: 1
+profiles:
+  local:
+    - kind: ollama
+      api_base: http://127.0.0.1:11434/v1
+```
 
 ## Custom models and MLX
 
@@ -124,31 +159,33 @@ mlx_lm.server --model mlx-community/Qwen3.8-27B-8bit --host 127.0.0.1 --port 800
 
 MLX uses the existing OpenAI-compatible Chat Completions adapter without an API
 key. New installations include an `mlx` provider at `http://127.0.0.1:8000/v1`
-available in Settings → Models. If you already have a `config.toml`, add this
+available in Settings → Models. If you already have a `config.yaml`, add this
 connection definition and restart to expose it in the provider picker:
 
-```toml
-[providers.mlx]
-kind = "mlx"
-api_base = "http://127.0.0.1:8000/v1" # optional for MLX; this is its default
+```yaml
+providers:
+  mlx:
+    kind: mlx
+    api_base: http://127.0.0.1:8000/v1
 ```
 
 Then add `mlx-community/Qwen3.8-27B-8bit` under that provider in Settings, or
 configure a profile directly:
 
-```toml
-[profiles.mlx]
-provider = "mlx"
-model = "mlx-community/Qwen3.8-27B-8bit"
+```yaml
+profiles:
+  mlx:
+    provider: mlx
+    model: mlx-community/Qwen3.8-27B-8bit
 ```
 
 Use any model name served by your MLX server; Rynna sends it unchanged. Start
 that profile with `rynna --profile mlx chat`, or use `--model <name>` for a CLI
-model override. See `rynna.example.toml` for a complete example.
+model override. See `rynna.example.yaml` for a complete example.
 
 As with Ollama, the **Provider credentials** panel and terminal provider settings
 record profile-scoped connection readiness only. Runtime routing uses
-`[providers.*]` and `[profiles.*]` in `config.toml`; changing a port in provider
+`providers` and `profiles` in `config.yaml`; changing a port in provider
 settings does not change the runtime endpoint. Update `api_base` in the catalog
 and restart when your server moves.
 
@@ -191,7 +228,7 @@ The shared agent automatically summarizes at 75% of its input context allowance,
 
 The composer/terminal shows estimated usage as a percentage. Web/desktop also include the unsent draft, with token counts and the limit in the indicator tooltip. Counts use a byte-based estimate, not a provider tokenizer; dynamic tools and memory added during execution can increase actual usage. Automatic compaction includes these at execution time. During an active response the web/desktop indicator retains the estimate from before that response, then refreshes on completion.
 
-Set each model's **Context window (tokens)** in Settings → Models, or add `context_window = 32768` to its profile provider entry in `config.toml`. Use the actual serving limit, especially for local models. Saved model settings apply after restart. Explicit limits override built-in defaults for GPT-5.2 (400,000) and Claude Sonnet/Haiku 4.5 (200,000), including their listed dated IDs. These defaults follow [OpenAI's model documentation](https://developers.openai.com/api/docs/models/gpt-5.2) and [Anthropic's context documentation](https://platform.claude.com/docs/en/build-with-claude/context-windows). Other IDs/endpoints use an 8,192-token fallback, shown as **budget** rather than a known model context limit. Profile-default routing uses the smallest enabled fallback allowance; explicitly selecting a model uses that model's allowance.
+Set each model's **Context window (tokens)** in Settings → Models, or add `context_window: 32768` to its profile provider entry in `config.yaml`. Use the actual serving limit, especially for local models. Saved model settings apply after restart. Explicit limits override built-in defaults for GPT-5.2 (400,000) and Claude Sonnet/Haiku 4.5 (200,000), including their listed dated IDs. These defaults follow [OpenAI's model documentation](https://developers.openai.com/api/docs/models/gpt-5.2) and [Anthropic's context documentation](https://platform.claude.com/docs/en/build-with-claude/context-windows). Other IDs/endpoints use an 8,192-token fallback, shown as **budget** rather than a known model context limit. Profile-default routing uses the smallest enabled fallback allowance; explicitly selecting a model uses that model's allowance.
 
 `POST /v1/context` and desktop `conversation_context` accept `profile`, `project`, `selection`, `session_id`, `history`, optional `prompt`, and `compact` (default false). They return `history`, `size: { current_tokens, max_tokens }`, `compacted`, and `limit_known`. Estimation does not call a model. Clients must preserve returned message metadata when resending history. Manual compaction has a 60-second overall deadline.
 
@@ -223,7 +260,7 @@ or autonomous workflow is running. `/retry` sends a model request and can repeat
 | Variable | Default | Purpose |
 |---|---|---|
 | `RYNNA_CONFIG` | platform config path | Explicit profile-catalog path; equivalent to `--config` |
-| `RYNNA_PROVIDER_CONFIG` | `<config-dir>/rynna/providers.toml` | Provider settings path; equivalent to `--provider-config` |
+| `RYNNA_PROVIDER_CONFIG` | `<config-dir>/rynna/providers.yaml` | Provider settings path; equivalent to `--provider-config` |
 | `RYNNA_PROFILE` | catalog `default_profile` | Process default profile; equivalent to `--profile` |
 | `RYNNA_PROJECT` | default project | Named project for `chat` and `run`; equivalent to `--project` |
 | `RYNNA_API_BASE` | `http://127.0.0.1:11434/v1` | OpenAI-compatible API base URL |
@@ -240,23 +277,23 @@ or autonomous workflow is running. `/retry` sends a model request and can repeat
 
 Copy `.env.example` as a reference, but load secrets through your shell, service manager, or secret store. Rynna does not automatically read `.env` files. CLI flags and the legacy provider environment variables override only the selected default profile, in this order: explicit flag/environment override, selected profile, built-in local Ollama default.
 
-When `RYNNA_API_KEY` is set, Rynna requires HTTPS except for loopback development endpoints (`localhost`, `127.0.0.1`, and `::1`). Unsupported URL schemes and provider URLs containing embedded credentials are rejected. Interactive terminal responses use OpenAI-compatible SSE streaming so output appears incrementally while the composer remains editable. Provider response bodies are capped at 1 MiB.
+When `RYNNA_API_KEY` is set, Rynna requires HTTPS except for loopback development endpoints (`localhost`, `127.0.0.1`, and `::1`). Unsupported URL schemes and provider URLs containing embedded credentials are rejected. Interactive terminal responses use OpenAI-compatible SSE streaming so output appears incrementally while the composer remains edimapping. Provider response bodies are capped at 1 MiB.
 
 Provider requests use server-side prompt caches without storing prompt content locally. Anthropic Messages requests enable automatic five-minute ephemeral caching. Requests to the official OpenAI API include a stable SHA-256 `prompt_cache_key` derived from the system prompt, first conversation message, and ordered tool definitions; this keeps routing stable as one conversation grows while separating conversations with different initial anchors. Byte-identical conversation prefixes intentionally share a routing scope because Rynna's stateless request model has no conversation identifier. OpenAI still determines cache eligibility and lifetime. Ollama requests retain stable system/tool/message ordering and rely on Ollama's automatic in-memory prefix cache, while avoiding OpenAI-only cache fields that Ollama's compatibility API does not support. Claude subscription requests delegate caching to the pinned Claude Code client. The `CacheOptimizer` core port can be replaced when another agent or cache technology needs a different scope or policy.
 
 ### Profile catalog
 
-Rynna reads TOML from the platform configuration directory at `<config-dir>/rynna/config.toml`. On macOS this is under `~/Library/Application Support`; on Linux it normally follows `XDG_CONFIG_HOME` or `~/.config`; on Windows it uses the roaming application-data directory. If the file does not exist, Rynna creates no files and uses the previous built-in `default` profile backed by local Ollama.
+Rynna reads YAML from the platform configuration directory at `<config-dir>/rynna/config.yaml`. On macOS this is under `~/Library/Application Support`; on Linux it normally follows `XDG_CONFIG_HOME` or `~/.config`; on Windows it uses the roaming application-data directory. If the file does not exist, Rynna creates no files and uses the previous built-in `default` profile backed by local Ollama.
 
-See [`rynna.example.toml`](rynna.example.toml) for the complete version 1 schema. The catalog separates reusable provider connections from profiles:
+See [`rynna.example.yaml`](rynna.example.yaml) for the complete version 1 schema. The catalog separates reusable provider connections from profiles:
 
-- `providers.<name>` may use `openai-compatible`, `anthropic-messages`, or `claude-subscription`. OpenRouter uses the OpenAI-compatible adapter at `https://openrouter.ai/api/v1` with `api_key_env = "OPENROUTER_API_KEY"`. Direct Anthropic profiles use `api_key_env` (normally `ANTHROPIC_API_KEY`); store secrets only in environment variables, never in TOML.
+- `providers.<name>` may use `openai-compatible`, `anthropic-messages`, or `claude-subscription`. OpenRouter uses the OpenAI-compatible adapter at `https://openrouter.ai/api/v1` with `api_key_env: "OPENROUTER_API_KEY"`. Direct Anthropic profiles use `api_key_env` (normally `ANTHROPIC_API_KEY`); store secrets only in environment variables, never in YAML.
 - `claude-subscription` uses Claude Code's supported headless interface after `claude auth login --claudeai` (or an explicit `CLAUDE_CODE_OAUTH_TOKEN` created by `claude setup-token`). Claude subscription / usage bundle billing is handled by Claude. Rynna removes competing API, profile, gateway, and cloud-provider environment overrides; disables Claude Code tools, MCP, customizations, and persistence; and rejects profiles that declare Rynna capabilities, skills, or MCP servers.
-- Provider settings in the CLI, web app, and desktop app store shared credential readiness only. Runtime provider, model, and profile routing remains authoritative in `config.toml` and is loaded at process startup.
+- Provider settings in the CLI, web app, and desktop app store shared credential readiness only. Runtime provider, model, and profile routing remains authoritative in `config.yaml` and is loaded at process startup.
 - `profiles.<name>` selects an ordered, non-empty list of provider/model entries and may define `system_prompt`, `capabilities`, `active_skills`, `mcp_servers`, `default_project_directory`, and `projects`. The first provider entry is primary; later entries are attempted as fallbacks.
 - `default_project_directory` is the starting directory for new sessions that do not select a named project. Each named project contains one or more directory paths and one `default_directory` chosen from that list. Projects are isolated per profile. They provide trusted model context but do not broaden native filesystem roots or command allowlists.
 - `active_skills` enables standard `SKILL.md` packages independently for each profile. Add names or directories in Settings → Profiles → Skills or in the catalog. See [Agent Skills setup](docs/skills.md) for discovery paths, examples, permissions, and restart behavior.
-- `capabilities.<name>` defines an in-process native capability. `kind = "filesystem"` supplies eight workspace-scoped tools: read, write, exact edit, list, find, search, create directory, and file metadata. `kind = "command"` supplies one bounded `run_command` tool over an explicit alias-to-executable map.
+- `capabilities.<name>` defines an in-process native capability. `kind: "filesystem"` supplies eight workspace-scoped tools: read, write, exact edit, list, find, search, create directory, and file metadata. `kind: "command"` supplies one bounded `run_command` tool over an explicit alias-to-executable map.
 - `mcp_servers.<name>` stores a structured MCP server definition. Every profile reference is validated when the catalog loads.
 - `default_profile` selects the profile used when a request or process does not specify one.
 
@@ -278,22 +315,24 @@ The parent model can call `delegate_task` with `subagent` and `task`. Each call 
 
 Delegation is one level deep and sequential; helpers cannot delegate to other helpers. Each helper uses the existing bounded model loop. Parent and helpers share one 64-call budget and one 8 MiB tool-result byte budget per response, and the parent's 300-second aggregate deadline covers delegated work. Providers that disable external tools, including subscription adapters, do not expose delegation.
 
-Subagents are saved inline in `config.toml` and are available across CLI, HTTP and desktop. Public HTTP profile lists redact helper instructions; loopback administrators receive the complete definitions for editing:
+Subagents are saved inline in `config.yaml` and are available across CLI, HTTP and desktop. Public HTTP profile lists redact helper instructions; loopback administrators receive the complete definitions for editing:
 
-```toml
-[[profiles.local.subagents]]
-name = "reviewer"
-description = "Review code changes for correctness and missing tests."
-instructions = "Inspect the requested changes. Report actionable issues with file references and suggested fixes."
+```yaml
+profiles:
+  local:
+    subagents:
+    - name: reviewer
+      description: Review code changes for correctness and missing tests.
+      instructions: Inspect the requested changes. Report actionable issues with file references and suggested fixes.
 ```
 
 Names must be unique within a profile and contain 1–64 ASCII letters, digits, underscores or hyphens. A profile supports up to 32 helpers; descriptions and instructions are required and limited to 1024 and 32000 UTF-8 bytes. Delegated tasks are limited to 32000 bytes. Omitted lists default to empty. Settings saves apply on the next request for an already-running profile; manual file edits and newly created or renamed profiles follow the existing restart lifecycle.
 
 ## HTTP API
 
-`GET /v1/profiles` returns the process default, safe catalog provider identifiers, and safe profile metadata. It never returns API keys, API-key environment-variable names, provider base URLs, system prompts, or MCP command definitions. `POST /v1/profiles` and `PUT`/`DELETE /v1/profiles/{name}` add, update, and delete catalog profiles for loopback clients. Profile mutations persist to `config.toml`, but they never attach an existing runtime agent to changed metadata: metadata for currently running profiles remains the startup snapshot, while new catalog-only profiles have no runtime agent. Restart the process before using a new or renamed profile or relying on changed providers, models, prompts, skills, or capabilities.
+`GET /v1/profiles` returns the process default, safe catalog provider identifiers, and safe profile metadata. It never returns API keys, API-key environment-variable names, provider base URLs, system prompts, or MCP command definitions. `POST /v1/profiles` and `PUT`/`DELETE /v1/profiles/{name}` add, update, and delete catalog profiles for loopback clients. Profile mutations persist to `config.yaml`, but they never attach an existing runtime agent to changed metadata: metadata for currently running profiles remains the startup snapshot, while new catalog-only profiles have no runtime agent. Restart the process before using a new or renamed profile or relying on changed providers, models, prompts, skills, or capabilities.
 
-`GET /v1/providers`, `POST /v1/providers`, and `PUT`/`DELETE /v1/providers/{kind}` provide provider settings CRUD for the browser. The persisted TOML contains only Ollama's API base URL, the selected OpenAI/Anthropic authentication method, or an OpenRouter credential-readiness marker. OpenRouter reads its API key from `OPENROUTER_API_KEY`; OpenAI API keys are piped to Codex. Neither key is stored in this file or returned by the API.
+`GET /v1/providers`, `POST /v1/providers`, and `PUT`/`DELETE /v1/providers/{kind}` provide provider settings CRUD for the browser. The persisted YAML contains only Ollama's API base URL, the selected OpenAI/Anthropic authentication method, or an OpenRouter credential-readiness marker. OpenRouter reads its API key from `OPENROUTER_API_KEY`; OpenAI API keys are piped to Codex. Neither key is stored in this file or returned by the API.
 
 `POST /v1/respond` accepts caller-owned user/assistant history, an optional profile name, an optional named project, and a new prompt. Omit `profile` to use the process default; omit `project` to use that profile's implicit default project:
 
@@ -378,22 +417,21 @@ Writes run in order per provider snapshot with a ten-second deadline per write. 
 
 Selecting **None** stops future memory operations for the selected profile and removes only its saved local credential. Existing memories remain on Hindsight; requests already in progress finish with their original provider. An unchanged blank API-key field preserves that profile’s saved credential only for the same endpoint and hosting mode. Self-hosted settings also offer an explicit remove-key checkbox.
 
-Settings are stored as versioned `[profiles.<name>]` entries in `memory.toml` beside `providers.toml`, including when `--provider-config` / `RYNNA_PROVIDER_CONFIG` chooses a custom directory. CLI chat and one-shot runs read this file at startup. Web/desktop changes affect their current process; restart other running processes to pick up changes. Renaming a profile moves its memory settings; deleting a profile removes them locally without deleting remote memories. New or renamed profiles still become runnable after restart, consistent with the profile catalog. The file is written atomically with owner-only permissions on Unix. API keys are never returned to the frontend or written to browser storage.
+Settings are stored as versioned `profiles.<name>` entries in `memory.yaml` beside `providers.yaml`, including when `--provider-config` / `RYNNA_PROVIDER_CONFIG` chooses a custom directory. CLI chat and one-shot runs read this file at startup. Web/desktop changes affect their current process; restart other running processes to pick up changes. Renaming a profile moves its memory settings; deleting a profile removes them locally without deleting remote memories. New or renamed profiles still become runnable after restart, consistent with the profile catalog. The file is written atomically with owner-only permissions on Unix. API keys are never returned to the frontend or written to browser storage.
 
-For CLI-only configuration, create `memory.toml` in that directory (restrict its permissions to your user):
+For CLI-only configuration, create `memory.yaml` in that directory (restrict its permissions to your user):
 
-```toml
-version = 1
-
-[profiles.local]
-kind = "hindsight"
-deployment = "self_hosted"
-api_base = "http://localhost:8888"
-bank_id = "rynna"
-# api_key = "your-server-key" # only for authenticated servers
+```yaml
+version: 1
+profiles:
+  local:
+    kind: hindsight
+    deployment: self_hosted
+    api_base: http://localhost:8888
+    bank_id: rynna
 ```
 
-For Cloud, use `deployment = "cloud"`, `api_base = "https://api.hindsight.vectorize.io"`, and an `api_key`. Replace `local` with your profile name. To disable its memory, replace that profile’s table with `kind = "none"` or remove the table, leaving other profiles intact. The unreleased global format is rejected with migration instructions: add `version = 1` and place the previous settings under the intended `[profiles.<name>]` table.
+For Cloud, use `deployment: "cloud"`, `api_base: "https://api.hindsight.vectorize.io"`, and an `api_key`. Replace `local` with your profile name. To disable its memory, replace that profile’s mapping with `kind: "none"` or remove the mapping, leaving other profiles intact. The unreleased global format is rejected with migration instructions: add `version: 1` and place the previous settings under the intended `profiles.<name>` mapping.
 
 The HTTP settings contract is `GET` / `PUT /v1/profiles/{profile}/memory`; both methods use the existing loopback-only administration restriction. Desktop uses `get_memory_settings` / `save_memory_settings` IPC commands, both with a required `profile` argument. Unknown profiles are rejected. The response APIs accept an optional `session_id` UUID. API clients should reuse it for a conversation and generate a new one for a new conversation; omission creates a fresh document per request. The provider-neutral `rynna_core::MemoryProvider` trait exposes `recall` and `retain(&MemoryConversation)`; implement this port and register a configuration variant and composition adapter to add another provider. Hindsight-specific HTTP behavior lives in `rynna-memory-hindsight`.
 
@@ -431,22 +469,28 @@ Set `enabled` to `false` to pause a server, delete an entry to remove it, or sav
 authentication reads the named environment variable from the Rynna process.
 OAuth sign-in and legacy HTTP+SSE transport are not implemented.
 
-Settings are persisted atomically in owner-only `mcp.toml`, beside `providers.toml`:
+Settings are persisted atomically in owner-only `mcp.yaml`, beside `providers.yaml`:
 
-```toml
-version = 1
-[profiles.work.mcpServers.workspace]
-transport = "stdio"
-enabled = true
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"]
+```yaml
+version: 1
+profiles:
+  work:
+    mcpServers:
+      workspace:
+        transport: stdio
+        enabled: true
+        command: npx
+        args:
+        - -y
+        - '@modelcontextprotocol/server-filesystem'
+        - /path/to/workspace
 ```
 
 CLI reads this file at startup (`--provider-config` also selects the sibling MCP
 file). HTTP and desktop UI saves apply to subsequent requests without restarting;
 in-flight requests keep their original settings. New or renamed profiles still
 require restart to become runnable, as with other profile configuration.
-The old `config.toml` global `[mcp_servers]` declarations and activation names remain
+The old `config.yaml` global `mcp_servers` declarations and activation names remain
 legacy metadata and are never executed or implicitly inherited. Copy the desired
 configuration into each profile’s MCP editor to enable it explicitly.
 
@@ -499,7 +543,7 @@ it.
 
 ```bash
 rynna doctor
-rynna doctor --config ./rynna.toml --output json
+rynna doctor --config ./rynna.yaml --output json
 ```
 
 For every profile it checks that:

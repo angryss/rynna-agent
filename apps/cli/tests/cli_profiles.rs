@@ -5,30 +5,31 @@ use serde_json::Value;
 #[test]
 fn profiles_lists_configured_profiles_without_contacting_providers() {
     let directory = tempfile::tempdir().unwrap();
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     std::fs::write(
         &config,
         r#"
-version = 1
-default_profile = "local"
-
-[providers.ollama]
-kind = "openai-compatible"
-api_base = "http://127.0.0.1:11434/v1"
-
-[profiles.local]
-provider = "ollama"
-model = "qwen3:8b"
-active_skills = ["rust"]
-[[profiles.local.subagents]]
-name = "reviewer"
-description = "Review code"
-instructions = "Find bugs"
-
-[profiles.work]
-provider = "ollama"
-model = "qwen3:14b"
-active_skills = ["github"]
+version: 1
+default_profile: local
+providers:
+  ollama:
+    kind: openai-compatible
+    api_base: http://127.0.0.1:11434/v1
+profiles:
+  local:
+    provider: ollama
+    model: qwen3:8b
+    active_skills:
+    - rust
+    subagents:
+    - name: reviewer
+      description: Review code
+      instructions: Find bugs
+  work:
+    provider: ollama
+    model: qwen3:14b
+    active_skills:
+    - github
 "#,
     )
     .unwrap();
@@ -59,24 +60,23 @@ active_skills = ["github"]
 #[test]
 fn profiles_reports_the_effective_model_for_the_selected_default() {
     let directory = tempfile::tempdir().unwrap();
-    let config = directory.path().join("config.toml");
+    let config = directory.path().join("config.yaml");
     std::fs::write(
         &config,
         r#"
-version = 1
-default_profile = "local"
-
-[providers.offline]
-kind = "openai-compatible"
-api_base = "https://offline.invalid/v1"
-
-[profiles.local]
-provider = "offline"
-model = "catalog-model"
-
-[profiles.work]
-provider = "offline"
-model = "work-model"
+version: 1
+default_profile: local
+providers:
+  offline:
+    kind: openai-compatible
+    api_base: https://offline.invalid/v1
+profiles:
+  local:
+    provider: offline
+    model: catalog-model
+  work:
+    provider: offline
+    model: work-model
 "#,
     )
     .unwrap();
