@@ -199,6 +199,9 @@ fn prepare_executable(
     private
         .set_permissions(std::fs::Permissions::from_mode(0o500))
         .map_err(CommandConfigError::ProgramCopy)?;
+    // Linux refuses to execute a file while any process still has it open for
+    // writing. Close the private copy before returning it to the spawn path.
+    drop(private);
     Ok(private_path.clone())
 }
 
