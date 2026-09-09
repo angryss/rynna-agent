@@ -572,11 +572,15 @@ pub enum CompletionDeltaEvent {
     Started,
     Thinking { content: String },
     Content { content: String },
+    ToolStarted { call: rynna_core::ToolCall },
+    ToolFinished { id: String },
 }
 
 impl From<&CompletionDelta> for CompletionDeltaEvent {
     fn from(delta: &CompletionDelta) -> Self {
         match delta {
+            CompletionDelta::ToolStarted(call) => Self::ToolStarted { call: call.clone() },
+            CompletionDelta::ToolFinished(id) => Self::ToolFinished { id: id.clone() },
             CompletionDelta::Thinking(content) => Self::Thinking {
                 content: content.clone(),
             },

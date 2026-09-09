@@ -532,6 +532,8 @@ impl Completion {
 pub enum CompletionDelta {
     Thinking(String),
     Content(String),
+    ToolStarted(ToolCall),
+    ToolFinished(String),
 }
 
 /// How a provider failure should be treated by callers that can retry or resume.
@@ -798,6 +800,11 @@ impl ModelProvider for FallbackProvider {
                     }
                     let text = match delta {
                         CompletionDelta::Thinking(text) | CompletionDelta::Content(text) => text,
+                        CompletionDelta::ToolStarted(_) | CompletionDelta::ToolFinished(_) => {
+                            emitted_output = true;
+                            on_delta(delta);
+                            return;
+                        }
                     };
                     if !text.is_empty() {
                         emitted_output = true;
@@ -838,6 +845,11 @@ impl ModelProvider for FallbackProvider {
                     }
                     let text = match delta {
                         CompletionDelta::Thinking(text) | CompletionDelta::Content(text) => text,
+                        CompletionDelta::ToolStarted(_) | CompletionDelta::ToolFinished(_) => {
+                            emitted_output = true;
+                            on_delta(delta);
+                            return;
+                        }
                     };
                     if !text.is_empty() {
                         emitted_output = true;
@@ -1382,8 +1394,12 @@ impl Agent {
             for call in tool_calls {
                 let result = match available_tools.get(&call.name) {
                     Some(tool) => {
-                        tokio::time::timeout_at(tool_deadline, tool.execute(call.arguments))
-                            .await
+                        on_delta(&CompletionDelta::ToolStarted(call.clone()));
+                        let result =
+                            tokio::time::timeout_at(tool_deadline, tool.execute(call.arguments))
+                                .await;
+                        on_delta(&CompletionDelta::ToolFinished(call.id.clone()));
+                        result
                             .map_err(|_| {
                                 AgentError::ToolExecutionDeadline(MAX_TOOL_EXECUTION_SECONDS)
                             })?

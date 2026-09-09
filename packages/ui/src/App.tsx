@@ -1,5 +1,5 @@
 import { ThinkingContent } from './components/thinking-content';
-import { ArrowUp, Square } from 'lucide-react';
+import { ArrowUp, Square, Terminal } from 'lucide-react';
 import type { ContextResponse } from './contracts';
 import { SlashCommandInput, slashCommands } from './components/slash-command-input';
 import { newSessionId } from './sessions';
@@ -63,6 +63,13 @@ const PROVIDER_KINDS: readonly ConfiguredProvider['kind'][] = [
   'openrouter',
 ];
 
+function commandLabel(call: Extract<CompletionDelta, { kind: 'tool_started' }>['call']): string {
+  const argumentsValue = call.arguments;
+  if (call.name !== 'run_command' || !argumentsValue || typeof argumentsValue !== 'object' || !('program' in argumentsValue) || typeof argumentsValue.program !== 'string') return call.name;
+  const args = 'arguments' in argumentsValue && Array.isArray(argumentsValue.arguments) ? argumentsValue.arguments.filter((arg): arg is string => typeof arg === 'string') : [];
+  return [argumentsValue.program, ...args].map(arg => /^[a-zA-Z0-9_./:=@%+,-]+$/.test(arg) ? arg : JSON.stringify(arg)).join(' ');
+}
+
 function sortedProfiles(profiles: Profile[]): Profile[] {
   return [...profiles].sort((left, right) => left.name.localeCompare(right.name));
 }
@@ -71,7 +78,7 @@ function conversationHistory(messages: DisplayMessage[]): Message[] {
   return messages.filter((message): message is Message => message.role !== 'thinking');
 }
 
-function appendDelta(messages: DisplayMessage[], delta: CompletionDelta): DisplayMessage[] {
+function appendDelta(messages: DisplayMessage[], delta: Extract<CompletionDelta, { content: string }>): DisplayMessage[] {
   if (!delta.content) {
     return messages;
   }
@@ -129,6 +136,7 @@ export function App({ client }: AppProps) {
   const [modelOpenRequest, setModelOpenRequest] = useState(0);
   const [pending, setPending] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [runningTools, setRunningTools] = useState<Extract<CompletionDelta, { kind: 'tool_started' }>['call'][]>([]);
   const activeResponse = useRef<AbortController | null>(null);
   useEffect(() => () => activeResponse.current?.abort(), []);
   const [error, setError] = useState<string | null>(null);
@@ -929,6 +937,7 @@ export function App({ client }: AppProps) {
     const controller = new AbortController();
     activeResponse.current = controller;
     setStopping(false);
+    setRunningTools([]);
     setPending(true);
     setMessages([...displayHistory, { role: 'user', content: prompt }]);
 
@@ -965,6 +974,14 @@ export function App({ client }: AppProps) {
         history,
       }, (delta) => {
         if (!controller.signal.aborted && activeResponse.current === controller && sessionId.current === currentSessionId) {
+          if (delta.kind === 'tool_started') {
+            setRunningTools(current => [...current.filter(call => call.id !== delta.call.id), delta.call]);
+            return;
+          }
+          if (delta.kind === 'tool_finished') {
+            setRunningTools(current => current.filter(call => call.id !== delta.id));
+            return;
+          }
           streamedMessages = appendDelta(streamedMessages, delta);
           setMessages(current => appendDelta(current, delta));
         }
@@ -985,7 +1002,7 @@ export function App({ client }: AppProps) {
     } finally {
       if (activeResponse.current === controller) {
         activeResponse.current = null;
-        if (sessionId.current === currentSessionId) { setPending(false); setStopping(false); }
+        if (sessionId.current === currentSessionId) { setPending(false); setStopping(false); setRunningTools([]); }
       }
     }
   }
@@ -1000,7 +1017,7 @@ export function App({ client }: AppProps) {
     if (conversation && (followConversation.current || messages.at(-1)?.role === 'user')) {
       conversation.scrollTop = conversation.scrollHeight;
     }
-  }, [messages, displayedSessionId, view]);
+  }, [messages, runningTools, displayedSessionId, view]);
 
   return (
     <main className="app-shell">
@@ -1164,6 +1181,12 @@ export function App({ client }: AppProps) {
                     ),
                   )
                 )}
+                {pending && runningTools.map(call => (
+                  <div className="running-command" key={call.id} role="status">
+                    <Terminal size={18} aria-hidden="true" />
+                    <span>Running <code>{commandLabel(call)}</code></span>
+                  </div>
+                ))}
               </div>
 
               {storageFailure ? (
@@ -1187,7 +1210,7 @@ export function App({ client }: AppProps) {
                   </span>
                   {activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
                     onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
-                  {pending && compacting ? <Button disabled type="button">Compacting…</Button> : pending ? <Button className="composer-submit" aria-label={stopping ? 'Stopping…' : 'Stop'} title={stopping ? 'Stopping…' : 'Stop'} type="button" disabled={stopping} onClick={() => { setStopping(true); activeResponse.current?.abort(); }}>
+                  {pending && compacting ? <Button disabled type="button">Compacting…</Button> : pending ? <Button className="composer-submit" aria-label={stopping ? 'Stopping…' : 'Stop'} title={stopping ? 'Stopping…' : 'Stop'} type="button" disabled={stopping} onClick={() => { setStopping(true); setRunningTools([]); activeResponse.current?.abort(); }}>
                     <Square aria-hidden="true" size={14} fill="currentColor" />
                   </Button> : <Button className="composer-submit" aria-label={workflowRunning ? 'Use workflow steering above' : 'Send'} title={workflowRunning ? 'Use workflow steering above' : 'Send'} disabled={workflowRunning || deletingSession || !input.trim()} type="submit">
                     <ArrowUp aria-hidden="true" />

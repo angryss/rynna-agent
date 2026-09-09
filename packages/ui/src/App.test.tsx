@@ -2083,3 +2083,41 @@ it('shows the workflow goal once when polling and start resolve before a render'
   expect(within(screen.getByRole('log')).getAllByText('Working on it')).toHaveLength(1);
   expect(readSessions()[0]!.messages).toEqual([{ role: 'user', content: start.goal }, { role: 'assistant', content: 'Working on it' }]);
 });
+
+
+it.each(['finish', 'error', 'stop', 'done'] as const)('clears transient command activity on %s without saving it', async ending => {
+  let emit: NonNullable<Parameters<AgentClient['respond']>[1]> = () => {};
+  let resolve!: (value: Awaited<ReturnType<AgentClient['respond']>>) => void;
+  let reject!: (reason: Error) => void;
+  const client: AgentClient = { respond: vi.fn((_request, onDelta, signal) => {
+    emit = onDelta!;
+    return new Promise<Awaited<ReturnType<AgentClient['respond']>>>((res, rej) => {
+      resolve = res; reject = rej;
+      signal?.addEventListener('abort', () => rej(new DOMException('Stopped', 'AbortError')));
+    });
+  }) };
+  const user = userEvent.setup();
+  render(<App client={client} />);
+  await user.type(screen.getByLabelText('Message Rynna'), 'Check the project');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  act(() => emit({ kind: 'tool_started', call: { id: 'cmd', name: 'run_command', arguments: { program: 'git', arguments: ['status', 'a b'] } } }));
+  expect(screen.getByRole('status')).toHaveTextContent('Running git status "a b"');
+  expect(readSessions().some(session => JSON.stringify(session.messages).includes('Running'))).toBe(false);
+  if (ending === 'finish') {
+    act(() => emit({ kind: 'tool_finished', id: 'unrelated' }));
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    act(() => emit({ kind: 'tool_finished', id: 'cmd' }));
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+    await act(async () => resolve({ message: { role: 'assistant', content: 'Done.' } }));
+  } else if (ending === 'error') {
+    await act(async () => reject(new Error('Connection lost')));
+  } else if (ending === 'stop') {
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    act(() => emit({ kind: 'tool_started', call: { id: 'late', name: 'run_command', arguments: { program: 'pwd' } } }));
+  } else {
+    await act(async () => resolve({ message: { role: 'assistant', content: 'Done.' } }));
+  }
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  expect(readSessions().some(session => JSON.stringify(session.messages).includes('Running'))).toBe(false);
+});

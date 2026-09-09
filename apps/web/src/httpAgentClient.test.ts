@@ -64,6 +64,8 @@ describe('HttpAgentClient', () => {
       new Response(
         [
           'data: {"kind":"thinking","content":"Inspect"}\n\n',
+          'data: {"kind":"tool_started","call":{"id":"cmd","name":"run_command","arguments":{"program":"pwd"}}}\n\n',
+          'data: {"kind":"tool_finished","id":"cmd"}\n\n',
           'data: {"kind":"content","content":"Answer"}\n\n',
           'data: {"kind":"done","message":{"role":"assistant","content":"Answer"}}\n\n',
         ].join(''),
@@ -86,6 +88,8 @@ describe('HttpAgentClient', () => {
     });
     expect(deltas).toEqual([
       { kind: 'thinking', content: 'Inspect' },
+      { kind: 'tool_started', call: { id: 'cmd', name: 'run_command', arguments: { program: 'pwd' } } },
+      { kind: 'tool_finished', id: 'cmd' },
       { kind: 'content', content: 'Answer' },
     ]);
     expect(response.message.content).toBe('Answer');
