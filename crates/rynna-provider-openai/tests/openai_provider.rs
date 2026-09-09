@@ -909,7 +909,8 @@ async fn oversized_error_response_is_rejected() {
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(500).set_body_bytes(vec![b'x'; 1024 * 1024 + 1]))
-        .expect(1)
+        // A 500 is transient, so it is now attempted three times before giving up.
+        .expect(3)
         .mount(&server)
         .await;
 
@@ -1034,4 +1035,176 @@ fn workflow_policy_tracks_endpoint_and_model_but_not_credentials() {
     assert_eq!(first.workflow_policy(), rotated.workflow_policy());
     assert_ne!(first.workflow_policy(), moved.workflow_policy());
     assert!(!first.workflow_policy().contains("secret"));
+}
+
+fn chat_provider(server: &MockServer) -> OpenAiCompatibleProvider {
+    OpenAiCompatibleProvider::new(
+        format!("{}/v1", server.uri()),
+        "test-model",
+        Some("test-key".to_owned()),
+    )
+    .unwrap()
+}
+
+fn hello() -> CompletionRequest {
+    CompletionRequest {
+        messages: vec![Message::user("Hello")],
+        tools: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn rate_limited_requests_are_retried_and_then_succeed() {
+    let server = MockServer::start().await;
+    // First attempt is rate limited; the retry must reissue the identical request.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("slow down"))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "recovered"}}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let completion = chat_provider(&server).complete(hello()).await.unwrap();
+    assert_eq!(completion.message, Message::assistant("recovered"));
+}
+
+#[tokio::test]
+async fn overloaded_providers_are_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    assert!(chat_provider(&server).complete(hello()).await.is_ok());
+}
+
+#[tokio::test]
+async fn client_errors_are_not_retried() {
+    let server = MockServer::start().await;
+    // A 400 is the model's fault, not the network's: exactly one attempt.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = chat_provider(&server).complete(hello()).await.unwrap_err();
+    assert!(!error.is_transient(), "400 must not be transient");
+    assert_eq!(error.status(), Some(400));
+    // The response body still reaches the caller.
+    assert!(error.message().contains("bad request"), "{error}");
+}
+
+#[tokio::test]
+async fn invalid_credentials_are_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("bad key"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = chat_provider(&server).complete(hello()).await.unwrap_err();
+    assert_eq!(error.kind(), rynna_core::ProviderErrorKind::Auth);
+}
+
+#[tokio::test]
+async fn exhausted_retries_surface_the_final_response_body() {
+    let server = MockServer::start().await;
+    // Persistent rate limiting: the initial attempt plus two retries, then give up
+    // with a classified error that still carries the provider's own message.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("still limited"))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let error = chat_provider(&server).complete(hello()).await.unwrap_err();
+    assert!(error.is_transient(), "429 stays transient when exhausted");
+    assert_eq!(error.status(), Some(429));
+    assert!(error.message().contains("still limited"), "{error}");
+}
+
+#[tokio::test]
+async fn a_long_retry_after_stops_retrying_rather_than_sleeping() {
+    let server = MockServer::start().await;
+    // Sleeping 120s would burn the caller's whole allowance, so we surface the
+    // transient error immediately and let the caller decide to resume later.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "120")
+                .set_body_string("come back later"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = chat_provider(&server).complete(hello()).await.unwrap_err();
+    assert!(error.is_transient());
+    assert_eq!(
+        error.retry_after(),
+        Some(std::time::Duration::from_secs(120))
+    );
+}
+
+#[tokio::test]
+async fn a_context_overflow_is_distinguished_from_other_client_errors() {
+    let server = MockServer::start().await;
+    // Providers report an oversized prompt as an ordinary 400, which is otherwise
+    // indistinguishable from a malformed request. The caller needs the difference.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": {
+                "code": "context_length_exceeded",
+                "message": "This model's maximum context length is 200000 tokens",
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = chat_provider(&server).complete(hello()).await.unwrap_err();
+    assert_eq!(error.kind(), rynna_core::ProviderErrorKind::ContextOverflow);
+    assert!(!error.is_transient(), "compaction fixes this, not a retry");
+}
+
+#[tokio::test]
+async fn an_ordinary_client_error_is_not_treated_as_a_context_overflow() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("unknown parameter"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = chat_provider(&server).complete(hello()).await.unwrap_err();
+    assert_eq!(error.kind(), rynna_core::ProviderErrorKind::Permanent);
 }
