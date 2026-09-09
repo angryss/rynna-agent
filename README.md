@@ -490,3 +490,37 @@ Stateful routes (under the same deployment trust boundary as conversation conten
 - `POST /v1/workflow-runs/{id}`: `profile`, `session_id`, `expected_revision`, and `action` (`pause`, `cancel`, `resume`, `steer`). Resume includes `acknowledge_uncertain`; steer includes `text` and optional replacement `criteria`. Stale revisions conflict. Poll snapshots every two seconds while observing a run; deduplicate visible outputs by run ID plus event ID.
 
 UUIDs identify runs and conversations; they are not authentication. Distributed workers, scheduling, nested/parallel workflows and CLI workflow commands are not included. Before rollback, pause/cancel runs and stop the host, retain run files, and back up the catalog. Restore the pre-workflow catalog if an older binary rejects its workflow fields; do not ask an older binary to resume new records.
+
+## Checking configuration
+
+`rynna doctor` validates the catalog without contacting a model provider, so a
+configuration problem surfaces before a chat session or an unattended run hits
+it.
+
+```bash
+rynna doctor
+rynna doctor --config ./rynna.toml --output json
+```
+
+For every profile it checks that:
+
+- the catalog and the default profile resolve;
+- each enabled provider has a provider to use, and any `api_key_env` variable it
+  names is set;
+- a `claude-subscription` program exists, or warns when a bare program name does
+  not resolve on the current `PATH`;
+- filesystem capability roots and command working directories exist and are
+  directories;
+- every mapped command program exists and is executable;
+- every active skill has a readable `SKILL.md`.
+
+It performs no network I/O and never reads or prints a credential value — it
+reports only whether the named variable is set. All problems are reported in one
+run rather than stopping at the first.
+
+The exit status is `1` when any check fails and `0` otherwise, including when
+only warnings are reported, so it can gate a deploy or wrap a cron entry:
+
+```bash
+rynna doctor && rynna run "summarize today's alerts"
+```
