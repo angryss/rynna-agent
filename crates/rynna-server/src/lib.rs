@@ -1292,7 +1292,9 @@ enum StreamResponseEvent {
     Thinking { content: String },
     Content { content: String },
     Done { message: Message },
-    Error { message: String },
+    // The code is what a client can branch on; without it a streamed failure is
+    // only human-readable, and streaming is the primary web flow.
+    Error { code: &'static str, message: String },
 }
 
 impl From<&CompletionDelta> for StreamResponseEvent {
@@ -1360,9 +1362,13 @@ async fn respond_stream(
         };
         let event = match result {
             Ok(message) => StreamResponseEvent::Done { message },
-            Err(error) => StreamResponseEvent::Error {
-                message: ApiError::from(error).message,
-            },
+            Err(error) => {
+                let error = ApiError::from(error);
+                StreamResponseEvent::Error {
+                    code: error.code,
+                    message: error.message,
+                }
+            }
         };
         let _ = sender.send(event);
     });
@@ -1416,12 +1422,19 @@ impl From<AgentError> for ApiError {
                 code: "provider_error",
                 message: "model provider request failed".to_owned(),
             },
-            AgentError::ToolDiscovery(_)
-            | AgentError::ToolLoopLimit(_)
+            // Running out of turns, calls, or time is the agent reaching a bound,
+            // not a tool failing. `tool_loop_error` reads as the latter and sends
+            // the reader looking for a broken tool, so give exhaustion its own code.
+            AgentError::ToolLoopLimit(_)
             | AgentError::ToolCallLimit(_)
             | AgentError::ToolResultByteLimit(_)
             | AgentError::ToolExecutionDeadline(_)
             | AgentError::ToolLoopDeadline(_) => Self {
+                status: StatusCode::BAD_GATEWAY,
+                code: "agent_budget_exhausted",
+                message: error.to_string(),
+            },
+            AgentError::ToolDiscovery(_) => Self {
                 status: StatusCode::BAD_GATEWAY,
                 code: "tool_loop_error",
                 message: error.to_string(),

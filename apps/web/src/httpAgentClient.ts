@@ -305,7 +305,9 @@ export class HttpAgentClient implements AgentClient {
         } else if (isDoneEvent(event)) {
           result = { message: event.message };
         } else if (isErrorEvent(event)) {
-          throw new Error(event.message);
+          // Carry the machine-readable code so callers can branch on the failure
+          // rather than matching on prose.
+          throw Object.assign(new Error(event.message), { code: event.code });
         } else {
           throw new Error('Rynna API returned an invalid stream event');
         }
@@ -392,7 +394,9 @@ function isDoneEvent(value: unknown): value is { kind: 'done'; message: RespondR
   );
 }
 
-function isErrorEvent(value: unknown): value is { kind: 'error'; message: string } {
+function isErrorEvent(
+  value: unknown,
+): value is { kind: 'error'; message: string; code?: string } {
   return Boolean(
     value &&
       typeof value === 'object' &&
