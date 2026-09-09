@@ -239,3 +239,49 @@ it('uses the same scoped and revisioned workflow contracts through IPC', async (
   invoke.mockRejectedValueOnce(new Error('stale revision'));
   await expect(client.controlWorkflow('run', control)).rejects.toThrow('stale revision');
 });
+
+it.each([true, false])('cancels a desktop response when stopped before started=%s', async (early) => {
+  const channel = { onmessage: null as ((message: unknown) => void) | null };
+  let finish: (reason: unknown) => void = () => {};
+  const invoke = vi.fn((command: string) => command === 'cancel_response'
+    ? Promise.resolve().then(() => { finish('Response stopped'); })
+    : new Promise((_, reject) => { finish = reject; }));
+  const client = new TauriAgentClient(invoke, () => channel);
+  const abort = new AbortController();
+  const delta = vi.fn();
+  const pending = client.respond({ prompt: 'Think', history: [] }, delta, abort.signal);
+  const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  if (early) abort.abort();
+  channel.onmessage?.({ kind: 'started' });
+  if (!early) abort.abort();
+  channel.onmessage?.({ kind: 'content', content: 'late' });
+  await rejected;
+  expect(invoke).toHaveBeenCalledWith('cancel_response', { responseId: expect.any(String) });
+  expect(delta).not.toHaveBeenCalled();
+});
+
+it('does not dispatch an already aborted request', async () => {
+  const invoke = vi.fn();
+  const controller = new AbortController(); controller.abort();
+  await expect(new TauriAgentClient(invoke).respond({ prompt: 'Hi', history: [] }, undefined, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  expect(invoke).not.toHaveBeenCalled();
+});
+
+it('preserves portable summaries through the desktop context command', async () => {
+  const response = { history: [{ role: 'assistant', content: 'Visible answer', provider_context: { provider: 'conversation_summary', state: 'Remember this' } }], size: { current_tokens: 200, max_tokens: 4000 }, compacted: true, limit_known: true };
+  const invoke = vi.fn().mockResolvedValue(response);
+  const client = new TauriAgentClient(invoke);
+  expect(await client.conversationContext({ profile: 'work', history: [], compact: true })).toEqual(response);
+  expect(invoke).toHaveBeenCalledWith('conversation_context', { request: { profile: 'work', history: [], compact: true } });
+  invoke.mockResolvedValueOnce({ history: [] });
+  await expect(client.conversationContext({ history: [] })).rejects.toThrow('invalid context data');
+});
+
+it('requests a session title through the dedicated desktop command', async () => {
+  const invoke = vi.fn().mockResolvedValue('Rust Code Review');
+  const client = new TauriAgentClient(invoke);
+  expect(await client.sessionTitle({ prompt: 'Review Rust code', profile: 'work' })).toBe('Rust Code Review');
+  expect(invoke).toHaveBeenCalledWith('session_title', { request: { prompt: 'Review Rust code', profile: 'work' } });
+  invoke.mockResolvedValueOnce('');
+  await expect(client.sessionTitle({ prompt: 'Review' })).rejects.toThrow('invalid session title');
+});

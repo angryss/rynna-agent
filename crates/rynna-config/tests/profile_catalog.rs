@@ -1136,6 +1136,7 @@ fn editable_profile(name: &str, model: &str) -> Profile {
             model: model.to_owned(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }],
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
@@ -1587,6 +1588,7 @@ model = "mlx-community/Qwen3.8-27B-8bit"
             model: "/models/my-custom-model".to_owned(),
             enabled: true,
             is_default: false,
+            context_window: None,
         });
         catalog.update_profile("local", profile).unwrap();
         let resolved = ProfileCatalog::load(&path)
@@ -1622,6 +1624,7 @@ fn built_in_catalog_accepts_custom_mlx_models_without_changing_ollama_default() 
         model: "my-custom-mlx-model".to_owned(),
         enabled: true,
         is_default: false,
+        context_window: None,
     });
     catalog.update_profile("default", profile).unwrap();
     let resolved = catalog.resolve("default").unwrap();

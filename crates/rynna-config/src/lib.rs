@@ -754,6 +754,7 @@ impl ProfileCatalog {
                         model: DEFAULT_MODEL.to_owned(),
                         enabled: true,
                         is_default: true,
+                        context_window: None,
                     }],
                     provider: None,
                     model: None,
@@ -1116,6 +1117,7 @@ impl ProfileCatalog {
                     model,
                     enabled: true,
                     is_default: true,
+                    context_window: None,
                 });
             }
             if !profile.providers.iter().any(|provider| provider.is_default)

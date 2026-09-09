@@ -47,6 +47,7 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
                 model: format!("{name}-model"),
                 enabled: true,
                 is_default: true,
+                context_window: None,
             }],
             active_skills: Vec::new(),
             mcp_servers: Vec::new(),
@@ -137,6 +138,7 @@ async fn model_selection_routes_both_modes_without_mutating_defaults() {
         model: "second".into(),
         enabled: true,
         is_default: false,
+        context_window: None,
     };
     metadata.providers.push(second.clone());
     let agent =
@@ -207,6 +209,7 @@ fn disabled_models_and_unknown_thinking_are_rejected() {
         model: "disabled".into(),
         enabled: false,
         is_default: false,
+        context_window: None,
     });
     let profiles = AgentProfiles::new("local", vec![(metadata, agent)]).unwrap();
     let selection = rynna_core::ModelSelection {
@@ -343,4 +346,107 @@ async fn project_managed_contexts_persist_across_requests_and_remain_isolated() 
         error,
         ProfileAgentError::Agent(AgentError::InvalidHistory)
     ));
+}
+
+#[tokio::test]
+async fn session_titles_use_only_the_opening_submission_without_profile_instructions_or_tools() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (metadata, _) = profile("work", "unused");
+    let agent = Agent::new(
+        Arc::new(RecordingProvider(requests.clone())),
+        "Private profile instructions",
+    );
+    let profiles = AgentProfiles::new("work", [(metadata, agent)]).unwrap();
+    let title = profiles
+        .session_title(&rynna_core::SessionTitleRequest {
+            profile: None,
+            selection: None,
+            prompt: "Review my Rust application".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(title, "recorded");
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].tools.is_empty());
+    assert_eq!(requests[0].messages.len(), 2);
+    assert_eq!(
+        requests[0].messages[1],
+        Message::user("Review my Rust application")
+    );
+    assert!(
+        !requests[0].messages[0]
+            .content
+            .contains("Private profile instructions")
+    );
+}
+
+#[tokio::test]
+async fn session_titles_reject_blank_submissions_and_invalid_model_output() {
+    for reply in [
+        "",
+        "Two\nlines",
+        "hidden\u{200b}text",
+        "\u{202e}override",
+        "This title is intentionally far too long to be a short session label and should never replace the fallback name in saved history.",
+    ] {
+        let profiles = AgentProfiles::new("work", [profile("work", reply)]).unwrap();
+        assert!(
+            profiles
+                .session_title(&rynna_core::SessionTitleRequest {
+                    profile: None,
+                    selection: None,
+                    prompt: "Review code".into(),
+                })
+                .await
+                .is_err()
+        );
+    }
+    let profiles = AgentProfiles::new("work", [profile("work", "Code review")]).unwrap();
+    assert!(
+        profiles
+            .session_title(&rynna_core::SessionTitleRequest {
+                profile: None,
+                selection: None,
+                prompt: " \n ".into(),
+            })
+            .await
+            .is_err()
+    );
+    assert!(
+        profiles
+            .session_title(&rynna_core::SessionTitleRequest {
+                profile: Some("missing".into()),
+                selection: None,
+                prompt: "Review code".into(),
+            })
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn session_title_generation_times_out() {
+    struct HangingProvider;
+    #[async_trait]
+    impl ModelProvider for HangingProvider {
+        async fn complete(&self, _: CompletionRequest) -> Result<Completion, ProviderError> {
+            std::future::pending().await
+        }
+    }
+    let (metadata, _) = profile("work", "unused");
+    let profiles = AgentProfiles::new(
+        "work",
+        [(metadata, Agent::new(Arc::new(HangingProvider), "policy"))],
+    )
+    .unwrap();
+    let error = profiles
+        .session_title(&rynna_core::SessionTitleRequest {
+            profile: None,
+            selection: None,
+            prompt: "Review code".into(),
+        })
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"));
 }

@@ -1,8 +1,10 @@
+import { isContextResponse, type ContextRequest, type ContextResponse } from '@rynna/ui';
 import type { Workflow, WorkflowMetadata, WorkflowStart, WorkflowRun, WorkflowControl } from '@rynna/ui';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { isMcpSettings, isMemorySettings } from '@rynna/ui';
 import type {
   AgentClient,
+  SessionTitleRequest,
   McpSettings,
   MemorySettings,
   MemorySettingsInput,
@@ -34,6 +36,18 @@ export class TauriAgentClient implements AgentClient {
   ) {
     this.invoke = invoker;
     this.createChannel = createChannel;
+  }
+
+  async sessionTitle(request: SessionTitleRequest): Promise<string> {
+    const title = await this.invoke('session_title', { request });
+    if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new Error('Rynna returned an invalid session title');
+    return title;
+  }
+
+  async conversationContext(request: ContextRequest): Promise<ContextResponse> {
+    const response = await this.invoke('conversation_context', { request });
+    if (!isContextResponse(response)) throw new Error('Rynna returned invalid context data');
+    return response;
   }
 
   async listWorkflows(profile: string): Promise<WorkflowMetadata[]> { return await this.invoke('list_workflows', { profile }) as WorkflowMetadata[]; }
@@ -156,31 +170,59 @@ export class TauriAgentClient implements AgentClient {
   async respond(
     request: RespondRequest,
     onDelta?: CompletionDeltaHandler,
+    signal?: AbortSignal,
   ): Promise<RespondResponse> {
+    signal?.throwIfAborted();
+    const responseId = signal ? crypto.randomUUID() : undefined;
+    let started = false;
+    let cancellation: Promise<unknown> | undefined;
+    let cancelFailure: (reason: unknown) => void = () => {};
+    const failedCancellation = new Promise<never>((_, reject) => { cancelFailure = reject; });
+    const cancel = () => {
+      if (started && signal?.aborted) {
+        cancellation = this.invoke('cancel_response', { responseId });
+        void cancellation.catch(cancelFailure);
+      }
+    };
     let command = 'respond';
     let args: Record<string, unknown> = { request };
     let invalidDelta = false;
-    if (onDelta) {
+    if (onDelta || signal) {
       command = 'respond_stream';
       const onEvent = this.createChannel();
-      onEvent.onmessage = (message) => {
-        if (isCompletionDelta(message)) {
-          onDelta(message);
+      onEvent.onmessage = (message: unknown) => {
+        if (responseId && typeof message === 'object' && message !== null && 'kind' in message && message.kind === 'started') {
+          started = true;
+          cancel();
+        } else if (isCompletionDelta(message)) {
+          if (!signal?.aborted) onDelta?.(message);
         } else {
           invalidDelta = true;
         }
       };
-      args = { request, onEvent };
+      args = { request, onEvent, ...(responseId ? { responseId } : {}) };
     }
 
-    const response = await this.invoke(command, args);
-    if (invalidDelta) {
-      throw new Error('Rynna desktop returned invalid stream data');
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      const response = await Promise.race([this.invoke(command, args), failedCancellation]);
+      signal?.throwIfAborted();
+      if (invalidDelta) {
+        throw new Error('Rynna desktop returned invalid stream data');
+      }
+      if (!isRespondResponse(response)) {
+        throw new Error('Rynna desktop returned an invalid response');
+      }
+      return response;
+    } catch (error) {
+      if (signal?.aborted && cancellation) {
+        await cancellation;
+        signal.throwIfAborted();
+      }
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', cancel);
     }
-    if (!isRespondResponse(response)) {
-      throw new Error('Rynna desktop returned an invalid response');
-    }
-    return response;
   }
 }
 

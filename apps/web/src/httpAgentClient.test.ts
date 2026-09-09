@@ -268,3 +268,36 @@ it('scopes workflow reads and controls and accepts successful deletion without J
   fetcher.mockResolvedValueOnce(new Response('{"error":{"message":"stale revision"}}', { status: 409 }));
   await expect(client.controlWorkflow('run', control)).rejects.toThrow('stale revision');
 });
+
+it('passes cancellation to streaming fetch even without a delta handler', async () => {
+  const controller = new AbortController();
+  const fetcher = vi.fn((_url, init) => new Promise<Response>((_, reject) => {
+    init.signal.addEventListener('abort', () => reject(init.signal.reason));
+  }));
+  const client = new HttpAgentClient('/v1/respond', fetcher);
+  const pending = client.respond({ prompt: 'Think', history: [] }, undefined, controller.signal);
+  const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  controller.abort();
+  await rejected;
+  expect(fetcher).toHaveBeenCalledWith('/v1/respond/stream', expect.objectContaining({ signal: controller.signal }));
+});
+
+it('preserves portable summaries and validates context API responses', async () => {
+  const history = [{ role: 'assistant', content: 'Visible answer', provider_context: { provider: 'conversation_summary', state: 'Remember this' } }];
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ history, size: { current_tokens: 200, max_tokens: 4000 }, compacted: true, limit_known: true })));
+  const client = new HttpAgentClient('/custom/v1/respond', fetcher);
+  expect((await client.conversationContext({ history: [], compact: true })).history).toEqual(history);
+  expect(fetcher.mock.calls[0]![0]).toBe('/custom/v1/context');
+  fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ history, size: { current_tokens: 0, max_tokens: 0 }, compacted: true, limit_known: true })));
+  await expect(client.conversationContext({ history: [] })).rejects.toThrow('invalid context data');
+});
+
+it('requests a session title independently of the chat endpoint', async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify('Rust Code Review')));
+  const client = new HttpAgentClient('/custom/v1/respond', fetcher);
+  expect(await client.sessionTitle({ prompt: 'Review Rust code', profile: 'work' })).toBe('Rust Code Review');
+  expect(fetcher.mock.calls[0]![0]).toBe('/custom/v1/session-title');
+  expect(JSON.parse(fetcher.mock.calls[0]![1].body)).toEqual({ prompt: 'Review Rust code', profile: 'work' });
+  fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ message: 'bad' })));
+  await expect(client.sessionTitle({ prompt: 'Review' })).rejects.toThrow('invalid session title');
+});

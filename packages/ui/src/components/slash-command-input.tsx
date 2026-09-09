@@ -11,6 +11,7 @@ export const slashCommands = [
   { name: '/model', description: 'Choose a model and thinking level' },
   { name: '/settings', description: 'Open Settings' },
   { name: '/help', description: 'Show available commands' },
+  { name: '/compact', description: 'Summarize context while keeping the transcript' },
 ] as const;
 
 export function SlashCommandInput({ value, onChange, onCommand, busy }: {

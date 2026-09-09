@@ -56,6 +56,7 @@ enum SlashAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandAction {
+    Compact,
     Model,
     Clear,
     Help,
@@ -109,6 +110,12 @@ const SLASH_COMMANDS: &[SlashCommand] = &[
             description: "Alias for /quit",
         }],
     },
+    SlashCommand {
+        name: "/compact",
+        description: "Summarize context; keep the transcript",
+        action: SlashAction::Local(CommandAction::Compact),
+        aliases: &[],
+    },
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,6 +140,7 @@ struct ChatUi {
     cursor: usize,
     profile: String,
     model: String,
+    context_label: String,
     busy: bool,
     scroll_from_bottom: u16,
     selected_command: usize,
@@ -147,6 +155,7 @@ impl ChatUi {
             cursor: 0,
             profile: profile.into(),
             model: model.into(),
+            context_label: String::new(),
             busy: false,
             scroll_from_bottom: 0,
             selected_command: 0,
@@ -560,6 +569,7 @@ fn command_suggestions(commands: &[SlashCommandMatch], selected_command: usize) 
 
 fn apply_command(ui: &mut ChatUi, history: &mut Vec<Message>, command: CommandAction) -> bool {
     match command {
+        CommandAction::Compact => false,
         CommandAction::Model => {
             if !ui.busy {
                 ui.picker.show();
@@ -774,7 +784,7 @@ fn render(frame: &mut Frame<'_>, ui: &ChatUi) {
             Style::default().fg(if ui.busy { Color::Yellow } else { Color::Green }),
         ),
         Span::styled(
-            format!("{} · {}", ui.profile, ui.model),
+            format!("{} · {} · {}", ui.context_label, ui.profile, ui.model),
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(controls, Style::default().fg(Color::DarkGray)),
@@ -805,6 +815,7 @@ fn render(frame: &mut Frame<'_>, ui: &ChatUi) {
 }
 
 enum ResponseEvent {
+    Compacted(Result<rynna_core::ContextResponse, String>),
     Delta(CompletionDelta),
     Finished {
         prompt: String,
@@ -874,6 +885,33 @@ pub async fn run(
     let (response_tx, mut response_rx) = mpsc::unbounded_channel::<ResponseEvent>();
 
     loop {
+        if let Ok(selected) = profiles
+            .clone()
+            .with_project(Some(profile), project)
+            .map_err(anyhow::Error::from)
+            .and_then(|p| {
+                p.with_model_selection(Some(profile), selection.as_ref())
+                    .map_err(anyhow::Error::from)
+            })
+            && let Some(agent) = selected.clone_agent(profile)
+            && let Ok(size) = agent.conversation_size(&history, &ui.input)
+        {
+            let known = ui
+                .picker
+                .pairs
+                .iter()
+                .filter(|p| {
+                    selection
+                        .as_ref()
+                        .is_none_or(|s| p.provider == s.provider && p.model == s.model)
+                })
+                .all(|p| rynna_core::context::model_window(p).is_some());
+            ui.context_label = format!(
+                "~{}% {}",
+                size.current_tokens * 100 / size.max_tokens,
+                if known { "context" } else { "budget" }
+            );
+        }
         session
             .terminal
             .draw(|frame| render(frame, &ui))
@@ -933,6 +971,17 @@ pub async fn run(
                                 continue;
                             }
                             InputAction::Command(command) => {
+                                if matches!(command, CommandAction::Compact) {
+                                    ui.busy = true;
+                                    let selected = profiles.clone().with_project(Some(profile), project)?.with_model_selection(Some(profile), selection.as_ref())?;
+                                    let request = rynna_core::ContextRequest { profile: Some(profile.to_owned()), history: history.clone(), compact: true, selection: selection.clone(), ..Default::default() };
+                                    let sender = response_tx.clone();
+                                    tokio::spawn(async move {
+                                        let result = selected.conversation_context(&request).await.map_err(|e| super::sanitize_terminal_text(&e.to_string()));
+                                        let _ = sender.send(ResponseEvent::Compacted(result));
+                                    });
+                                    continue;
+                                }
                                 if matches!(command, CommandAction::Clear) {
                                     memory_session = uuid::Uuid::new_v4();
                                 }
@@ -987,6 +1036,13 @@ pub async fn run(
             }
             Some(response) = response_rx.recv() => {
                 match response {
+                    ResponseEvent::Compacted(result) => {
+                        ui.busy = false;
+                        match result {
+                            Ok(result) => { history = result.history; ui.push_message(MessageKind::Assistant, if result.compacted { "Context compacted. Transcript preserved." } else { "No context to compact yet." }); }
+                            Err(error) => ui.push_message(MessageKind::Error, error),
+                        }
+                    }
                     ResponseEvent::Delta(delta) => ui.append_completion_delta(&delta),
                     ResponseEvent::Finished { prompt, result } => {
                         ui.busy = false;
@@ -1055,6 +1111,7 @@ mod tests {
             model: "small".into(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }];
         ui.input = "/model".into();
         ui.cursor = ui.input.len();
@@ -1075,6 +1132,7 @@ mod tests {
                 model: "small".into(),
                 enabled: true,
                 is_default: true,
+                context_window: None,
             }];
             ui.input = input.into();
             ui.cursor = ui.input.len();
@@ -1101,6 +1159,7 @@ mod tests {
             model: "small".into(),
             enabled: true,
             is_default: true,
+            context_window: None,
         }];
         ui.input = "Unfinished prompt".into();
         ui.cursor = 5;

@@ -26,9 +26,18 @@ async fn chat_removes_terminal_control_characters() {
         .env("RYNNA_API_BASE", format!("{}/v1", server.uri()))
         .env("RYNNA_MODEL", "test-model");
 
-    command.assert().success().stdout(predicate::eq(
-        "Rynna interactive mode. /model selects a model; /thinking sets effort; /quit exits.\nyou> rynna> safe[2J]0;owned31m\nyou> ",
-    ));
+    // The estimate includes machine-specific profile context; sanitation must not depend on it.
+    command.assert().success().stdout(
+        predicate::str::is_match(concat!(
+            r"^Rynna interactive mode\. /compact summarizes context; /model selects a model; /thinking sets effort; /quit exits\.",
+            "\nyou> rynna> ",
+            r"safe\[2J\]0;owned31m",
+            "\n",
+            r"Context: ~[0-9]+% used \([0-9]+ / [0-9]+ estimated tokens\)\.",
+            "\nyou> $",
+        ))
+        .unwrap(),
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -98,7 +107,7 @@ async fn exit_alias_quits_without_contacting_the_provider() {
         .env("RYNNA_MODEL", "test-model");
 
     command.assert().success().stdout(predicate::eq(
-        "Rynna interactive mode. /model selects a model; /thinking sets effort; /quit exits.\nyou> ",
+        "Rynna interactive mode. /compact summarizes context; /model selects a model; /thinking sets effort; /quit exits.\nyou> ",
     ));
 }
 

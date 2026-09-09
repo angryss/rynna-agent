@@ -311,6 +311,7 @@ mod tests {
                     model: model.into(),
                     enabled: true,
                     is_default: i == 0,
+                    context_window: None,
                 })
                 .collect(),
             ..Default::default()

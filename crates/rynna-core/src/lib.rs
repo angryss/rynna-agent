@@ -37,6 +37,8 @@ pub enum ProviderContext {
     AnthropicCompaction(Option<String>),
     Anthropic(Vec<serde_json::Value>),
     ManagedToken(String),
+    /// Portable, untrusted summary of the history before this message.
+    ConversationSummary(String),
 }
 
 fn has_direct_compaction(message: &Message) -> bool {
@@ -224,7 +226,7 @@ pub struct CompletionRequest {
     pub tools: Vec<ToolDefinition>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ContextSize {
     pub current_tokens: usize,
     pub max_tokens: usize,
@@ -283,7 +285,10 @@ impl ThresholdContextManager {
         })
     }
 
-    fn estimate(request: &CompletionRequest, server_compaction: Option<ServerCompaction>) -> usize {
+    pub fn estimate(
+        request: &CompletionRequest,
+        server_compaction: Option<ServerCompaction>,
+    ) -> usize {
         let context_start = server_compaction
             .and_then(|server_compaction| {
                 request
@@ -768,6 +773,10 @@ impl ModelProvider for FallbackProvider {
 pub enum AgentError {
     #[error("user input must not be blank")]
     BlankInput,
+    #[error(
+        "context is too large; shorten the latest message or increase the configured model context window"
+    )]
+    ContextLimit,
     #[error(transparent)]
     ToolDiscovery(#[from] ToolError),
     #[error("conversation history must contain only user and assistant messages")]
@@ -838,11 +847,16 @@ impl ManagedContextStore {
     }
 }
 
+pub mod process;
 pub mod subagents;
 pub mod workflow_runs;
 pub mod workflows;
 pub use subagents::Subagent;
 
+pub mod session_title;
+pub use session_title::SessionTitleRequest;
+pub mod context;
+pub use context::{ContextRequest, ContextResponse};
 pub mod memory;
 pub use memory::{
     MemoryConversation, MemoryError, MemoryMessage, MemoryProvider, flush_memory_writes,
@@ -980,16 +994,9 @@ impl Agent {
         self.respond_with(history, input, true, on_delta).await
     }
 
-    async fn respond_with(
-        &self,
-        history: &[Message],
-        input: &str,
-        stream: bool,
-        on_delta: &mut (dyn for<'delta> FnMut(&'delta CompletionDelta) + Send),
-    ) -> Result<Message, AgentError> {
-        if input.trim().is_empty() {
-            return Err(AgentError::BlankInput);
-        }
+    fn history_messages(&self, history: &[Message]) -> Result<Vec<Message>, AgentError> {
+        let expanded = context::expand_history(history)?;
+        let history = expanded.as_slice();
         let latest_managed = history.iter().rposition(|message| {
             matches!(
                 message.provider_context,
@@ -1030,6 +1037,20 @@ impl Agent {
                 _ => return Err(AgentError::InvalidHistory),
             }
         }
+        Ok(messages)
+    }
+
+    async fn respond_with(
+        &self,
+        history: &[Message],
+        input: &str,
+        stream: bool,
+        on_delta: &mut (dyn for<'delta> FnMut(&'delta CompletionDelta) + Send),
+    ) -> Result<Message, AgentError> {
+        if input.trim().is_empty() {
+            return Err(AgentError::BlankInput);
+        }
+        let mut messages = self.history_messages(history)?;
         if let Some(memory) = &self.memory {
             match tokio::time::timeout(std::time::Duration::from_secs(10), memory.recall(input))
                 .await
@@ -1085,12 +1106,39 @@ impl Agent {
             .values()
             .map(|tool| tool.definition())
             .collect::<Vec<_>>();
+        let mut portable_summary = None;
+        let initial = CompletionRequest {
+            messages: messages.clone(),
+            tools: tools.clone(),
+        };
+        if ThresholdContextManager::estimate(&initial, self.provider.server_compaction())
+            >= self.context_size().max_tokens * 3 / 4
+        {
+            if tool_budget.ceiling.is_some() {
+                return Err(AgentError::WorkflowContextLimit);
+            }
+            let (prepared, summary) = self.summarize_prefix(initial).await?;
+            messages = prepared.messages;
+            portable_summary = summary;
+        } else if let Some(index) = history.iter().rposition(|m| {
+            matches!(
+                m.provider_context,
+                Some(ProviderContext::ConversationSummary(_))
+            )
+        }) && let Some(ProviderContext::ConversationSummary(summary)) =
+            &history[index].provider_context
+        {
+            portable_summary = Some(format!(
+                "{summary}\n\n{}",
+                context::transcript(&history[index..])
+            ));
+        }
         let mut tool_calls_used = 0;
         let mut final_answer_only = false;
         let tool_deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(MAX_TOOL_EXECUTION_SECONDS);
         for turn in 0..MAX_MODEL_TURNS {
-            let request = CompletionRequest {
+            let mut request = CompletionRequest {
                 messages: messages.clone(),
                 tools: if final_answer_only {
                     Vec::new()
@@ -1098,6 +1146,20 @@ impl Agent {
                     tools.clone()
                 },
             };
+            if turn > 0
+                && ThresholdContextManager::estimate(&request, self.provider.server_compaction())
+                    >= self.context_size().max_tokens * 3 / 4
+            {
+                if tool_budget.ceiling.is_some() {
+                    return Err(AgentError::WorkflowContextLimit);
+                }
+                request.messages.push(Message::user(format!(
+                    "Continue the original request using the summarized tool results: {input}"
+                )));
+                let (prepared, summary) = self.summarize_prefix(request).await?;
+                request = prepared;
+                portable_summary = summary;
+            }
             let plan = self
                 .context_manager
                 .prepare(request, self.provider.server_compaction());
@@ -1106,6 +1168,10 @@ impl Agent {
             {
                 return Err(AgentError::WorkflowContextLimit);
             }
+            if plan.size.current_tokens >= plan.size.max_tokens {
+                return Err(AgentError::ContextLimit);
+            }
+            messages = plan.request.messages.clone();
             let completion = if tools.is_empty() {
                 if stream {
                     self.provider
@@ -1174,6 +1240,12 @@ impl Agent {
                                 messages[start..].to_vec(),
                             );
                         final_message.provider_context = Some(ProviderContext::ManagedToken(token));
+                    }
+                    if let Some(summary) = &portable_summary {
+                        final_message.provider_context =
+                            Some(ProviderContext::ConversationSummary(format!(
+                                "{summary}\n\nLatest user request:\n{input}"
+                            )));
                     }
                     if let Some(memory) = &self.memory {
                         self.retention_queue.enqueue(
@@ -1249,6 +1321,12 @@ pub struct ProfileProvider {
     pub enabled: bool,
     #[serde(default, rename = "default")]
     pub is_default: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "context::deserialize_window"
+    )]
+    pub context_window: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1328,6 +1406,7 @@ impl AgentProfiles {
         for (profile, mut agent) in profiles {
             subagents::validate(&profile.subagents)?;
             agent.subagents = Arc::new(profile.subagents.clone());
+            agent.context_manager = context::manager_for(&profile.providers);
             if profile.name.trim().is_empty() {
                 return Err(ProfileError::BlankName);
             }
@@ -1513,6 +1592,14 @@ impl AgentProfiles {
                     .then(|| agent.provider.clone())
             })
             .ok_or_else(|| ProviderError::new("model selection is unavailable for this profile"))?;
+        agent.context_manager = context::manager_for(
+            &metadata
+                .providers
+                .iter()
+                .filter(|p| p.provider == selection.provider && p.model == selection.model)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
         agent.provider = match selection.thinking {
             ThinkingLevel::Default => provider,
             level => provider.with_thinking(level)?,
@@ -1560,6 +1647,7 @@ impl AgentProfiles {
         }
         subagents::validate(&profile.subagents)?;
         agent.subagents = Arc::new(profile.subagents.clone());
+        agent.context_manager = context::manager_for(&profile.providers);
         let mut indexed = (*self.profiles).clone();
         indexed.insert(profile.name.clone(), (profile, agent));
         self.profiles = Arc::new(indexed);

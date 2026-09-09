@@ -3,6 +3,7 @@ export type MessageRole = 'user' | 'assistant';
 export interface Message {
   role: MessageRole;
   content: string;
+  provider_context?: { provider: string; state: unknown };
 }
 
 export interface ModelSelection {
@@ -20,6 +21,29 @@ export interface RespondRequest {
   history: Message[];
 }
 
+export interface ContextRequest {
+  profile?: string;
+  project?: string;
+  selection?: ModelSelection;
+  session_id?: string;
+  history: Message[];
+  prompt?: string;
+  compact?: boolean;
+}
+export interface ContextResponse {
+  history: Message[];
+  size: { current_tokens: number; max_tokens: number };
+  compacted: boolean;
+  limit_known: boolean;
+}
+export function isContextResponse(value: unknown): value is ContextResponse {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as ContextResponse;
+  return Array.isArray(v.history) && v.history.every(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') &&
+    !!v.size && Number.isSafeInteger(v.size.current_tokens) && v.size.current_tokens >= 0 && Number.isSafeInteger(v.size.max_tokens) && v.size.max_tokens > 0 &&
+    typeof v.compacted === 'boolean' && typeof v.limit_known === 'boolean';
+}
+
 export interface RespondResponse {
   message: Message;
 }
@@ -33,6 +57,7 @@ export type CompletionDeltaHandler = (delta: CompletionDelta) => void;
 export interface ProfileProvider {
   provider: string;
   model: string;
+  context_window?: number;
   enabled?: boolean;
   default?: boolean;
 }
@@ -128,7 +153,11 @@ export function isMcpSettings(value: unknown): value is McpSettings {
   });
 }
 
+export interface SessionTitleRequest { profile?: string; selection?: ModelSelection; prompt: string }
+
 export interface AgentClient {
+  sessionTitle?(request: SessionTitleRequest): Promise<string>;
+  conversationContext?(request: ContextRequest): Promise<ContextResponse>;
   listWorkflows?(profile: string): Promise<WorkflowMetadata[]>;
   readWorkflow?(profile: string, id: string): Promise<Workflow>;
   saveWorkflow?(profile: string, workflow: Workflow): Promise<Workflow>;
@@ -141,7 +170,7 @@ export interface AgentClient {
   saveMcpSettings?(settings: McpSettings, profile: string): Promise<McpSettings>;
   getMemorySettings?(profile: string): Promise<MemorySettings>;
   saveMemorySettings?(settings: MemorySettingsInput, profile: string): Promise<MemorySettings>;
-  respond(request: RespondRequest, onDelta?: CompletionDeltaHandler): Promise<RespondResponse>;
+  respond(request: RespondRequest, onDelta?: CompletionDeltaHandler, signal?: AbortSignal): Promise<RespondResponse>;
   listProfiles?(): Promise<ProfileCatalog>;
   createProfile?(profile: Profile): Promise<Profile>;
   updateProfile?(name: string, profile: Profile): Promise<Profile>;

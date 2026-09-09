@@ -1162,9 +1162,10 @@ impl ClaudeCodeProvider {
         for name in CLAUDE_SUBSCRIPTION_CONFLICTING_ENV_VARS {
             version_command.env_remove(name);
         }
-        let mut version_child = version_command.spawn().map_err(|error| {
-            ProviderError::new(format!("failed to check Claude Code version: {error}"))
-        })?;
+        let (mut version_child, _version_group) =
+            rynna_core::process::ProcessGroup::spawn(&mut version_command).map_err(|error| {
+                ProviderError::new(format!("failed to check Claude Code version: {error}"))
+            })?;
         let version_stdout = match version_child.stdout.take() {
             Some(stdout) => stdout,
             None => {
@@ -1204,6 +1205,7 @@ impl ClaudeCodeProvider {
                 return Err(ProviderError::new("Claude Code version check timed out"));
             }
         };
+        drop(_version_group);
         if !version_status.success() {
             return Err(ProviderError::new(
                 "Claude Code version check did not complete successfully",
@@ -1263,8 +1265,7 @@ impl ClaudeCodeProvider {
         for name in CLAUDE_SUBSCRIPTION_CONFLICTING_ENV_VARS {
             command.env_remove(name);
         }
-        let mut child = command
-            .spawn()
+        let (mut child, _process_group) = rynna_core::process::ProcessGroup::spawn(&mut command)
             .map_err(|e| ProviderError::new(format!("failed to start Claude Code: {e}")))?;
         let mut stdin = match child.stdin.take() {
             Some(stdin) => stdin,

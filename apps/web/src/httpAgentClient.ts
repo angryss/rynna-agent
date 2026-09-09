@@ -1,7 +1,9 @@
+import { isContextResponse, type ContextRequest, type ContextResponse } from '@rynna/ui';
 import type { Workflow, WorkflowMetadata, WorkflowStart, WorkflowRun, WorkflowControl } from '@rynna/ui';
 import { isMcpSettings, isMemorySettings } from '@rynna/ui';
 import type {
   AgentClient,
+  SessionTitleRequest,
   McpSettings,
   MemorySettings,
   MemorySettingsInput,
@@ -33,6 +35,18 @@ export class HttpAgentClient implements AgentClient {
     this.profilesEndpoint = profilesEndpoint;
     this.providersEndpoint = endpoint.replace(/\/respond$/, '/providers');
     this.fetcher = fetcher;
+  }
+
+  async sessionTitle(request: SessionTitleRequest): Promise<string> {
+    const title = await this.providerRequest(this.endpoint.replace(/\/respond$/, '/session-title'), 'POST', request);
+    if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new Error('Rynna returned an invalid session title');
+    return title;
+  }
+
+  async conversationContext(request: ContextRequest): Promise<ContextResponse> {
+    const response = await this.providerRequest(this.endpoint.replace(/\/respond$/, '/context'), 'POST', request);
+    if (!isContextResponse(response)) throw new Error('Rynna returned invalid context data');
+    return response;
   }
 
   async listWorkflows(profile: string): Promise<WorkflowMetadata[]> { return await this.providerRequest(`${this.profilesEndpoint}/${encodeURIComponent(profile)}/workflows`, 'GET') as WorkflowMetadata[]; }
@@ -122,7 +136,7 @@ export class HttpAgentClient implements AgentClient {
     return body;
   }
 
-  private async providerRequest(endpoint: string, method: string, body?: ProviderInput | MemorySettingsInput | McpSettings | Workflow | WorkflowStart | WorkflowControl): Promise<unknown> {
+  private async providerRequest(endpoint: string, method: string, body?: SessionTitleRequest | ContextRequest | ProviderInput | MemorySettingsInput | McpSettings | Workflow | WorkflowStart | WorkflowControl): Promise<unknown> {
     const response = await this.fetcher(endpoint, {
       method,
       ...(body
@@ -205,11 +219,13 @@ export class HttpAgentClient implements AgentClient {
   async respond(
     request: RespondRequest,
     onDelta?: CompletionDeltaHandler,
+    signal?: AbortSignal,
   ): Promise<RespondResponse> {
-    if (onDelta) {
-      return this.respondStream(request, onDelta);
+    if (onDelta || signal) {
+      return this.respondStream(request, onDelta ?? (() => {}), signal);
     }
     const response = await this.fetcher(this.endpoint, {
+      signal,
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
@@ -236,8 +252,10 @@ export class HttpAgentClient implements AgentClient {
   private async respondStream(
     request: RespondRequest,
     onDelta: CompletionDeltaHandler,
+    signal?: AbortSignal,
   ): Promise<RespondResponse> {
     const response = await this.fetcher(`${this.endpoint}/stream`, {
+      signal,
       method: 'POST',
       headers: {
         accept: 'text/event-stream',
@@ -294,24 +312,29 @@ export class HttpAgentClient implements AgentClient {
       }
     };
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        pending += decoder.decode();
-        if (pending) {
-          pending += '\n\n';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          pending += decoder.decode();
+          if (pending) {
+            pending += '\n\n';
+          }
+          processRecords(true);
+          break;
         }
-        processRecords(true);
-        break;
+        pending += decoder.decode(value, { stream: true });
+        processRecords(false);
       }
-      pending += decoder.decode(value, { stream: true });
-      processRecords(false);
-    }
 
-    if (!result) {
-      throw new Error('Rynna API stream ended without a response');
+      if (!result) {
+        throw new Error('Rynna API stream ended without a response');
+      }
+      return result;
+    } finally {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
     }
-    return result;
   }
 }
 

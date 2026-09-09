@@ -1,4 +1,6 @@
 import { ThinkingContent } from './components/thinking-content';
+import { ArrowUp, Square } from 'lucide-react';
+import type { ContextResponse } from './contracts';
 import { SlashCommandInput, slashCommands } from './components/slash-command-input';
 import { newSessionId } from './sessions';
 import { WorkflowSettings } from './components/workflow-settings';
@@ -6,7 +8,7 @@ import { WorkflowPanel, workflowTerminal } from './components/workflow-panel';
 import type { WorkflowRun } from './contracts';
 import { ModelSelector } from './components/model-selector';
 import { McpSettingsPanel } from './components/mcp-settings';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { MemorySettingsPanel } from './components/memory-settings';
 import { ThemeToggle } from './components/theme-toggle';
@@ -119,11 +121,16 @@ export function App({ client }: AppProps) {
   const [sessions, setSessions] = useState<Session[]>(readSessions);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const workflowDraftId = useRef(newSessionId());
+  const [workflowDraft, setWorkflowDraft] = useState({ session: '', id: '' });
+  const namingSessions = useRef(new Set<string>());
   const workflowEvents = useRef(new Set<string>());
   const [workflowRunning, setWorkflowRunning] = useState(false);
   const [input, setInput] = useState('');
   const [modelOpenRequest, setModelOpenRequest] = useState(0);
   const [pending, setPending] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const activeResponse = useRef<AbortController | null>(null);
+  useEffect(() => () => activeResponse.current?.abort(), []);
   const [error, setError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [configuredProfiles, setConfiguredProfiles] = useState<Profile[]>([]);
@@ -165,6 +172,9 @@ export function App({ client }: AppProps) {
   const [profileProviders, setProfileProviders] = useState<ProfileProvider[]>([]);
   const [catalogProviderIds, setCatalogProviderIds] = useState<string[]>([]);
   const [modelProvider, setModelProvider] = useState('');
+  const [context, setContext] = useState<ContextResponse | null>(null);
+  const [compacting, setCompacting] = useState(false);
+  const [contextNotice, setContextNotice] = useState('');
   const [customModel, setCustomModel] = useState('');
   const [mlxApiBase, setMlxApiBase] = useState('http://127.0.0.1:8000/v1');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
@@ -364,6 +374,7 @@ export function App({ client }: AppProps) {
 
   function resetConversation() {
     setPending(false);
+    setCompacting(false);
     setMessages([]);
     setInput('');
     sessionId.current = null;
@@ -434,6 +445,7 @@ export function App({ client }: AppProps) {
     return {
       name: profileName.trim(),
       providers: profileProviders.map((provider, index) => ({
+        ...provider,
         provider: provider.provider.trim(),
         model: provider.model.trim(),
         enabled: provider.enabled !== false,
@@ -741,37 +753,69 @@ export function App({ client }: AppProps) {
   }
 
   const workflowSession = activeSessionId ?? workflowDraftId.current;
-  const selectedWorkflow = sessions.find(s => s.id === workflowSession)?.workflow_id ?? '';
+  const selectedWorkflow = sessions.find(s => s.id === workflowSession)?.workflow_id ?? (workflowDraft.session === workflowSession ? workflowDraft.id : '');
   const workflowSelected = Boolean(activeProfile && client.startWorkflow && client.listWorkflowRuns && selectedWorkflow);
   function saveWorkflowSelection(id: string) {
     const now = new Date().toISOString();
-    sessionId.current = workflowSession;
-    setActiveSessionId(workflowSession);
-    setSessions(current => {
-      const existing = current.find(s => s.id === workflowSession);
-      return [{ id: workflowSession, name: 'Workflow conversation', profile: selectedProfile ?? '', project: project ?? null,
-        messages: conversationHistory(messages), created_at: now, updated_at: now, ...existing, workflow_id: id }, ...current.filter(s => s.id !== workflowSession)];
-    });
+    setWorkflowDraft({ session: workflowSession, id });
+    setSessions(current => current.map(session => session.id === workflowSession
+      ? { ...session, workflow_id: id, updated_at: now } : session));
   }
+  function generateSessionName(id: string, prompt: string, profile: string | undefined, model = selection) {
+    if (!client.sessionTitle || namingSessions.current.has(id)) return;
+    namingSessions.current.add(id);
+    void client.sessionTitle({ prompt, profile, selection: model }).then(name => {
+      if (isSessionDeleted(id)) return;
+      setSessions(current => {
+        const stored = readSessions().find(session => session.id === id);
+        return current.map(session => {
+          if (session.id !== id || session.name_source !== 'derived') return session;
+          const latest = stored && stored.updated_at >= session.updated_at ? { ...session, ...stored } : session;
+          return { ...latest, name: stored?.name_source === 'user' ? stored.name : name, name_source: stored?.name_source === 'user' ? 'user' : 'llm' };
+        });
+      });
+    }).catch(() => { /* Keep the opening submission as a usable fallback. */ });
+  }
+
   function receiveWorkflow(run: WorkflowRun) {
     if (isSessionDeleted(run.start.session_id)) return;
     setWorkflowRunning(['running', 'pausing', 'cancelling'].includes(run.status));
     const saved = sessions.find(s => s.id === run.start.session_id);
+    sessionId.current = run.start.session_id;
+    setActiveSessionId(run.start.session_id);
     const known = new Set(saved?.workflow_event_ids ?? []);
     const events = run.events.filter(e => !known.has(`${run.id}:${e.id}`) && !workflowEvents.current.has(`${run.id}:${e.id}`));
     if (!events.length && saved?.workflow_run_id === run.id) return;
     events.forEach(e => workflowEvents.current.add(`${run.id}:${e.id}`));
     const additions: Message[] = events.map(e => ({ role: 'assistant', content: e.content }));
-    if (additions.length) setMessages(current => [...current, ...additions]);
+    if (!saved || additions.length) setMessages(current => {
+      const needsGoal = !saved && !current.some(message => message.role === 'user');
+      return [...current, ...(needsGoal ? [{ role: 'user' as const, content: run.start.goal }] : []), ...additions];
+    });
     const now = new Date().toISOString();
     setSessions(current => {
       const existing = current.find(s => s.id === run.start.session_id);
       const entry: Session = { id: run.start.session_id, profile: run.start.profile,
-        project: run.start.project, created_at: now, ...existing, name: existing?.name && existing.name !== 'Workflow conversation' ? existing.name : sessionName(run.start.goal), updated_at: now, workflow_run_id: run.id,
-        messages: [...(existing?.messages ?? []), ...additions], workflow_event_ids: [...(existing?.workflow_event_ids ?? []), ...events.map(e => `${run.id}:${e.id}`)] };
+        project: run.start.project, created_at: now, name_source: 'derived', ...existing, workflow_id: run.start.workflow_id, name: existing?.name && existing.name !== 'Workflow conversation' ? existing.name : sessionName(run.start.goal), updated_at: now, workflow_run_id: run.id,
+        messages: [...(existing?.messages ?? [{ role: 'user' as const, content: run.start.goal }]), ...additions], workflow_event_ids: [...(existing?.workflow_event_ids ?? []), ...events.map(e => `${run.id}:${e.id}`)] };
       return [entry, ...current.filter(s => s.id !== entry.id)];
     });
+    if (!saved) generateSessionName(run.start.session_id, run.start.goal, run.start.profile, run.start.selection);
   }
+
+  useEffect(() => {
+    let active = true;
+    if (!client.conversationContext || pending || workflowSelected) return;
+    const timer = setTimeout(() => {
+      void client.conversationContext!({ history: conversationHistory(messages), prompt: input,
+        profile: selectedProfile ?? undefined, project, selection }).then(result => {
+          if (active) setContext(result);
+        }).catch(() => { if (active) setContext(null); });
+    }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [client, messages, input, selectedProfile, project, selection, pending, workflowSelected]);
+
+  useEffect(() => { setContext(null); setContextNotice(''); }, [selectedProfile, project, selection, activeSessionId]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -801,6 +845,7 @@ export function App({ client }: AppProps) {
     }
     setError(null);
     switch (name.toLowerCase()) {
+      case '/compact': void compactConversation(); return;
       case '/new':
       case '/clear': startNewSession(project); return;
       case '/help': setInput('/'); document.getElementById('prompt')?.focus(); return;
@@ -817,7 +862,7 @@ export function App({ client }: AppProps) {
         if (!argument) { setInput('/title '); return; }
         if (!activeSessionId) { setError('Send a message before renaming this chat.'); return; }
         setSessions(current => current.map(session => session.id === activeSessionId
-          ? { ...session, name: argument, updated_at: new Date().toISOString() } : session));
+          ? { ...session, name: argument, name_source: 'user', updated_at: new Date().toISOString() } : session));
         break;
       case '/retry': {
         const index = messages.map(message => message.role).lastIndexOf('user');
@@ -844,34 +889,54 @@ export function App({ client }: AppProps) {
     setInput('');
   }
 
+  async function compactConversation() {
+    if (!client.conversationContext) { setError('Compaction is not available for this connection.'); return; }
+    if (conversationHistory(messages).length < 2) { setError('Send a message before compacting this chat.'); return; }
+    const id = sessionId.current;
+    const controller = new AbortController();
+    activeResponse.current = controller;
+    setPending(true);
+    setCompacting(true);
+    setContextNotice('');
+    setInput('');
+    try {
+      const result = await client.conversationContext({ profile: selectedProfile ?? undefined, project, selection,
+        session_id: id ?? undefined, history: conversationHistory(messages), compact: true });
+      if (activeResponse.current !== controller || sessionId.current !== id || controller.signal.aborted || (id && isSessionDeleted(id))) return;
+      let index = 0;
+      setMessages(messages.map(message => message.role === 'thinking' ? message : result.history[index++]!));
+      setSessions(current => current.map(session => session.id === id ? { ...session, messages: result.history, updated_at: new Date().toISOString() } : session));
+      setContext(result);
+      setContextNotice(result.compacted ? 'Context compacted. Your transcript is preserved.' : 'Context is already compact.');
+    } catch (error) {
+      if (activeResponse.current === controller && sessionId.current === id) setError(error instanceof Error ? error.message : 'Could not compact context.');
+    } finally {
+      if (activeResponse.current === controller) { activeResponse.current = null; setPending(false); setCompacting(false); }
+    }
+  }
+
   async function sendPrompt(prompt: string, displayHistory: DisplayMessage[]) {
+    setCompacting(false);
+    setContextNotice('');
     const previousMessages = messages;
     const history = conversationHistory(displayHistory);
     setError(null);
     setInput('');
+    const controller = new AbortController();
+    activeResponse.current = controller;
+    setStopping(false);
     setPending(true);
     setMessages([...displayHistory, { role: 'user', content: prompt }]);
 
     const currentSessionId = sessionId.current ?? newSessionId();
     sessionId.current = currentSessionId;
-    try {
-      const response = await client.respond({
-        session_id: currentSessionId,
-        ...(selection ? { selection } : {}),
-        ...(selectedProfile ? { profile: selectedProfile } : {}),
-        ...(project ? { project } : {}),
-        prompt,
-        history,
-      }, (delta) => {
-        if (sessionId.current === currentSessionId) setMessages((current) => appendDelta(current, delta));
-      });
-      if (sessionId.current !== currentSessionId || isSessionDeleted(currentSessionId)) return;
-      setMessages((current) => finalizeResponse(current, response.message));
+    let streamedMessages: DisplayMessage[] = [...displayHistory, { role: 'user', content: prompt }];
+    function saveMessages(visibleMessages: Message[]) {
       const now = new Date().toISOString();
-      const visibleMessages = [...history, { role: 'user' as const, content: prompt }, response.message];
       setSessions((current) => {
         const existing = current.find(session => session.id === currentSessionId);
         const saved: Session = {
+          name_source: 'derived',
           ...existing,
           id: currentSessionId,
           name: existing?.name ?? sessionName(prompt),
@@ -884,21 +949,59 @@ export function App({ client }: AppProps) {
         return [saved, ...current.filter(session => session.id !== currentSessionId)];
       });
       setActiveSessionId(currentSessionId);
+      if (!sessions.some(session => session.id === currentSessionId)) generateSessionName(currentSessionId, prompt, selectedProfile ?? undefined);
+    }
+    try {
+      const response = await client.respond({
+        session_id: currentSessionId,
+        ...(selection ? { selection } : {}),
+        ...(selectedProfile ? { profile: selectedProfile } : {}),
+        ...(project ? { project } : {}),
+        prompt,
+        history,
+      }, (delta) => {
+        if (!controller.signal.aborted && activeResponse.current === controller && sessionId.current === currentSessionId) {
+          streamedMessages = appendDelta(streamedMessages, delta);
+          setMessages(current => appendDelta(current, delta));
+        }
+      }, controller.signal);
+      if (controller.signal.aborted || activeResponse.current !== controller || sessionId.current !== currentSessionId || isSessionDeleted(currentSessionId)) return;
+      setMessages((current) => finalizeResponse(current, response.message));
+      saveMessages([...history, { role: 'user', content: prompt }, response.message]);
     } catch (requestError) {
-      if (sessionId.current !== currentSessionId) return;
+      if (activeResponse.current !== controller || sessionId.current !== currentSessionId) return;
+      if (controller.signal.aborted && requestError instanceof Error && requestError.name === 'AbortError') {
+        if (!isSessionDeleted(currentSessionId)) saveMessages(conversationHistory(streamedMessages));
+        setError('Response stopped.');
+        return;
+      }
       setError(requestError instanceof Error ? requestError.message : 'Rynna could not complete the request');
       setMessages(previousMessages);
       setInput(prompt);
     } finally {
-      if (sessionId.current === currentSessionId) setPending(false);
+      if (activeResponse.current === controller) {
+        activeResponse.current = null;
+        if (sessionId.current === currentSessionId) { setPending(false); setStopping(false); }
+      }
     }
   }
+
+  const conversationRef = useRef<HTMLElement>(null);
+  const followConversation = useRef(true);
+  // The live ID is assigned before streaming; saving the first reply does not change it.
+  const displayedSessionId = sessionId.current;
+  useLayoutEffect(() => { followConversation.current = true; }, [displayedSessionId, view]);
+  useLayoutEffect(() => {
+    const conversation = conversationRef.current;
+    if (conversation && (followConversation.current || messages.at(-1)?.role === 'user')) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+  }, [messages, displayedSessionId, view]);
 
   return (
     <main className="app-shell">
       <header className="app-header">
         <div>
-          <p className="eyebrow">AI software agent</p>
           <h1>Rynna</h1>
         </div>
         <div className="header-actions">
@@ -933,6 +1036,7 @@ export function App({ client }: AppProps) {
           ) : null}
           {canOpenSettings ? (
             <Button
+              disabled={pending}
               className="account-button"
               onClick={() => {
                 setView(view === 'settings' ? 'chat' : 'settings');
@@ -1009,9 +1113,13 @@ export function App({ client }: AppProps) {
                   : activeProfile.default_project_directory}</Badge>
               </aside>
             ) : null}
-            <section className="conversation" aria-label="Conversation">
+            <section className="conversation" aria-label="Conversation" ref={conversationRef}
+              onScroll={event => {
+                const element = event.currentTarget;
+                followConversation.current = element.scrollHeight - element.clientHeight - element.scrollTop < 48;
+              }}>
               {activeProfile && client.startWorkflow && client.listWorkflowRuns ? <WorkflowPanel
-                key={`${activeProfile.name}:${workflowSession}`} disabled={deletingSession} client={client} profile={activeProfile.name} session={workflowSession}
+                key={`${activeProfile.name}:${workflowSession}`} disabled={deletingSession || pending} client={client} profile={activeProfile.name} session={workflowSession}
                 savedRunId={sessions.find(s => s.id === workflowSession)?.workflow_run_id} project={project ?? null} selected={selectedWorkflow} context={conversationHistory(messages).map(m => `${m.role}: ${m.content}`).join('\n')}
                 selection={selection ?? { provider: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.provider ?? '', model: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.model ?? '', thinking: 'default' }}
                 onSelection={saveWorkflowSelection} onRun={receiveWorkflow} /> : null}
@@ -1020,7 +1128,6 @@ export function App({ client }: AppProps) {
               <div className="messages" role="log" aria-live="polite">
                 {messages.length === 0 ? (
                   !workflowSelected && <div className="empty-state">
-                    <p className="thread-mark" aria-hidden="true">A</p>
                     <h2>What should we work through?</h2>
                     <p>Ask Rynna to investigate, plan, or execute a development task.</p>
                   </div>
@@ -1047,7 +1154,7 @@ export function App({ client }: AppProps) {
                       </details>
                     ) : (
                       <article className={`message message-${message.role}`} key={`${message.role}-${index}`}>
-                        <p className="message-role">{message.role === 'assistant' ? 'Rynna' : 'You'}</p>
+                        <p className="message-role sr-only">{message.role === 'assistant' ? 'Rynna' : 'You'}</p>
                         <p>{message.content}</p>
                       </article>
                     ),
@@ -1055,19 +1162,25 @@ export function App({ client }: AppProps) {
                 )}
               </div>
 
+              {contextNotice ? <p className="context-notice" role="status">{contextNotice}</p> : null}
               {error ? <p className="request-error" role="alert">{error}</p> : null}
               {!workflowSelected && <form className="composer" onSubmit={submit}>
-                <label htmlFor="prompt">Message Rynna</label>
+                <label className="sr-only" htmlFor="prompt">Message Rynna</label>
                 <div className="composer-row">
                   <SlashCommandInput value={input} onChange={setInput} onCommand={runCommand}
                     busy={pending || workflowRunning || deletingSession} />
                 </div>
                 <div className="composer-actions">
+                  <span className="context-usage" title={context ? `Estimated ${context.size.current_tokens.toLocaleString()} / ${context.size.max_tokens.toLocaleString()} tokens, including draft and configured tools. ${context.limit_known ? 'Model context allowance.' : 'Fallback budget; configure the serving context window in model settings.'} Automatic compaction starts at 75%.` : 'Context estimate unavailable'}>
+                    {context ? `~${Math.round(context.size.current_tokens / context.size.max_tokens * 100)}% ${context.limit_known ? 'context' : 'budget'}` : 'Context —'}
+                  </span>
                   {activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
                     onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
-                  <Button disabled={pending || workflowRunning || deletingSession || !input.trim()} type="submit">
-                    {workflowRunning ? 'Use workflow steering above' : pending ? 'Working…' : 'Send'}
-                  </Button>
+                  {pending && compacting ? <Button disabled type="button">Compacting…</Button> : pending ? <Button className="composer-submit" aria-label={stopping ? 'Stopping…' : 'Stop'} title={stopping ? 'Stopping…' : 'Stop'} type="button" disabled={stopping} onClick={() => { setStopping(true); activeResponse.current?.abort(); }}>
+                    <Square aria-hidden="true" size={14} fill="currentColor" />
+                  </Button> : <Button className="composer-submit" aria-label={workflowRunning ? 'Use workflow steering above' : 'Send'} title={workflowRunning ? 'Use workflow steering above' : 'Send'} disabled={workflowRunning || deletingSession || !input.trim()} type="submit">
+                    <ArrowUp aria-hidden="true" />
+                  </Button>}
                 </div>
               </form>}
             </section>
@@ -1769,6 +1882,19 @@ export function App({ client }: AppProps) {
                             <strong>{provider.model}</strong>
                             <small>{enabled ? 'Enabled in saved profile' : 'Disabled'}</small>
                           </span>
+                        </label>
+                        <label className="context-window-control">
+                          Context window (tokens)
+                          <Input type="number" min={1024} max={100000000} step={1}
+                            key={`${provider.provider}-${provider.model}-${provider.context_window ?? 'auto'}`}
+                            aria-label={`Context window for ${provider.model}`} placeholder="Auto / 8192 fallback"
+                            defaultValue={provider.context_window ?? ''} disabled={savingProfile}
+                            onBlur={event => {
+                              if (!event.currentTarget.reportValidity()) return;
+                              const context_window = event.currentTarget.value ? Number(event.currentTarget.value) : undefined;
+                              if (context_window !== provider.context_window) void saveModelSettings(activeConfiguredProfile.providers.map(pair =>
+                                pair.provider === provider.provider && pair.model === provider.model ? { ...pair, context_window } : pair));
+                            }} />
                         </label>
                         <label className="default-model-control">
                           <input
