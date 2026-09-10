@@ -1139,13 +1139,6 @@ export function App({ client }: AppProps) {
                 const element = event.currentTarget;
                 followConversation.current = element.scrollHeight - element.clientHeight - element.scrollTop < 48;
               }}>
-              {activeProfile && client.startWorkflow && client.listWorkflowRuns ? <WorkflowPanel
-                key={`${activeProfile.name}:${workflowSession}`} disabled={deletingSession || pending} client={client} profile={activeProfile.name} session={workflowSession}
-                savedRunId={sessions.find(s => s.id === workflowSession)?.workflow_run_id} project={project ?? null} selected={selectedWorkflow} context={conversationHistory(messages).map(m => `${m.role}: ${m.content}`).join('\n')}
-                selection={selection ?? { provider: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.provider ?? '', model: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.model ?? '', thinking: 'default' }}
-                onSelection={saveWorkflowSelection} onRun={receiveWorkflow} /> : null}
-              {workflowSelected && activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
-                onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
               <div className="messages" role="log" aria-live="polite">
                 {messages.length === 0 ? (
                   !workflowSelected && <div className="empty-state">
@@ -1198,6 +1191,13 @@ export function App({ client }: AppProps) {
               ) : null}
               {contextNotice ? <p className="context-notice" role="status">{contextNotice}</p> : null}
               {error ? <p className="request-error" role="alert">{error}</p> : null}
+              {activeProfile && client.startWorkflow && client.listWorkflowRuns ? <WorkflowPanel
+                key={`${activeProfile.name}:${workflowSession}`} disabled={deletingSession || pending} client={client} profile={activeProfile.name} session={workflowSession}
+                savedRunId={sessions.find(s => s.id === workflowSession)?.workflow_run_id} project={project ?? null} selected={selectedWorkflow} context={conversationHistory(messages).map(m => `${m.role}: ${m.content}`).join('\n')}
+                selection={selection ?? { provider: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.provider ?? '', model: (activeProfile.providers.find(p => p.enabled !== false && p.default) ?? activeProfile.providers.find(p => p.enabled !== false))?.model ?? '', thinking: 'default' }}
+                onSelection={saveWorkflowSelection} onRun={receiveWorkflow} /> : null}
+              {workflowSelected && activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
+                onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
               {!workflowSelected && <form className="composer" onSubmit={submit}>
                 <label className="sr-only" htmlFor="prompt">Message Rynna</label>
                 <div className="composer-row">

@@ -357,7 +357,7 @@ select:disabled { opacity: .5; }
 .model-picker-thinking input:checked + span { background: hsl(var(--accent)); }
 .model-picker-thinking input:focus-visible + span { outline: 2px solid hsl(var(--ring)); }
 
-.workflow-panel { padding: 1rem; border-bottom: 1px solid hsl(var(--border)); min-width: 0; overflow-wrap: anywhere; }
+.workflow-panel { padding: 1rem; border-top: 1px solid hsl(var(--border)); min-width: 0; overflow-wrap: anywhere; }
 .workflow-panel label, .workflow-settings label { display: flex; flex-direction: column; gap: .4rem; }
 .workflow-panel select, .workflow-settings select { min-width: 0; max-width: 100%; padding: .5rem; color: inherit; background: hsl(var(--background)); border: 1px solid hsl(var(--border)); border-radius: .4rem; }
 .workflow-limits { display: flex; flex-wrap: wrap; gap: .75rem; }
