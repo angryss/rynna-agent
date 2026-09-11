@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rynna-config = { path = "../rynna-config" }
+tempfile.workspace = true
+dirs.workspace = true
 rynna-core = { path = "../rynna-core" }
 async-trait.workspace = true
 reqwest.workspace = true

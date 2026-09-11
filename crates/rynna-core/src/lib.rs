@@ -1182,7 +1182,11 @@ impl Agent {
 
         // Independent responses start fresh; delegated loops share this response budget.
         let tool_budget = self.tool_budget.clone().unwrap_or_default();
-        let mut available_tools = self.tools.as_ref().clone();
+        let mut available_tools = if self.provider.supports_external_tools() {
+            self.tools.as_ref().clone()
+        } else {
+            Default::default()
+        };
         if self.provider.supports_external_tools()
             && let Some(source) = &self.tool_source
         {

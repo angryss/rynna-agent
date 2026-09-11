@@ -2121,3 +2121,30 @@ it.each(['finish', 'error', 'stop', 'done'] as const)('clears transient command 
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
   expect(readSessions().some(session => JSON.stringify(session.messages).includes('Running'))).toBe(false);
 });
+
+
+it('refreshes account models after web provider login without reloading the app', async () => {
+  const user = userEvent.setup();
+  const local = testProfile('work');
+  const configured = testProfile('work', { providers: [...local.providers,
+    { provider: 'openai-account', model: 'Codex default', enabled: false, default: false }] });
+  const listProfiles = vi.fn()
+    .mockResolvedValueOnce({ default_profile: 'work', provider_ids: ['work-provider'], profiles: [local], configured_profiles: [local] })
+    .mockResolvedValue({ default_profile: 'work', provider_ids: ['work-provider', 'openai-account'], profiles: [local], configured_profiles: [configured] });
+  render(<App client={{ respond: vi.fn(), listProfiles, updateProfile: vi.fn(), listProviders: vi.fn().mockResolvedValue([]),
+    createProvider: vi.fn().mockImplementation(async (input) => input) }} />);
+  await user.click(screen.getByRole('button', { name: 'Settings' }));
+  await user.click(await screen.findByRole('button', { name: /Provider credentials/i }));
+  await user.click(await screen.findByRole('button', { name: 'Add provider' }));
+  await user.clear(screen.getByRole('combobox', { name: 'Provider type' }));
+  await user.type(screen.getByRole('combobox', { name: 'Provider type' }), 'openai');
+  await user.keyboard('{Enter}');
+  await user.click(screen.getByRole('button', { name: 'Save provider' }));
+  await user.click(await screen.findByRole('button', { name: 'Models' }));
+  const picker = screen.getByRole('combobox', { name: 'Provider' });
+  await user.clear(picker);
+  await user.type(picker, 'openai-account');
+  await user.keyboard('{Enter}');
+  expect(await screen.findByText('Codex default', { exact: true })).toBeInTheDocument();
+  expect(listProfiles).toHaveBeenCalledTimes(2);
+});

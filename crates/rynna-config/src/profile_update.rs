@@ -111,6 +111,65 @@ pub fn update_profile_with_settings(
     Ok(saved)
 }
 
+/// Persist provider settings and account model registration as one rollback-capable edit.
+pub fn save_provider_with_catalog(
+    catalog: &mut ProfileCatalog,
+    providers: &mut ProviderSettingsStore,
+    profile: &str,
+    provider: crate::ConfiguredProvider,
+    replace: bool,
+) -> Result<(), ProfileUpdateError> {
+    if !matches!(provider, crate::ConfiguredProvider::OpenAi { .. }) {
+        catalog.resolve(profile)?;
+        if replace {
+            providers.update(profile, provider)?;
+        } else {
+            providers.add(profile, provider)?;
+        }
+        return Ok(());
+    }
+    let _catalog_lock = catalog.lock_exclusive()?;
+    let _providers_lock = providers.lock_exclusive()?;
+    let mut staged_catalog = ProfileCatalog::from_file(catalog.fresh_file()?)?;
+    staged_catalog.resolve(profile)?;
+    provider.validate()?;
+    let mut staged_providers = ProviderSettingsStore {
+        path: providers.path.clone(),
+        providers: read_provider_settings(&providers.path)?,
+    };
+    let entries = staged_providers
+        .providers
+        .entry(profile.to_owned())
+        .or_default();
+    let existing = entries.iter().position(|entry| entry.id() == provider.id());
+    match (replace, existing) {
+        (false, Some(_)) => {
+            return Err(ProviderSettingsError::Duplicate(provider.id().to_owned()).into());
+        }
+        (true, None) => {
+            return Err(ProviderSettingsError::NotConfigured(provider.id().to_owned()).into());
+        }
+        (true, Some(index)) => entries[index] = provider,
+        (false, None) => entries.push(provider),
+    }
+    staged_catalog.register_openai_accounts(&staged_providers)?;
+    let mut writes = vec![StagedFile::prepare(
+        &providers.path,
+        &ProviderSettingsFile {
+            version: crate::PROVIDER_SETTINGS_VERSION,
+            profiles: staged_providers.providers.clone(),
+        },
+    )?];
+    if let Some(path) = &catalog.path {
+        writes.push(StagedFile::prepare(path, &staged_catalog.to_file())?);
+    }
+    commit(&mut writes)?;
+    staged_catalog.path = catalog.path.clone();
+    *catalog = staged_catalog;
+    providers.providers = staged_providers.providers;
+    Ok(())
+}
+
 fn move_entry<T>(
     entries: &mut BTreeMap<String, T>,
     original: &str,

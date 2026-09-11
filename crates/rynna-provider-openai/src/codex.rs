@@ -10,7 +10,7 @@ use tokio::io::BufReader;
 use tokio::process::Command;
 use tokio::time::{Duration, Instant};
 
-use crate::{
+use super::codex_protocol::{
     OpenAiCredentialSelection, read_codex_message, read_codex_response, secure_codex_home,
     write_codex_message,
 };
@@ -27,6 +27,7 @@ pub struct CodexAppServerProvider {
     codex_home: Option<PathBuf>,
     credential_selection: Option<OpenAiCredentialSelection>,
     model: Option<String>,
+    profile_settings: Option<(PathBuf, String)>,
 }
 
 impl CodexAppServerProvider {
@@ -37,6 +38,7 @@ impl CodexAppServerProvider {
             codex_home: None,
             credential_selection: None,
             model,
+            profile_settings: None,
         }
     }
 
@@ -51,10 +53,11 @@ impl CodexAppServerProvider {
             codex_home: Some(codex_home.into()),
             credential_selection: None,
             model,
+            profile_settings: None,
         }
     }
 
-    pub(crate) fn with_selectable_home(
+    pub fn with_selectable_home(
         program: impl Into<PathBuf>,
         codex_home: impl Into<PathBuf>,
         credential_selection: OpenAiCredentialSelection,
@@ -66,7 +69,25 @@ impl CodexAppServerProvider {
             codex_home: Some(codex_home.into()),
             credential_selection: Some(credential_selection),
             model,
+            profile_settings: None,
         }
+    }
+
+    pub fn for_profile(settings_path: PathBuf, profile: &str, model: &str) -> Result<Self, String> {
+        let program = std::env::var_os("RYNNA_CODEX_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| "codex".into());
+        let home = std::env::var_os("RYNNA_CODEX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| dirs::config_dir().map(|path| path.join("rynna").join("codex")))
+            .ok_or("Rynna could not determine its configuration directory")?;
+        let mut provider = Self::with_home(
+            program,
+            home,
+            (model != rynna_config::OPENAI_ACCOUNT_MODEL).then(|| model.to_owned()),
+        );
+        provider.profile_settings = Some((settings_path, profile.to_owned()));
+        Ok(provider)
     }
 
     async fn run(
@@ -105,10 +126,24 @@ impl CodexAppServerProvider {
             .collect::<Vec<_>>();
         let workspace = tempfile::tempdir().map_err(provider_error)?;
         let mut command = Command::new(&self.program);
-        let reuse_existing = self
-            .credential_selection
-            .as_ref()
-            .is_some_and(OpenAiCredentialSelection::reuses_existing);
+        let reuse_existing = if let Some((path, profile)) = &self.profile_settings {
+            let settings =
+                rynna_config::ProviderSettingsStore::load(path).map_err(provider_error)?;
+            match settings.get(profile, "openai") {
+                Some(rynna_config::ConfiguredProvider::OpenAi { reuse_existing, .. }) => {
+                    *reuse_existing
+                }
+                _ => {
+                    return Err(ProviderError::new(
+                        "Connect OpenAI in this profile's Provider Credentials settings before using account models",
+                    ));
+                }
+            }
+        } else {
+            self.credential_selection
+                .as_ref()
+                .is_some_and(OpenAiCredentialSelection::reuses_existing)
+        };
         if reuse_existing {
             command
                 .env_remove("CODEX_HOME")

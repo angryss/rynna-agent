@@ -157,6 +157,8 @@ async fn main() -> Result<()> {
             .with_context(|| format!("failed to load configuration from {}", path.display()))?,
         None => ProfileCatalog::load_default().context("failed to load Rynna configuration")?,
     };
+    let provider_settings = ProviderSettingsStore::load(&provider_config)?;
+    catalog.register_openai_accounts(&provider_settings)?;
     let default_profile = cli
         .profile
         .clone()
@@ -188,6 +190,7 @@ async fn main() -> Result<()> {
             system_prompt: cli.system_prompt,
         },
         include_all_profiles,
+        &provider_config,
     )?;
 
     let mcp_store =
@@ -401,6 +404,7 @@ fn configured_profiles(
     default_profile: &str,
     overrides: ProfileOverrides,
     include_all_profiles: bool,
+    provider_config: &std::path::Path,
 ) -> Result<AgentProfiles> {
     let selected = catalog
         .resolve(default_profile)
@@ -428,14 +432,18 @@ fn configured_profiles(
         } else {
             None
         };
-        let agent = configured_agent(&profile, api_key_override)?;
+        let agent = configured_agent(&profile, api_key_override, provider_config)?;
         configured.push((profile.profile, agent));
     }
 
     AgentProfiles::new(default_profile, configured).context("invalid profile catalog")
 }
 
-fn configured_agent(profile: &ResolvedProfile, api_key_override: Option<String>) -> Result<Agent> {
+fn configured_agent(
+    profile: &ResolvedProfile,
+    api_key_override: Option<String>,
+    provider_config: &std::path::Path,
+) -> Result<Agent> {
     let mut providers = profile
         .providers
         .iter()
@@ -444,6 +452,7 @@ fn configured_agent(profile: &ResolvedProfile, api_key_override: Option<String>)
             configured_provider(
                 &profile.profile.name,
                 provider,
+                provider_config,
                 if index == 0 {
                     api_key_override.clone()
                 } else {
@@ -483,6 +492,7 @@ fn configured_agent(profile: &ResolvedProfile, api_key_override: Option<String>)
 fn configured_provider(
     profile_name: &str,
     provider: &ResolvedProvider,
+    provider_config: &std::path::Path,
     api_key_override: Option<String>,
 ) -> Result<Arc<dyn ModelProvider>> {
     let api_key = match api_key_override {
@@ -501,6 +511,14 @@ fn configured_provider(
             .transpose()?,
     };
     let configured: Arc<dyn ModelProvider> = match provider.provider_kind {
+        ProviderKind::OpenAiAccount => Arc::new(
+            rynna_provider_openai::CodexAppServerProvider::for_profile(
+                provider_config.to_owned(),
+                profile_name,
+                &provider.model,
+            )
+            .map_err(anyhow::Error::msg)?,
+        ),
         ProviderKind::OpenAiCompatible | ProviderKind::Mlx => Arc::new(
             OpenAiCompatibleProvider::new(&provider.api_base, &provider.model, api_key)
                 .with_context(|| {
