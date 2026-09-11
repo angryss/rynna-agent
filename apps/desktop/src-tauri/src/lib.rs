@@ -881,7 +881,7 @@ async fn verify_existing_openai_credentials_with_program(
 
 #[tauri::command]
 async fn create_provider(
-    catalog: State<'_, Mutex<ProfileCatalog>>,
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
     authentication_lock: State<'_, OpenAiAuthenticationLock>,
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
     provider: ProviderInput,
@@ -918,7 +918,7 @@ async fn create_provider(
 
 #[tauri::command]
 async fn update_provider(
-    catalog: State<'_, Mutex<ProfileCatalog>>,
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
     authentication_lock: State<'_, OpenAiAuthenticationLock>,
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
     provider: ProviderInput,
@@ -1500,6 +1500,72 @@ mod tests {
         openai_account_reuses_existing_credentials, read_codex_message, selected_openai_codex_home,
         verify_existing_openai_credentials_with_program, write_codex_message,
     };
+
+    #[test]
+    fn provider_commands_resolve_the_managed_catalog_and_persist_changes() {
+        use std::sync::Arc;
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        use tokio::sync::Mutex;
+
+        let directory = tempfile::tempdir().unwrap();
+        let settings_path = directory.path().join("providers.yaml");
+        let app = mock_builder()
+            .manage(Arc::new(Mutex::new(
+                rynna_config::ProfileCatalog::built_in(),
+            )))
+            .manage(Mutex::new(
+                ProviderSettingsStore::load(&settings_path).unwrap(),
+            ))
+            .manage(OpenAiAuthenticationLock::default())
+            .invoke_handler(tauri::generate_handler![
+                super::create_provider,
+                super::update_provider
+            ])
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        for (command, api_base) in [
+            ("create_provider", "http://localhost:11434/v1"),
+            ("update_provider", "http://localhost:11435/v1"),
+        ] {
+            let provider = serde_json::json!({"kind": "ollama", "api_base": api_base});
+            let response = tauri::test::get_ipc_response(
+                &webview,
+                tauri::webview::InvokeRequest {
+                    cmd: command.into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: if cfg!(any(windows, target_os = "android")) {
+                        "http://tauri.localhost"
+                    } else {
+                        "tauri://localhost"
+                    }
+                    .parse()
+                    .unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(
+                        serde_json::json!({"profile": "default", "provider": provider}),
+                    ),
+                    headers: Default::default(),
+                    invoke_key: tauri::test::INVOKE_KEY.to_owned(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("{command} failed: {error}"));
+            assert_eq!(
+                response.deserialize::<serde_json::Value>().unwrap(),
+                provider
+            );
+            assert_eq!(
+                ProviderSettingsStore::load(&settings_path)
+                    .unwrap()
+                    .get("default", "ollama"),
+                Some(&ConfiguredProvider::Ollama {
+                    api_base: api_base.into()
+                })
+            );
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]
