@@ -290,3 +290,11 @@ it('requests a session title through the dedicated desktop command', async () =>
   invoke.mockResolvedValueOnce('');
   await expect(client.sessionTitle({ prompt: 'Review' })).rejects.toThrow('invalid session title');
 });
+
+it('discovers models for the selected provider and rejects invalid results', async () => {
+  const transport = vi.fn().mockResolvedValueOnce(['model-a']).mockResolvedValueOnce([123]);
+  const client = new TauriAgentClient(transport);
+  await expect(client.listProviderModels('work profile', 'custom/provider')).resolves.toEqual(['model-a']);
+  expect(transport).toHaveBeenLastCalledWith('list_provider_models', { profile: 'work profile', provider: 'custom/provider' });
+  await expect(client.listProviderModels('work profile', 'custom/provider')).rejects.toThrow('invalid model data');
+});

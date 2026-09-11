@@ -116,6 +116,24 @@ async fn web_login_registers_models_and_restart_streams_through_private_account(
         .unwrap()
         .error_for_status()
         .unwrap();
+    let models: Vec<String> = client
+        .get(format!(
+            "{}/v1/profiles/default/providers/openai-account/models",
+            server.1
+        ))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(models, ["account-model", "second-model"]);
+    assert!(
+        !directory.join("calls.jsonl").exists(),
+        "model lookup must not start inference"
+    );
     let listed = profiles(&client, &server).await;
     assert!(
         listed["provider_ids"]

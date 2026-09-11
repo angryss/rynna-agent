@@ -198,6 +198,10 @@ fn router_with_runtime(
     ));
     let provider_routes = Router::new()
         .route(
+            "/v1/profiles/{profile}/providers/{provider}/models",
+            get(list_provider_models).fallback(api_method_not_allowed),
+        )
+        .route(
             "/v1/profiles/{profile}/mcp",
             get(get_mcp_settings)
                 .put(save_mcp_settings)
@@ -901,6 +905,26 @@ async fn list_provider_settings(
     let mut store = provider_store(&state)?.lock().await;
     store.refresh().map_err(provider_store_error)?;
     Ok(Json(store.list(&profile)))
+}
+
+async fn list_provider_models(
+    State(state): State<AppState>,
+    AxumPath((profile, provider)): AxumPath<(String, String)>,
+) -> Result<Json<Vec<String>>, ApiError> {
+    let provider = catalog_store(&state)?
+        .lock()
+        .await
+        .model_provider(&profile, &provider)
+        .map_err(catalog_error)?;
+    let settings = provider_store(&state)?.lock().await.path().to_owned();
+    rynna_provider_openai::models::list_models(provider, settings, &profile)
+        .await
+        .map(Json)
+        .map_err(|_| ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            code: "model_discovery_failed",
+            message: "Could not load models. Enter a model name manually.".to_owned(),
+        })
 }
 
 async fn create_provider(
