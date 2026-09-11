@@ -135,6 +135,14 @@ export class TauriAgentClient implements AgentClient {
     return account;
   }
 
+  async listProviderModels(profile: string, provider: string): Promise<string[]> {
+    const models = await this.invoke('list_provider_models', { profile, provider });
+    if (!Array.isArray(models) || !models.every((model) => typeof model === 'string')) {
+      throw new Error('Rynna returned invalid model data');
+    }
+    return models;
+  }
+
   async listProviders(profile: string): Promise<ConfiguredProvider[]> {
     const providers = await this.invoke('list_providers', { profile });
     if (!Array.isArray(providers) || !providers.every(isConfiguredProvider)) {

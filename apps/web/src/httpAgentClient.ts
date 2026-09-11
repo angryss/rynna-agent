@@ -82,6 +82,14 @@ export class HttpAgentClient implements AgentClient {
     return body;
   }
 
+  async listProviderModels(profile: string, provider: string): Promise<string[]> {
+    const models = await this.providerRequest(`${this.profileProvidersEndpoint(profile)}/${encodeURIComponent(provider)}/models`, 'GET');
+    if (!Array.isArray(models) || !models.every((model) => typeof model === 'string')) {
+      throw new Error('Rynna returned invalid model data');
+    }
+    return models;
+  }
+
   async listProviders(profile: string): Promise<ConfiguredProvider[]> {
     const body = await this.providerRequest(this.profileProvidersEndpoint(profile), 'GET');
     if (!Array.isArray(body) || !body.every(isConfiguredProvider)) {

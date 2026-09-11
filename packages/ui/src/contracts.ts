@@ -180,6 +180,7 @@ export interface AgentClient {
   getOpenAiAccount?(): Promise<OpenAiAccount>;
   getExistingOpenAiAccount?(): Promise<OpenAiAccount>;
   connectOpenAi?(request: ConnectOpenAiRequest): Promise<OpenAiAccount>;
+  listProviderModels?(profile: string, provider: string): Promise<string[]>;
   listProviders?(profile: string): Promise<ConfiguredProvider[]>;
   createProvider?(provider: ProviderInput, profile: string): Promise<ConfiguredProvider>;
   updateProvider?(provider: ProviderInput, profile: string): Promise<ConfiguredProvider>;

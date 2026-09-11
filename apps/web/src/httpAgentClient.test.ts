@@ -305,3 +305,11 @@ it('requests a session title independently of the chat endpoint', async () => {
   fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ message: 'bad' })));
   await expect(client.sessionTitle({ prompt: 'Review' })).rejects.toThrow('invalid session title');
 });
+
+it('discovers models for the selected provider and rejects invalid results', async () => {
+  const transport = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(['model-a']))).mockResolvedValueOnce(new Response('[123]'));
+  const client = new HttpAgentClient('/custom/v1/respond', transport);
+  await expect(client.listProviderModels('work profile', 'custom/provider')).resolves.toEqual(['model-a']);
+  expect(transport).toHaveBeenLastCalledWith('/custom/v1/profiles/work%20profile/providers/custom%2Fprovider/models', { method: 'GET', headers: { accept: 'application/json' } });
+  await expect(client.listProviderModels('work profile', 'custom/provider')).rejects.toThrow('invalid model data');
+});

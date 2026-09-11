@@ -388,3 +388,6 @@ select:disabled { opacity: .5; }
 .running-command svg { flex-shrink: 0; margin-top: .2rem; }
 .running-command span { min-width: 0; overflow-wrap: anywhere; }
 .running-command code { white-space: pre-wrap; font-size: inherit; }
+
+.model-type-options { max-height: 16rem; overflow-y: auto; }
+.model-type-options button { overflow-wrap: anywhere; text-align: left; }

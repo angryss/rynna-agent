@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rynna-provider-openai = { path = "../rynna-provider-openai" }
 rynna-workflows = { path = "../rynna-workflows" }
 uuid.workspace = true
 rynna-mcp = { path = "../rynna-mcp" }

@@ -33,7 +33,14 @@ for line in sys.stdin:
     if method == "initialized":
         continue
     result = {}
-    if method == "thread/start":
+    if method == "model/list":
+        assert message["params"]["includeHidden"] is False
+        if message["params"].get("cursor") is None:
+            result = {"data": [{"id": "picker-id", "model": "account-model"}], "nextCursor": "next"}
+        else:
+            assert message["params"]["cursor"] == "next"
+            result = {"data": [{"model": "second-model"}, {"model": "hidden", "hidden": True}], "nextCursor": None}
+    elif method == "thread/start":
         params = message["params"]
         assert params["environments"] == []
         assert params["ephemeral"] is True

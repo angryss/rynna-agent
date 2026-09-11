@@ -90,6 +90,134 @@ impl CodexAppServerProvider {
         Ok(provider)
     }
 
+    fn account_command(&self) -> Result<Command, ProviderError> {
+        let mut command = Command::new(&self.program);
+        let reuse_existing = if let Some((path, profile)) = &self.profile_settings {
+            let settings =
+                rynna_config::ProviderSettingsStore::load(path).map_err(provider_error)?;
+            match settings.get(profile, "openai") {
+                Some(rynna_config::ConfiguredProvider::OpenAi { reuse_existing, .. }) => {
+                    *reuse_existing
+                }
+                _ => {
+                    return Err(ProviderError::new(
+                        "Connect OpenAI in this profile's Provider Credentials settings before using account models",
+                    ));
+                }
+            }
+        } else {
+            self.credential_selection
+                .as_ref()
+                .is_some_and(OpenAiCredentialSelection::reuses_existing)
+        };
+        if reuse_existing {
+            command
+                .env_remove("CODEX_HOME")
+                .env_remove("RYNNA_CODEX_HOME");
+        } else if let Some(codex_home) = &self.codex_home {
+            command.env(
+                "CODEX_HOME",
+                secure_codex_home(codex_home.clone()).map_err(ProviderError::new)?,
+            );
+        } else {
+            command
+                .env_remove("CODEX_HOME")
+                .env_remove("RYNNA_CODEX_HOME");
+        }
+        Ok(command)
+    }
+
+    /// Read-only discovery: no thread or turn is started, so the inference version pin does not apply.
+    pub async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let workspace = tempfile::tempdir().map_err(provider_error)?;
+        let mut command = self.account_command()?;
+        command
+            .arg("app-server")
+            .current_dir(workspace.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let (mut child, _group) =
+            rynna_core::process::ProcessGroup::spawn(&mut command).map_err(provider_error)?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| ProviderError::new("Codex stdin unavailable"))?;
+        let mut stdout = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| ProviderError::new("Codex stdout unavailable"))?,
+        );
+        write_codex_message(
+            &mut stdin,
+            &serde_json::json!({"method":"initialize","id":1,"params":{
+                "clientInfo":{"name":"rynna","version":env!("CARGO_PKG_VERSION")}
+            }}),
+            deadline,
+        )
+        .await
+        .map_err(ProviderError::new)?;
+        read_codex_response(&mut stdout, 1, deadline)
+            .await
+            .map_err(ProviderError::new)?;
+        write_codex_message(
+            &mut stdin,
+            &serde_json::json!({"method":"initialized","params":{}}),
+            deadline,
+        )
+        .await
+        .map_err(ProviderError::new)?;
+        let mut models = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen = HashSet::new();
+        for id in 2..22 {
+            write_codex_message(
+                &mut stdin,
+                &serde_json::json!({"method":"model/list","id":id,
+                "params":{"limit":100,"includeHidden":false,"cursor":cursor}}),
+                deadline,
+            )
+            .await
+            .map_err(ProviderError::new)?;
+            let response = read_codex_response(&mut stdout, id, deadline)
+                .await
+                .map_err(ProviderError::new)?;
+            let data = response
+                .pointer("/result/data")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| ProviderError::new("Codex returned invalid model data"))?;
+            for entry in data {
+                if entry.get("hidden").and_then(serde_json::Value::as_bool) == Some(true) {
+                    continue;
+                }
+                let model = entry
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| !id.trim().is_empty())
+                    .ok_or_else(|| ProviderError::new("Codex omitted a model ID"))?;
+                models.push(model.to_owned());
+            }
+            cursor = response
+                .pointer("/result/nextCursor")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            let Some(next) = &cursor else {
+                models.sort();
+                models.dedup();
+                return Ok(models);
+            };
+            if !seen.insert(next.clone()) {
+                break;
+            }
+        }
+        Err(ProviderError::new(
+            "Codex model listing exceeded its page limit",
+        ))
+    }
+
     async fn run(
         &self,
         request: CompletionRequest,
@@ -125,39 +253,7 @@ impl CodexAppServerProvider {
             .filter_map(history_item)
             .collect::<Vec<_>>();
         let workspace = tempfile::tempdir().map_err(provider_error)?;
-        let mut command = Command::new(&self.program);
-        let reuse_existing = if let Some((path, profile)) = &self.profile_settings {
-            let settings =
-                rynna_config::ProviderSettingsStore::load(path).map_err(provider_error)?;
-            match settings.get(profile, "openai") {
-                Some(rynna_config::ConfiguredProvider::OpenAi { reuse_existing, .. }) => {
-                    *reuse_existing
-                }
-                _ => {
-                    return Err(ProviderError::new(
-                        "Connect OpenAI in this profile's Provider Credentials settings before using account models",
-                    ));
-                }
-            }
-        } else {
-            self.credential_selection
-                .as_ref()
-                .is_some_and(OpenAiCredentialSelection::reuses_existing)
-        };
-        if reuse_existing {
-            command
-                .env_remove("CODEX_HOME")
-                .env_remove("RYNNA_CODEX_HOME");
-        } else if let Some(codex_home) = &self.codex_home {
-            command.env(
-                "CODEX_HOME",
-                secure_codex_home(codex_home.clone()).map_err(ProviderError::new)?,
-            );
-        } else {
-            command
-                .env_remove("CODEX_HOME")
-                .env_remove("RYNNA_CODEX_HOME");
-        }
+        let mut command = self.account_command()?;
         command
             .arg("app-server")
             .current_dir(workspace.path())

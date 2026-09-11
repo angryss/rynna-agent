@@ -880,6 +880,22 @@ async fn verify_existing_openai_credentials_with_program(
 }
 
 #[tauri::command]
+async fn list_provider_models(
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
+    provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
+    profile: String,
+    provider: String,
+) -> Result<Vec<String>, String> {
+    let provider = catalog
+        .lock()
+        .await
+        .model_provider(&profile, &provider)
+        .map_err(|error| error.to_string())?;
+    let settings = provider_settings.lock().await.path().to_owned();
+    rynna_provider_openai::models::list_models(provider, settings, &profile).await
+}
+
+#[tauri::command]
 async fn create_provider(
     catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
     authentication_lock: State<'_, OpenAiAuthenticationLock>,
@@ -1186,6 +1202,7 @@ pub fn run() {
             get_memory_settings,
             save_memory_settings,
             list_providers,
+            list_provider_models,
             create_provider,
             update_provider,
             delete_provider

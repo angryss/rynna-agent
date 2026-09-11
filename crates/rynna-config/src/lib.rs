@@ -858,6 +858,32 @@ impl ProfileCatalog {
         &self.default_profile
     }
 
+    /// Resolve a catalog provider for model discovery, including providers with no enabled models.
+    pub fn model_provider(
+        &self,
+        profile: &str,
+        name: &str,
+    ) -> Result<ResolvedProvider, ConfigError> {
+        if !self.profiles.contains_key(profile) {
+            return Err(ConfigError::UnknownProfile(profile.to_owned()));
+        }
+        let provider = self
+            .providers
+            .get(name)
+            .ok_or_else(|| ConfigError::UnknownProvider {
+                profile: profile.to_owned(),
+                provider: name.to_owned(),
+            })?;
+        Ok(ResolvedProvider {
+            name: name.to_owned(),
+            model: String::new(),
+            provider_kind: provider.kind,
+            api_base: provider.api_base.clone(),
+            api_key_env: provider.api_key_env.clone(),
+            claude_program: provider.claude_program.clone(),
+        })
+    }
+
     pub fn provider_ids(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
     }

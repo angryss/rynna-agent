@@ -2148,3 +2148,30 @@ it('refreshes account models after web provider login without reloading the app'
   expect(await screen.findByText('Codex default', { exact: true })).toBeInTheDocument();
   expect(listProfiles).toHaveBeenCalledTimes(2);
 });
+
+it('ignores model suggestions from a previous provider and allows custom models after lookup failure', async () => {
+  const user = userEvent.setup();
+  let finishFirst!: (models: string[]) => void;
+  const listProviderModels = vi.fn((_profile: string, provider: string) => provider === 'alpha'
+    ? new Promise<string[]>((resolve) => { finishFirst = resolve; })
+    : Promise.reject(new Error('unavailable')));
+  const profile = testProfile('work', { providers: [{ provider: 'alpha', model: 'existing', enabled: true, default: true }] });
+  const updateProfile = vi.fn().mockImplementation(async (_name, value) => value);
+  render(<App client={{ respond: vi.fn(), updateProfile, listProviderModels,
+    listProfiles: vi.fn().mockResolvedValue({ default_profile: 'work', provider_ids: ['alpha', 'beta'], profiles: [profile], configured_profiles: [profile] }) }} />);
+  await user.click(screen.getByRole('button', { name: 'Settings' }));
+  await user.click(await screen.findByRole('button', { name: 'Models' }));
+  expect(await screen.findByText('Loading models… You can still enter a model name.')).toBeInTheDocument();
+  const provider = screen.getByRole('combobox', { name: 'Provider' });
+  await user.clear(provider);
+  await user.type(provider, 'beta');
+  await user.keyboard('{Enter}');
+  expect(await screen.findByText('Could not load models. You can still enter a model name.')).toBeInTheDocument();
+  await act(async () => finishFirst(['stale-model']));
+  await user.type(screen.getByRole('combobox', { name: 'Model name' }), 'custom/model');
+  expect(screen.queryByRole('option', { name: 'stale-model' })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Add model' }));
+  expect(updateProfile).toHaveBeenCalledWith('work', expect.objectContaining({ providers: expect.arrayContaining([
+    expect.objectContaining({ provider: 'beta', model: 'custom/model' }),
+  ]) }));
+});

@@ -185,6 +185,8 @@ export function App({ client }: AppProps) {
   const [contextNotice, setContextNotice] = useState('');
   const [storageFailure, setStorageFailure] = useState<'quota' | 'unavailable' | null>(null);
   const [customModel, setCustomModel] = useState('');
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelLookup, setModelLookup] = useState<'loading' | 'ready' | 'failed'>('ready');
   const [mlxApiBase, setMlxApiBase] = useState('http://127.0.0.1:8000/v1');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const openAiAccountRequest = useRef(0);
@@ -365,6 +367,22 @@ export function App({ client }: AppProps) {
     setSelectedModels([]);
     setCustomModel('');
   }, [activeConfiguredProfile, catalogProviderIds, modelProvider]);
+
+  useEffect(() => {
+    let active = true;
+    setAvailableModels([]);
+    setModelLookup('ready');
+    if (view !== 'settings' || settingsSection !== 'models' || !selectedSettingsProfile || !modelProvider || !client.listProviderModels) return;
+    setModelLookup('loading');
+    void client.listProviderModels(selectedSettingsProfile, modelProvider).then((models) => {
+      if (!active) return;
+      setAvailableModels([...new Set(models)].sort());
+      setModelLookup('ready');
+    }).catch(() => {
+      if (active) setModelLookup('failed');
+    });
+    return () => { active = false; };
+  }, [client, view, settingsSection, selectedSettingsProfile, modelProvider]);
 
   function selectProfile(name: string) {
     setChatSelection(undefined);
@@ -1807,7 +1825,7 @@ export function App({ client }: AppProps) {
                   {modelProvider === 'openai-account' ? (
                     <p>Enable Codex default to use your connected OpenAI account, or add a model ID available to your account. Account models do not use Rynna tools; fallback chains containing them are tool-free.</p>
                   ) : null}
-                  <p>Add the exact model name your provider serves, then choose which models are available in chat.</p>
+                  <p>Search the provider’s models or enter a custom name, then choose which models are available in chat.</p>
                 </div>
               </div>
               <div className="model-filters">
@@ -1834,12 +1852,15 @@ export function App({ client }: AppProps) {
               </div>
               <form className="provider-form" onSubmit={(event) => void addCustomModel(event)}>
                 <label htmlFor="custom-model-name">Model name</label>
-                <Input
+                <Typeahead
+                  allowCustom
+                  options={availableModels}
+                  descriptionId="model-lookup-status"
                   id="custom-model-name"
                   value={customModel}
-                  onChange={(event) => setCustomModel(event.target.value)}
+                  onChange={setCustomModel}
                   disabled={savingProfile || !modelProvider}
-                  placeholder={modelProvider === 'mlx' ? 'mlx-community/Qwen3.8-27B-8bit' : 'e.g. qwen3:14b'}
+                  placeholder="Search models or enter a custom name"
                   required
                 />
                 <div className="provider-actions">
@@ -1848,6 +1869,12 @@ export function App({ client }: AppProps) {
                   </Button>
                 </div>
               </form>
+              <p id="model-lookup-status" role="status">
+                {modelLookup === 'loading' ? 'Loading models… You can still enter a model name.'
+                  : modelLookup === 'failed' ? 'Could not load models. You can still enter a model name.'
+                  : availableModels.length === 0 ? 'No model suggestions available. Enter a model name to add it.'
+                  : 'Choose a suggestion or enter any model name.'}
+              </p>
               <div className="model-toolbar" aria-label="Model bulk actions">
                 <div className="provider-actions">
                   <Button

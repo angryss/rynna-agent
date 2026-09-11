@@ -1,5 +1,6 @@
 mod codex;
 pub mod codex_protocol;
+pub mod models;
 pub use codex::CodexAppServerProvider;
 
 use std::collections::BTreeMap;
