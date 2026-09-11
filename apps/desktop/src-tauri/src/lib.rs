@@ -3,14 +3,13 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use rynna_config::mcp::{McpSettings, McpSettingsStore};
 use rynna_config::memory::{MemorySettings, MemorySettingsResponse, MemorySettingsStore};
 use rynna_config::{
     AnthropicAuthentication, ConfiguredProvider, OPENAI_ACCOUNT_PROFILE, OpenAiAuthentication,
     ProfileCatalog, ProviderKind, ProviderSettingsStore, ResolvedCapability, ResolvedProfile,
-    ResolvedProvider, secure_private_directory,
+    ResolvedProvider,
 };
 use rynna_core::{
     Agent, AgentProfiles, CompletionDelta, FallbackProvider, Message, ModelProvider, Profile,
@@ -27,17 +26,20 @@ use rynna_tools_command::{CommandConfig, CommandTool};
 use rynna_tools_filesystem::{FileSystemConfig, FileSystemToolset};
 use serde::{Deserialize, Serialize};
 use tauri::{State, ipc::Channel};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant, timeout};
 
-mod codex_provider;
 mod responses;
 mod workflows;
-pub use codex_provider::CodexAppServerProvider;
+pub use rynna_provider_openai::CodexAppServerProvider;
+#[cfg(test)]
+use rynna_provider_openai::codex_protocol::{MAX_CODEX_MESSAGE_BYTES, read_codex_message};
+use rynna_provider_openai::codex_protocol::{
+    OpenAiCredentialSelection, read_codex_response, secure_codex_home, write_codex_message,
+};
 
-const MAX_CODEX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_API_KEY_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Deserialize)]
@@ -97,24 +99,6 @@ struct OpenAiAuthenticationLock(Mutex<()>);
 impl OpenAiAuthenticationLock {
     async fn acquire(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.0.lock().await
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct OpenAiCredentialSelection(Arc<AtomicBool>);
-
-impl OpenAiCredentialSelection {
-    fn new(reuse_existing: bool) -> Self {
-        Self(Arc::new(AtomicBool::new(reuse_existing)))
-    }
-
-    pub(crate) fn reuses_existing(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-
-    #[cfg(test)]
-    fn set_reuse_existing(&self, reuse_existing: bool) {
-        self.0.store(reuse_existing, Ordering::Release);
     }
 }
 
@@ -311,80 +295,6 @@ async fn openai_account_with_command(
     })
 }
 
-async fn write_codex_message(
-    writer: &mut (impl AsyncWriteExt + Unpin),
-    message: &serde_json::Value,
-    deadline: Instant,
-) -> Result<(), String> {
-    let mut encoded = serde_json::to_vec(message).map_err(|error| error.to_string())?;
-    encoded.push(b'\n');
-    if encoded.len() > MAX_CODEX_MESSAGE_BYTES {
-        return Err("Codex app-server request exceeded the size limit".to_owned());
-    }
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .ok_or_else(|| "Codex app-server request timed out".to_owned())?;
-    timeout(remaining, writer.write_all(&encoded))
-        .await
-        .map_err(|_| "Codex app-server request timed out".to_owned())?
-        .map_err(|error| format!("failed to write to Codex app-server: {error}"))
-}
-
-async fn read_codex_response(
-    reader: &mut (impl AsyncBufRead + Unpin),
-    id: u64,
-    deadline: Instant,
-) -> Result<serde_json::Value, String> {
-    loop {
-        let message = read_codex_message(reader, deadline).await?;
-        if message.get("id").and_then(|value| value.as_u64()) == Some(id) {
-            if let Some(error) = message
-                .pointer("/error/message")
-                .and_then(|value| value.as_str())
-            {
-                return Err(format!("Codex app-server request failed: {error}"));
-            }
-            return Ok(message);
-        }
-    }
-}
-
-pub(crate) async fn read_codex_message(
-    reader: &mut (impl AsyncBufRead + Unpin),
-    deadline: Instant,
-) -> Result<serde_json::Value, String> {
-    let mut line = Vec::new();
-    loop {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .ok_or_else(|| "Codex app-server response timed out".to_owned())?;
-        let available = timeout(remaining, reader.fill_buf())
-            .await
-            .map_err(|_| "Codex app-server response timed out".to_owned())?
-            .map_err(|error| format!("failed to read Codex app-server response: {error}"))?;
-        if available.is_empty() {
-            if line.is_empty() {
-                return Err("Codex app-server stopped unexpectedly".to_owned());
-            }
-            break;
-        }
-        let take = available
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(available.len(), |position| position + 1);
-        if line.len().saturating_add(take) > MAX_CODEX_MESSAGE_BYTES {
-            return Err("Codex app-server message exceeded the size limit".to_owned());
-        }
-        let complete = available[take - 1] == b'\n';
-        line.extend_from_slice(&available[..take]);
-        reader.consume(take);
-        if complete {
-            break;
-        }
-    }
-    serde_json::from_slice(&line).map_err(|_| "Codex app-server returned invalid JSON".to_owned())
-}
-
 fn codex_program() -> PathBuf {
     env::var_os("RYNNA_CODEX_PATH")
         .map(PathBuf::from)
@@ -417,17 +327,6 @@ fn selected_openai_codex_home(
     private_home: &std::path::Path,
 ) -> Option<PathBuf> {
     (!credential_selection.reuses_existing()).then(|| private_home.to_path_buf())
-}
-
-pub(crate) fn secure_codex_home(home: PathBuf) -> Result<PathBuf, String> {
-    secure_private_directory(home).map_err(|error| {
-        if error.to_string().contains("symbolic link") {
-            "Rynna's Codex directory must not be a symbolic link or contain symbolic links"
-                .to_owned()
-        } else {
-            format!("failed to prepare Rynna's Codex directory: {error}")
-        }
-    })
 }
 
 #[derive(Deserialize)]
@@ -964,7 +863,7 @@ async fn verify_existing_openai_credentials_with_program(
             .env_remove("CODEX_HOME")
             .env_remove("RYNNA_CODEX_HOME")
             .stdin(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .output(),
     )
@@ -972,7 +871,8 @@ async fn verify_existing_openai_credentials_with_program(
     .map_err(|_| "OpenAI credential check timed out".to_owned())?
     .map_err(|error| format!("failed to check existing ChatGPT credentials: {error}"))?;
     if !output.status.success()
-        || !String::from_utf8_lossy(&output.stdout).contains("Logged in using ChatGPT")
+        || !(String::from_utf8_lossy(&output.stdout).contains("Logged in using ChatGPT")
+            || String::from_utf8_lossy(&output.stderr).contains("Logged in using ChatGPT"))
     {
         return Err("existing ChatGPT credentials are unavailable".to_owned());
     }
@@ -981,12 +881,18 @@ async fn verify_existing_openai_credentials_with_program(
 
 #[tauri::command]
 async fn create_provider(
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
     authentication_lock: State<'_, OpenAiAuthenticationLock>,
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
     provider: ProviderInput,
     profile: String,
 ) -> Result<ConfiguredProvider, String> {
     let _authentication = authentication_lock.acquire().await;
+    catalog
+        .lock()
+        .await
+        .resolve(&profile)
+        .map_err(|error| error.to_string())?;
     let mut store = provider_settings.lock().await;
     store.refresh().map_err(|error| error.to_string())?;
     if store.get(&profile, provider.kind()).is_some() {
@@ -995,30 +901,52 @@ async fn create_provider(
             provider.kind()
         ));
     }
+    drop(store);
     let provider = configured_provider_from_input(provider).await?;
-    store
-        .add(&profile, provider.clone())
-        .map_err(|error| error.to_string())?;
+    let mut catalog = catalog.lock().await;
+    let mut store = provider_settings.lock().await;
+    rynna_config::profile_update::save_provider_with_catalog(
+        &mut catalog,
+        &mut store,
+        &profile,
+        provider.clone(),
+        false,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(provider)
 }
 
 #[tauri::command]
 async fn update_provider(
+    catalog: State<'_, Arc<Mutex<ProfileCatalog>>>,
     authentication_lock: State<'_, OpenAiAuthenticationLock>,
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
     provider: ProviderInput,
     profile: String,
 ) -> Result<ConfiguredProvider, String> {
     let _authentication = authentication_lock.acquire().await;
+    catalog
+        .lock()
+        .await
+        .resolve(&profile)
+        .map_err(|error| error.to_string())?;
     let mut store = provider_settings.lock().await;
     store.refresh().map_err(|error| error.to_string())?;
     if store.get(&profile, provider.kind()).is_none() {
         return Err(format!("provider `{}` is not configured", provider.kind()));
     }
+    drop(store);
     let provider = configured_provider_from_input(provider).await?;
-    store
-        .update(&profile, provider.clone())
-        .map_err(|error| error.to_string())?;
+    let mut catalog = catalog.lock().await;
+    let mut store = provider_settings.lock().await;
+    rynna_config::profile_update::save_provider_with_catalog(
+        &mut catalog,
+        &mut store,
+        &profile,
+        provider.clone(),
+        true,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(provider)
 }
 
@@ -1162,10 +1090,13 @@ async fn save_memory_settings(
 }
 
 pub fn run() {
-    let catalog = configured_catalog()
+    let mut catalog = configured_catalog()
         .unwrap_or_else(|error| panic!("failed to load Rynna configuration: {error}"));
     let provider_settings = configured_provider_settings()
         .unwrap_or_else(|error| panic!("failed to load Rynna provider settings: {error}"));
+    catalog
+        .register_openai_accounts(&provider_settings)
+        .unwrap_or_else(|error| panic!("failed to register OpenAI account models: {error}"));
     let credential_profile = optional_env("RYNNA_PROFILE")
         .unwrap_or_else(|error| panic!("failed to select Rynna profile: {error}"))
         .unwrap_or_else(|| catalog.default_profile().to_owned());
@@ -1456,6 +1387,11 @@ fn configured_model_provider(
             .transpose()?,
     };
     let configured: Arc<dyn ModelProvider> = match provider.provider_kind {
+        ProviderKind::OpenAiAccount => Arc::new(CodexAppServerProvider::for_profile(
+            configured_provider_settings()?.path().to_owned(),
+            profile_name,
+            &provider.model,
+        )?),
         ProviderKind::OpenAiCompatible | ProviderKind::Mlx => Arc::new(
             OpenAiCompatibleProvider::new(&provider.api_base, &provider.model, api_key)
                 .map_err(|error| error.to_string())?,
@@ -1564,6 +1500,72 @@ mod tests {
         openai_account_reuses_existing_credentials, read_codex_message, selected_openai_codex_home,
         verify_existing_openai_credentials_with_program, write_codex_message,
     };
+
+    #[test]
+    fn provider_commands_resolve_the_managed_catalog_and_persist_changes() {
+        use std::sync::Arc;
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        use tokio::sync::Mutex;
+
+        let directory = tempfile::tempdir().unwrap();
+        let settings_path = directory.path().join("providers.yaml");
+        let app = mock_builder()
+            .manage(Arc::new(Mutex::new(
+                rynna_config::ProfileCatalog::built_in(),
+            )))
+            .manage(Mutex::new(
+                ProviderSettingsStore::load(&settings_path).unwrap(),
+            ))
+            .manage(OpenAiAuthenticationLock::default())
+            .invoke_handler(tauri::generate_handler![
+                super::create_provider,
+                super::update_provider
+            ])
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        for (command, api_base) in [
+            ("create_provider", "http://localhost:11434/v1"),
+            ("update_provider", "http://localhost:11435/v1"),
+        ] {
+            let provider = serde_json::json!({"kind": "ollama", "api_base": api_base});
+            let response = tauri::test::get_ipc_response(
+                &webview,
+                tauri::webview::InvokeRequest {
+                    cmd: command.into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: if cfg!(any(windows, target_os = "android")) {
+                        "http://tauri.localhost"
+                    } else {
+                        "tauri://localhost"
+                    }
+                    .parse()
+                    .unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(
+                        serde_json::json!({"profile": "default", "provider": provider}),
+                    ),
+                    headers: Default::default(),
+                    invoke_key: tauri::test::INVOKE_KEY.to_owned(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("{command} failed: {error}"));
+            assert_eq!(
+                response.deserialize::<serde_json::Value>().unwrap(),
+                provider
+            );
+            assert_eq!(
+                ProviderSettingsStore::load(&settings_path)
+                    .unwrap()
+                    .get("default", "ollama"),
+                Some(&ConfiguredProvider::Ollama {
+                    api_base: api_base.into()
+                })
+            );
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]

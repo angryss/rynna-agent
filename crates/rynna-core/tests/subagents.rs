@@ -534,3 +534,13 @@ async fn dropping_parent_response_drops_a_subagents_active_tool() {
         .await
         .expect("subagent tool outlived parent");
 }
+
+#[tokio::test]
+async fn providers_without_tool_support_do_not_receive_native_tools() {
+    let mut provider = provider(json!({}));
+    provider.tools_supported = false;
+    let provider = Arc::new(provider);
+    let agent = Agent::with_tools(provider.clone(), "policy", vec![Arc::new(ReadFile)]).unwrap();
+    agent.respond(&[], "hello").await.unwrap();
+    assert!(provider.requests.lock().unwrap()[0].tools.is_empty());
+}

@@ -4018,6 +4018,7 @@ dependencies = [
  "futures-util",
  "predicates",
  "ratatui",
+ "reqwest",
  "rynna-config",
  "rynna-core",
  "rynna-mcp",
@@ -4150,10 +4151,13 @@ name = "rynna-provider-openai"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "dirs",
  "reqwest",
+ "rynna-config",
  "rynna-core",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "wiremock",

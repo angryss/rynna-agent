@@ -23,6 +23,8 @@ pub const DEFAULT_MODEL: &str = "qwen3:8b";
 pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_PROVIDER: &str = "ollama";
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are Rynna, a careful and capable AI software agent.";
+pub const OPENAI_ACCOUNT_PROVIDER: &str = "openai-account";
+pub const OPENAI_ACCOUNT_MODEL: &str = "Codex default";
 pub const OPENAI_ACCOUNT_PROFILE: &str = "openai-account";
 const CONFIG_VERSION: u32 = 1;
 const PROVIDER_SETTINGS_VERSION: u32 = 1;
@@ -154,6 +156,10 @@ impl ProviderSettingsStore {
         let _lock = self.lock_exclusive()?;
         self.providers = read_provider_settings(&self.path)?;
         Ok(())
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn mcp_settings_path(&self) -> PathBuf {
@@ -671,6 +677,8 @@ pub enum ProviderSettingsError {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ProviderKind {
+    #[serde(rename = "openai-account")]
+    OpenAiAccount,
     #[serde(rename = "openai-compatible")]
     OpenAiCompatible,
     #[serde(rename = "mlx")]
@@ -852,6 +860,57 @@ impl ProfileCatalog {
 
     pub fn provider_ids(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
+    }
+
+    /// Backfill accounts connected before account-backed models were supported.
+    /// Keep the new model disabled so connecting credentials never changes a tool-enabled
+    /// fallback chain or the user's chosen default model.
+    pub fn register_openai_accounts(
+        &mut self,
+        settings: &ProviderSettingsStore,
+    ) -> Result<(), ConfigError> {
+        let _lock = self.lock_exclusive()?;
+        let mut file = self.fresh_file()?;
+        let mut changed = false;
+        for (name, profile) in &mut file.profiles {
+            if settings.get(name, "openai").is_none() {
+                continue;
+            }
+            if let Some(provider) = file.providers.get(OPENAI_ACCOUNT_PROVIDER) {
+                if provider.kind != ProviderKind::OpenAiAccount {
+                    return Err(ConfigError::OpenAiAccountProviderConflict);
+                }
+            } else {
+                file.providers.insert(
+                    OPENAI_ACCOUNT_PROVIDER.to_owned(),
+                    ProviderConfig {
+                        kind: ProviderKind::OpenAiAccount,
+                        api_base: String::new(),
+                        api_key_env: None,
+                        claude_program: default_claude_program(),
+                    },
+                );
+                changed = true;
+            }
+            if !profile
+                .providers
+                .iter()
+                .any(|entry| entry.provider == OPENAI_ACCOUNT_PROVIDER)
+            {
+                profile.providers.push(ProfileProvider {
+                    provider: OPENAI_ACCOUNT_PROVIDER.to_owned(),
+                    model: OPENAI_ACCOUNT_MODEL.to_owned(),
+                    enabled: false,
+                    is_default: false,
+                    context_window: None,
+                });
+                changed = true;
+            }
+        }
+        if changed {
+            self.apply_file(file)?;
+        }
+        Ok(())
     }
 
     pub fn add_profile(&mut self, profile: Profile) -> Result<Profile, ConfigError> {
@@ -1176,6 +1235,10 @@ impl ProfileCatalog {
                     "Claude program",
                     provider.claude_program.to_string_lossy().as_ref(),
                 )?;
+            } else if provider.kind == ProviderKind::OpenAiAccount {
+                if !provider.api_base.is_empty() || provider.api_key_env.is_some() {
+                    return Err(ConfigError::OpenAiAccountApiConfiguration);
+                }
             } else {
                 ensure_not_blank("provider API base URL", &provider.api_base)?;
                 let api_base = Url::parse(&provider.api_base).map_err(|source| {
@@ -1504,6 +1567,12 @@ impl From<FileSystemCapabilityConfig> for FileSystemCapability {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error(
+        "OpenAI account providers use saved account credentials, not API base URLs or key environment variables"
+    )]
+    OpenAiAccountApiConfiguration,
+    #[error("provider `openai-account` is already defined with a different kind")]
+    OpenAiAccountProviderConflict,
     #[error("invalid workflow: {0}")]
     InvalidWorkflow(String),
     #[error(transparent)]

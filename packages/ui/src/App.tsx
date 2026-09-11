@@ -728,7 +728,14 @@ export function App({ client }: AppProps) {
         ...current.filter((provider) => provider.kind !== saved.kind),
         saved,
       ]);
-      if (saved.kind === 'openai') await refreshOpenAiAccountStatus();
+      if (saved.kind === 'openai') {
+        await refreshOpenAiAccountStatus();
+        if (client.listProfiles) {
+          const catalog = await client.listProfiles();
+          setConfiguredProfiles(catalog.configured_profiles ?? catalog.profiles);
+          setCatalogProviderIds(catalog.provider_ids);
+        }
+      }
       setEditingProvider(null);
     } catch (providerError) {
       setError(
@@ -1797,6 +1804,9 @@ export function App({ client }: AppProps) {
                 <div>
                   <h2>Models</h2>
                   <p>Saved model changes take effect after restart. Chat uses the currently running models until then.</p>
+                  {modelProvider === 'openai-account' ? (
+                    <p>Enable Codex default to use your connected OpenAI account, or add a model ID available to your account. Account models do not use Rynna tools; fallback chains containing them are tool-free.</p>
+                  ) : null}
                   <p>Add the exact model name your provider serves, then choose which models are available in chat.</p>
                 </div>
               </div>

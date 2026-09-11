@@ -50,6 +50,7 @@ struct AppState {
     codex_program: PathBuf,
     codex_home: PathBuf,
     claude_program: PathBuf,
+    provider_authentication: Arc<Mutex<()>>,
 }
 
 pub fn router(agent: Agent) -> Router {
@@ -280,6 +281,7 @@ fn router_with_runtime(
             catalog,
             workflows,
             provider_settings: provider_settings.map(|store| Arc::new(Mutex::new(store))),
+            provider_authentication: Arc::new(Mutex::new(())),
             codex_program,
             codex_home,
             claude_program,
@@ -908,6 +910,7 @@ async fn create_provider(
 ) -> Result<Json<ConfiguredProvider>, ApiError> {
     ensure_known_profile(&state, &profile).await?;
     let Json(input) = request.map_err(ApiError::from)?;
+    let _authentication = state.provider_authentication.lock().await;
     let mut store = provider_store(&state)?.lock().await;
     store.refresh().map_err(provider_store_error)?;
     if store.get(&profile, input.kind()).is_some() {
@@ -916,10 +919,28 @@ async fn create_provider(
             input.kind()
         )));
     }
+    drop(store);
     let provider = configured_provider(&state, input).await?;
-    store
-        .add(&profile, provider.clone())
-        .map_err(provider_store_error)?;
+    // Browser login can take minutes. Do not hold the catalog lock while waiting.
+    let mut catalog = match &state.catalog {
+        Some(catalog) => Some(catalog.lock().await),
+        None => None,
+    };
+    let mut store = provider_store(&state)?.lock().await;
+    if let Some(catalog) = &mut catalog {
+        rynna_config::profile_update::save_provider_with_catalog(
+            catalog,
+            &mut store,
+            &profile,
+            provider.clone(),
+            false,
+        )
+        .map_err(profile_update_error)?;
+    } else {
+        store
+            .add(&profile, provider.clone())
+            .map_err(provider_store_error)?;
+    }
     Ok(Json(provider))
 }
 
@@ -935,6 +956,7 @@ async fn update_provider(
             "provider path and request kind must match",
         ));
     }
+    let _authentication = state.provider_authentication.lock().await;
     let mut store = provider_store(&state)?.lock().await;
     store.refresh().map_err(provider_store_error)?;
     if store.get(&profile, &kind).is_none() {
@@ -942,10 +964,28 @@ async fn update_provider(
             "provider `{kind}` is not configured"
         )));
     }
+    drop(store);
     let provider = configured_provider(&state, input).await?;
-    store
-        .update(&profile, provider.clone())
-        .map_err(provider_store_error)?;
+    // Browser login can take minutes. Do not hold the catalog lock while waiting.
+    let mut catalog = match &state.catalog {
+        Some(catalog) => Some(catalog.lock().await),
+        None => None,
+    };
+    let mut store = provider_store(&state)?.lock().await;
+    if let Some(catalog) = &mut catalog {
+        rynna_config::profile_update::save_provider_with_catalog(
+            catalog,
+            &mut store,
+            &profile,
+            provider.clone(),
+            true,
+        )
+        .map_err(profile_update_error)?;
+    } else {
+        store
+            .update(&profile, provider.clone())
+            .map_err(provider_store_error)?;
+    }
     Ok(Json(provider))
 }
 
@@ -1136,7 +1176,7 @@ async fn existing_chatgpt_credentials_available(state: &AppState) -> Result<bool
             .env_remove("CODEX_HOME")
             .env_remove("RYNNA_CODEX_HOME")
             .stdin(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .output(),
     )
@@ -1144,7 +1184,8 @@ async fn existing_chatgpt_credentials_available(state: &AppState) -> Result<bool
     .map_err(|_| provider_settings_error("OpenAI credential check timed out"))?
     .map_err(|_| provider_settings_error("failed to check existing ChatGPT credentials"))?;
     Ok(output.status.success()
-        && String::from_utf8_lossy(&output.stdout).contains("Logged in using ChatGPT"))
+        && (String::from_utf8_lossy(&output.stdout).contains("Logged in using ChatGPT")
+            || String::from_utf8_lossy(&output.stderr).contains("Logged in using ChatGPT")))
 }
 
 fn provider_settings_error(message: impl Into<String>) -> ApiError {
