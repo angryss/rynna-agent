@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1530,7 +1530,7 @@ describe('App', () => {
       ...profile, providers: [...profile.providers, { provider, model, enabled: true, default: false }],
     });
     expect(await screen.findByRole('checkbox', { name: `Select ${model}` })).toBeInTheDocument();
-    expect(input).toHaveValue('');
+    await waitFor(() => expect(input).toHaveValue(''));
     await user.type(input, model);
     await user.click(add);
     expect(screen.getByRole('alert')).toHaveTextContent('already configured');
@@ -2151,9 +2151,9 @@ it('refreshes account models after web provider login without reloading the app'
 
 it('ignores model suggestions from a previous provider and allows custom models after lookup failure', async () => {
   const user = userEvent.setup();
-  let finishFirst!: (models: string[]) => void;
+  let finishFirst!: (models: { id: string; context_window?: number }[]) => void;
   const listProviderModels = vi.fn((_profile: string, provider: string) => provider === 'alpha'
-    ? new Promise<string[]>((resolve) => { finishFirst = resolve; })
+    ? new Promise<{ id: string; context_window?: number }[]>((resolve) => { finishFirst = resolve; })
     : Promise.reject(new Error('unavailable')));
   const profile = testProfile('work', { providers: [{ provider: 'alpha', model: 'existing', enabled: true, default: true }] });
   const updateProfile = vi.fn().mockImplementation(async (_name, value) => value);
@@ -2167,11 +2167,39 @@ it('ignores model suggestions from a previous provider and allows custom models 
   await user.type(provider, 'beta');
   await user.keyboard('{Enter}');
   expect(await screen.findByText('Could not load models. You can still enter a model name.')).toBeInTheDocument();
-  await act(async () => finishFirst(['stale-model']));
+  await act(async () => finishFirst([{ id: 'stale-model', context_window: 128000 }]));
   await user.type(screen.getByRole('combobox', { name: 'Model name' }), 'custom/model');
   expect(screen.queryByRole('option', { name: 'stale-model' })).not.toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Add model' }));
   expect(updateProfile).toHaveBeenCalledWith('work', expect.objectContaining({ providers: expect.arrayContaining([
     expect.objectContaining({ provider: 'beta', model: 'custom/model' }),
   ]) }));
+});
+
+it('fills missing context windows, preserves manual limits, and saves detected limits for new models', async () => {
+  const user = userEvent.setup();
+  const profile = testProfile('work', { providers: [
+    { provider: 'alpha', model: 'existing', enabled: true, default: true },
+    { provider: 'alpha', model: 'manual', enabled: true, default: false, context_window: 16000 },
+    { provider: 'alpha', model: 'unknown', enabled: false, default: false },
+  ] });
+  const updateProfile = vi.fn().mockImplementation(async (_name, value) => value);
+  render(<App client={{ respond: vi.fn(), updateProfile,
+    listProviderModels: vi.fn().mockResolvedValue([
+      { id: 'existing', context_window: 128000 }, { id: 'manual', context_window: 256000 },
+      { id: 'new-model', context_window: 64000 }, { id: 'unknown' },
+    ]),
+    listProfiles: vi.fn().mockResolvedValue({ default_profile: 'work', provider_ids: ['alpha'], profiles: [profile], configured_profiles: [profile] }) }} />);
+  await user.click(screen.getByRole('button', { name: 'Settings' }));
+  await user.click(await screen.findByRole('button', { name: 'Models' }));
+  await waitFor(() => expect(screen.getByRole('spinbutton', { name: 'Context window for existing' })).toHaveValue(128000));
+  expect(screen.getByRole('spinbutton', { name: 'Context window for manual' })).toHaveValue(16000);
+  expect(screen.getByRole('spinbutton', { name: 'Context window for unknown' })).toHaveValue(null);
+  expect(updateProfile).toHaveBeenCalledTimes(1);
+  await user.type(screen.getByRole('combobox', { name: 'Model name' }), 'new-model');
+  await user.click(screen.getByRole('button', { name: 'Add model' }));
+  await waitFor(() => expect(screen.getByRole('spinbutton', { name: 'Context window for new-model' })).toHaveValue(64000));
+  await user.type(screen.getByRole('combobox', { name: 'Model name' }), 'custom-model');
+  await user.click(screen.getByRole('button', { name: 'Add model' }));
+  await waitFor(() => expect(screen.getByRole('spinbutton', { name: 'Context window for custom-model' })).toHaveValue(null));
 });

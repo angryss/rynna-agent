@@ -180,7 +180,7 @@ export interface AgentClient {
   getOpenAiAccount?(): Promise<OpenAiAccount>;
   getExistingOpenAiAccount?(): Promise<OpenAiAccount>;
   connectOpenAi?(request: ConnectOpenAiRequest): Promise<OpenAiAccount>;
-  listProviderModels?(profile: string, provider: string): Promise<string[]>;
+  listProviderModels?(profile: string, provider: string): Promise<ProviderModel[]>;
   listProviders?(profile: string): Promise<ConfiguredProvider[]>;
   createProvider?(provider: ProviderInput, profile: string): Promise<ConfiguredProvider>;
   updateProvider?(provider: ProviderInput, profile: string): Promise<ConfiguredProvider>;
@@ -201,3 +201,19 @@ export interface WorkflowRun {
 }
 export type WorkflowAction = { action: 'pause' | 'cancel' } | { action: 'resume'; acknowledge_uncertain: boolean } | { action: 'steer'; text: string; criteria: WorkflowCriterion[] | null };
 export type WorkflowControl = WorkflowAction & { profile: string; session_id: string; expected_revision: number };
+
+export interface ProviderModel { id: string; context_window?: number }
+
+export function parseProviderModels(value: unknown): ProviderModel[] {
+  if (!Array.isArray(value)) throw new Error('Rynna returned invalid model data');
+  return value.map((entry) => {
+    // Older hosts return only model IDs.
+    const model = typeof entry === 'string' ? { id: entry } : entry;
+    if (!model || typeof model.id !== 'string' || !model.id.trim()
+      || (model.context_window !== undefined && (!Number.isInteger(model.context_window)
+        || model.context_window < 1024 || model.context_window > 100_000_000))) {
+      throw new Error('Rynna returned invalid model data');
+    }
+    return model as ProviderModel;
+  });
+}

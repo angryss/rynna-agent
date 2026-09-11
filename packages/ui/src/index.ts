@@ -1,3 +1,5 @@
+export { parseProviderModels } from './contracts';
+export type { ProviderModel } from './contracts';
 export { isContextResponse } from './contracts';
 export type { ContextRequest, ContextResponse } from './contracts';
 export { isMcpSettings, isMemorySettings } from './contracts';

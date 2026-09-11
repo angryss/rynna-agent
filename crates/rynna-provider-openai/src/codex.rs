@@ -10,6 +10,8 @@ use tokio::io::BufReader;
 use tokio::process::Command;
 use tokio::time::{Duration, Instant};
 
+use super::models::{ProviderModel, context_window};
+
 use super::codex_protocol::{
     OpenAiCredentialSelection, read_codex_message, read_codex_response, secure_codex_home,
     write_codex_message,
@@ -23,6 +25,7 @@ const MAX_CODEX_TURN_MESSAGES: usize = 4096;
 #[derive(Clone)]
 pub struct CodexAppServerProvider {
     thinking: rynna_core::ThinkingLevel,
+    context_window: Option<usize>,
     program: PathBuf,
     codex_home: Option<PathBuf>,
     credential_selection: Option<OpenAiCredentialSelection>,
@@ -34,6 +37,7 @@ impl CodexAppServerProvider {
     pub fn new(program: impl Into<PathBuf>, model: Option<String>) -> Self {
         Self {
             thinking: rynna_core::ThinkingLevel::Default,
+            context_window: None,
             program: program.into(),
             codex_home: None,
             credential_selection: None,
@@ -49,6 +53,7 @@ impl CodexAppServerProvider {
     ) -> Self {
         Self {
             thinking: rynna_core::ThinkingLevel::Default,
+            context_window: None,
             program: program.into(),
             codex_home: Some(codex_home.into()),
             credential_selection: None,
@@ -65,6 +70,7 @@ impl CodexAppServerProvider {
     ) -> Self {
         Self {
             thinking: rynna_core::ThinkingLevel::Default,
+            context_window: None,
             program: program.into(),
             codex_home: Some(codex_home.into()),
             credential_selection: Some(credential_selection),
@@ -88,6 +94,11 @@ impl CodexAppServerProvider {
         );
         provider.profile_settings = Some((settings_path, profile.to_owned()));
         Ok(provider)
+    }
+
+    pub fn with_context_window(mut self, context_window: Option<usize>) -> Self {
+        self.context_window = context_window;
+        self
     }
 
     fn account_command(&self) -> Result<Command, ProviderError> {
@@ -128,10 +139,16 @@ impl CodexAppServerProvider {
     }
 
     /// Read-only discovery: no thread or turn is started, so the inference version pin does not apply.
-    pub async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
+    pub async fn list_models(&self) -> Result<Vec<ProviderModel>, ProviderError> {
         let deadline = Instant::now() + Duration::from_secs(15);
         let workspace = tempfile::tempdir().map_err(provider_error)?;
         let mut command = self.account_command()?;
+        let cache_home = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == "CODEX_HOME")
+            .and_then(|(_, value)| value.map(PathBuf::from))
+            .or_else(|| dirs::home_dir().map(|home| home.join(".codex")));
         command
             .arg("app-server")
             .current_dir(workspace.path())
@@ -171,6 +188,7 @@ impl CodexAppServerProvider {
         .await
         .map_err(ProviderError::new)?;
         let mut models = Vec::new();
+        let mut recommended_model: Option<String> = None;
         let mut cursor: Option<String> = None;
         let mut seen = HashSet::new();
         for id in 2..22 {
@@ -198,15 +216,52 @@ impl CodexAppServerProvider {
                     .and_then(serde_json::Value::as_str)
                     .filter(|id| !id.trim().is_empty())
                     .ok_or_else(|| ProviderError::new("Codex omitted a model ID"))?;
-                models.push(model.to_owned());
+                if entry.get("isDefault").and_then(serde_json::Value::as_bool) == Some(true) {
+                    recommended_model = Some(model.to_owned());
+                }
+                models.push(ProviderModel {
+                    id: model.to_owned(),
+                    context_window: None,
+                });
             }
             cursor = response
                 .pointer("/result/nextCursor")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned);
             let Some(next) = &cursor else {
-                models.sort();
-                models.dedup();
+                models.sort_by(|a, b| a.id.cmp(&b.id));
+                models.dedup_by(|a, b| a.id == b.id);
+                if let Some(home) = cache_home {
+                    enrich_context_windows(&mut models, &home).await;
+                }
+                // Resolve the sentinel against the same layered config used by a new session.
+                let config_deadline = deadline.min(Instant::now() + Duration::from_secs(2));
+                if write_codex_message(
+                    &mut stdin,
+                    &serde_json::json!({
+                        "method":"config/read", "id":22, "params":{"includeLayers":false}
+                    }),
+                    config_deadline,
+                )
+                .await
+                .is_ok()
+                    && let Ok(config) = read_codex_response(&mut stdout, 22, config_deadline).await
+                {
+                    let default_model = config
+                        .pointer("/result/config/model")
+                        .and_then(serde_json::Value::as_str)
+                        .or(recommended_model.as_deref());
+                    if let Some(window) = default_model
+                        .and_then(|id| models.iter().find(|model| model.id == id))
+                        .and_then(|model| model.context_window)
+                    {
+                        models.push(ProviderModel {
+                            id: rynna_config::OPENAI_ACCOUNT_MODEL.into(),
+                            context_window: Some(window),
+                        });
+                    }
+                }
+                models.sort_by(|a, b| a.id.cmp(&b.id));
                 return Ok(models);
             };
             if !seen.insert(next.clone()) {
@@ -314,6 +369,9 @@ impl CodexAppServerProvider {
             ),
             "serviceName": "rynna"
         });
+        if let Some(window) = self.context_window {
+            thread_params["config"]["model_context_window"] = serde_json::json!(window);
+        }
         if let Some(model) = &self.model {
             thread_params["model"] = serde_json::Value::String(model.clone());
         }
@@ -650,5 +708,75 @@ mod tests {
             error.to_string(),
             "model provider failed: Codex attempted to start a disabled tool"
         );
+    }
+}
+
+// model/list omits token limits. Codex refreshes this metadata in the selected home.
+// The detected maximum is saved and passed as model_context_window when starting a session.
+async fn enrich_context_windows(models: &mut [ProviderModel], home: &std::path::Path) {
+    use tokio::io::AsyncReadExt;
+    let Ok(file) = tokio::fs::File::open(home.join("models_cache.json")).await else {
+        return;
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .is_err()
+        || bytes.len() > 4 * 1024 * 1024
+    {
+        return;
+    }
+    let Ok(cache) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return;
+    };
+    let Some(entries) = cache.get("models").and_then(serde_json::Value::as_array) else {
+        return;
+    };
+    for model in models {
+        model.context_window = entries
+            .iter()
+            .find(|entry| entry.get("slug").and_then(serde_json::Value::as_str) == Some(&model.id))
+            .and_then(|entry| {
+                entry
+                    .get("max_context_window")
+                    .and_then(context_window)
+                    .or_else(|| entry.get("context_window").and_then(context_window))
+            });
+    }
+}
+
+#[cfg(test)]
+mod context_metadata_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn context_metadata_matches_exact_model_and_prefers_supported_maximum() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("models_cache.json"),
+            serde_json::json!({"models": [
+                {"slug":"known", "context_window":128000, "max_context_window":1000000},
+                {"slug":"invalid", "context_window":-1},
+                {"slug":"only-maximum", "max_context_window":1000000}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let mut models = ["known", "unknown", "invalid", "only-maximum"].map(|id| ProviderModel {
+            id: id.into(),
+            context_window: None,
+        });
+        enrich_context_windows(&mut models, home.path()).await;
+        assert_eq!(models[0].context_window, Some(1000000));
+        assert!(
+            models[1..3]
+                .iter()
+                .all(|model| model.context_window.is_none())
+        );
+        std::fs::write(home.path().join("models_cache.json"), "invalid json").unwrap();
+        enrich_context_windows(&mut models, home.path()).await;
+        assert_eq!(models[0].context_window, Some(1000000));
     }
 }

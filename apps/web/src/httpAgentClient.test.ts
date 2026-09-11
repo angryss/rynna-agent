@@ -309,7 +309,18 @@ it('requests a session title independently of the chat endpoint', async () => {
 it('discovers models for the selected provider and rejects invalid results', async () => {
   const transport = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(['model-a']))).mockResolvedValueOnce(new Response('[123]'));
   const client = new HttpAgentClient('/custom/v1/respond', transport);
-  await expect(client.listProviderModels('work profile', 'custom/provider')).resolves.toEqual(['model-a']);
+  await expect(client.listProviderModels('work profile', 'custom/provider')).resolves.toEqual([{ id: 'model-a' }]);
   expect(transport).toHaveBeenLastCalledWith('/custom/v1/profiles/work%20profile/providers/custom%2Fprovider/models', { method: 'GET', headers: { accept: 'application/json' } });
   await expect(client.listProviderModels('work profile', 'custom/provider')).rejects.toThrow('invalid model data');
+});
+
+it('retains discovered context limits and rejects invalid limits', async () => {
+  const models = [{ id: 'model', context_window: 128000 }];
+  const client = new HttpAgentClient('/v1/respond', vi.fn().mockResolvedValue(new Response(JSON.stringify(models))));
+  await expect(client.listProviderModels('work', 'provider')).resolves.toEqual(models);
+});
+it.each([0, -1, 1023, 100000001, 1.5, '128000', null])('rejects invalid discovered context size %s', async (limit) => {
+  const models = [{ id: 'model', context_window: limit }];
+  const client = new HttpAgentClient('/v1/respond', vi.fn().mockResolvedValue(new Response(JSON.stringify(models))));
+  await expect(client.listProviderModels('work', 'provider')).rejects.toThrow('invalid model data');
 });

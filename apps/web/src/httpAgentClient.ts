@@ -1,4 +1,4 @@
-import { isContextResponse, type ContextRequest, type ContextResponse } from '@rynna/ui';
+import { parseProviderModels, type ProviderModel, isContextResponse, type ContextRequest, type ContextResponse } from '@rynna/ui';
 import type { Workflow, WorkflowMetadata, WorkflowStart, WorkflowRun, WorkflowControl } from '@rynna/ui';
 import { isMcpSettings, isMemorySettings } from '@rynna/ui';
 import type {
@@ -82,12 +82,9 @@ export class HttpAgentClient implements AgentClient {
     return body;
   }
 
-  async listProviderModels(profile: string, provider: string): Promise<string[]> {
+  async listProviderModels(profile: string, provider: string): Promise<ProviderModel[]> {
     const models = await this.providerRequest(`${this.profileProvidersEndpoint(profile)}/${encodeURIComponent(provider)}/models`, 'GET');
-    if (!Array.isArray(models) || !models.every((model) => typeof model === 'string')) {
-      throw new Error('Rynna returned invalid model data');
-    }
-    return models;
+    return parseProviderModels(models);
   }
 
   async listProviders(profile: string): Promise<ConfiguredProvider[]> {

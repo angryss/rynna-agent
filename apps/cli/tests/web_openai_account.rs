@@ -116,7 +116,7 @@ async fn web_login_registers_models_and_restart_streams_through_private_account(
         .unwrap()
         .error_for_status()
         .unwrap();
-    let models: Vec<String> = client
+    let models: Vec<serde_json::Value> = client
         .get(format!(
             "{}/v1/profiles/default/providers/openai-account/models",
             server.1
@@ -129,7 +129,14 @@ async fn web_login_registers_models_and_restart_streams_through_private_account(
         .json()
         .await
         .unwrap();
-    assert_eq!(models, ["account-model", "second-model"]);
+    assert_eq!(
+        models,
+        [
+            json!({"id":"Codex default", "context_window":256000}),
+            json!({"id":"account-model", "context_window":256000}),
+            json!({"id":"second-model"})
+        ]
+    );
     assert!(
         !directory.join("calls.jsonl").exists(),
         "model lookup must not start inference"
@@ -151,6 +158,7 @@ async fn web_login_registers_models_and_restart_streams_through_private_account(
     profile["providers"][1]["enabled"] = json!(true);
     profile["providers"][1]["default"] = json!(true);
     profile["providers"][1]["model"] = json!("account-model");
+    profile["providers"][1]["context_window"] = models[0]["context_window"].clone();
     client
         .put(format!("{}/v1/profiles/default", server.1))
         .json(&profile)

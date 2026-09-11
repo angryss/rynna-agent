@@ -294,7 +294,18 @@ it('requests a session title through the dedicated desktop command', async () =>
 it('discovers models for the selected provider and rejects invalid results', async () => {
   const transport = vi.fn().mockResolvedValueOnce(['model-a']).mockResolvedValueOnce([123]);
   const client = new TauriAgentClient(transport);
-  await expect(client.listProviderModels('work profile', 'custom/provider')).resolves.toEqual(['model-a']);
+  await expect(client.listProviderModels('work profile', 'custom/provider')).resolves.toEqual([{ id: 'model-a' }]);
   expect(transport).toHaveBeenLastCalledWith('list_provider_models', { profile: 'work profile', provider: 'custom/provider' });
   await expect(client.listProviderModels('work profile', 'custom/provider')).rejects.toThrow('invalid model data');
+});
+
+it('retains discovered context limits and rejects invalid limits', async () => {
+  const models = [{ id: 'model', context_window: 128000 }];
+  const client = new TauriAgentClient(vi.fn().mockResolvedValue(models));
+  await expect(client.listProviderModels('work', 'provider')).resolves.toEqual(models);
+});
+it.each([0, -1, 1023, 100000001, 1.5, '128000', null])('rejects invalid discovered context size %s', async (limit) => {
+  const models = [{ id: 'model', context_window: limit }];
+  const client = new TauriAgentClient(vi.fn().mockResolvedValue(models));
+  await expect(client.listProviderModels('work', 'provider')).rejects.toThrow('invalid model data');
 });
