@@ -584,3 +584,19 @@ only warnings are reported, so it can gate a deploy or wrap a cron entry:
 ```bash
 rynna doctor && rynna run "summarize today's alerts"
 ```
+
+### YOLO mode
+
+Run `rynna --yolo chat`, `rynna --yolo run --prompt "..."`, or
+`rynna --yolo serve` to have the agent perform requested actions without asking
+for permission or confirmation. `RYNNA_YOLO=true` is equivalent for the CLI.
+The flag applies to all profiles loaded by the process, including server requests.
+
+For a persistent setting, add `yolo: true` under the desired profile in
+`config.yaml`. This applies to CLI, web, and desktop after restart and is preserved
+when editing or renaming the profile. The default is `false`.
+
+YOLO mode supplies a system instruction to the model, including helper agents;
+Rynna currently has no separate approval dialog to bypass. Model compliance is
+not guaranteed. Missing task information can still require clarification, and
+configured filesystem and command restrictions remain enforced.

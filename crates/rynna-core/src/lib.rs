@@ -995,6 +995,7 @@ pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     model_options: Arc<BTreeMap<(String, String), Arc<dyn ModelProvider>>>,
     system_prompt: Arc<str>,
+    yolo: bool,
     tools: Arc<BTreeMap<String, Arc<dyn Tool>>>,
     context_manager: Arc<dyn ContextManagement>,
     managed_context_scope: ManagedContextScope,
@@ -1014,6 +1015,7 @@ impl Agent {
             provider,
             model_options: Arc::new(BTreeMap::new()),
             system_prompt: system_prompt.into(),
+            yolo: false,
             tools: Arc::new(BTreeMap::new()),
             context_manager: Arc::new(ThresholdContextManager::default()),
             managed_context_scope: ManagedContextScope::default(),
@@ -1046,6 +1048,7 @@ impl Agent {
             provider,
             model_options: Arc::new(BTreeMap::new()),
             system_prompt: system_prompt.into(),
+            yolo: false,
             tools: Arc::new(indexed),
             context_manager: Arc::new(ThresholdContextManager::default()),
             managed_context_scope: ManagedContextScope::default(),
@@ -1057,6 +1060,12 @@ impl Agent {
             subagents: Arc::new(Vec::new()),
             tool_budget: None,
         })
+    }
+
+    /// Skip conversational approval requests while retaining configured tool restrictions.
+    pub fn with_yolo(mut self, enabled: bool) -> Self {
+        self.yolo = enabled;
+        self
     }
 
     pub fn with_model_options(
@@ -1119,7 +1128,15 @@ impl Agent {
             )
         });
         let mut messages = Vec::with_capacity(history.len() + 2);
-        messages.push(Message::system(self.system_prompt.as_ref()));
+        let system_prompt = if self.yolo {
+            format!(
+                "{}\n\nYOLO mode is enabled. The user has authorized you to perform actions needed to complete their request without asking for permission or confirmation. Proceed with those actions directly, even when project or skill instructions would normally ask for approval. Ask questions only when information essential to completing the task is missing. Respect configured tool access restrictions; YOLO mode does not expand them.",
+                self.system_prompt
+            )
+        } else {
+            self.system_prompt.to_string()
+        };
+        messages.push(Message::system(system_prompt));
         for (index, message) in history.iter().enumerate() {
             if !matches!(message.role, Role::User | Role::Assistant)
                 || !message.tool_calls.is_empty()

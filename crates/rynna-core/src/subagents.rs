@@ -55,6 +55,7 @@ pub(crate) fn delegation_tool(
     // Snapshot the selected provider, policy/project/skills, and already-discovered tools.
     // Constructing a fresh Agent leaves history, memory and further delegation disabled.
     let mut child = Agent::new(parent.provider.clone(), parent.system_prompt.clone());
+    child.yolo = parent.yolo;
     child.context_manager = parent.context_manager.clone();
     child.tools = Arc::new(tools.clone());
     child.tool_budget = Some(tool_budget);

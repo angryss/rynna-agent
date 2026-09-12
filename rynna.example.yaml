@@ -29,6 +29,8 @@ profiles:
   local:
     provider: ollama
     model: qwen3:8b
+    # Set true to perform requested actions without approval questions.
+    yolo: false
     system_prompt: You are Rynna, a careful and capable local AI software agent.
     default_project_directory: .
     # A project default must be one of its directories.

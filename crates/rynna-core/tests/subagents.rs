@@ -544,3 +544,24 @@ async fn providers_without_tool_support_do_not_receive_native_tools() {
     agent.respond(&[], "hello").await.unwrap();
     assert!(provider.requests.lock().unwrap()[0].tools.is_empty());
 }
+
+#[tokio::test]
+async fn yolo_is_inherited_by_delegated_agents() {
+    let provider = Arc::new(provider(json!({"subagent":"reviewer","task":"Review"})));
+    let agent = profiles(provider.clone())
+        .clone_agent("work")
+        .unwrap()
+        .with_yolo(true);
+    agent.respond(&[], "delegate").await.unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.messages[0].content.contains("Subagent role:"))
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.messages[0].content.contains("YOLO mode is enabled"))
+    );
+}

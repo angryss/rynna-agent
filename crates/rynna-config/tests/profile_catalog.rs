@@ -1955,3 +1955,27 @@ fn legacy_provider_settings_require_conversion_and_yaml_takes_precedence() {
         "private legacy settings"
     );
 }
+
+#[test]
+fn yolo_defaults_off_and_survives_profile_edits() {
+    let source = r#"
+version: 1
+default_profile: default
+providers:
+  local:
+    kind: openai-compatible
+    api_base: http://localhost:11434/v1
+profiles:
+  default:
+    provider: local
+    model: test
+"#;
+    let catalog = ProfileCatalog::from_yaml(source).unwrap();
+    assert!(!catalog.resolve("default").unwrap().yolo);
+    let mut catalog = ProfileCatalog::from_yaml(&format!("{source}    yolo: true\n")).unwrap();
+    let mut profile = catalog.resolve("default").unwrap().profile;
+    assert!(catalog.resolve("default").unwrap().yolo);
+    profile.name = "renamed".to_owned();
+    catalog.update_profile("default", profile).unwrap();
+    assert!(catalog.resolve("renamed").unwrap().yolo);
+}

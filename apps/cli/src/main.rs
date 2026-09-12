@@ -53,6 +53,9 @@ struct Cli {
     /// Trusted system instruction prepended to every request.
     #[arg(long, env = "RYNNA_SYSTEM_PROMPT", global = true)]
     system_prompt: Option<String>,
+    /// Perform requested actions without asking for permission or confirmation.
+    #[arg(long, env = "RYNNA_YOLO", global = true)]
+    yolo: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -137,6 +140,7 @@ enum OutputFormat {
 
 #[derive(Default)]
 struct ProfileOverrides {
+    yolo: bool,
     api_base: Option<String>,
     model: Option<String>,
     api_key: Option<String>,
@@ -184,6 +188,7 @@ async fn main() -> Result<()> {
         &catalog,
         &default_profile,
         ProfileOverrides {
+            yolo: cli.yolo,
             api_base: cli.api_base,
             model: cli.model,
             api_key: cli.api_key,
@@ -416,6 +421,7 @@ fn configured_profiles(
     };
     let mut configured = Vec::new();
     for mut profile in resolved {
+        profile.yolo |= overrides.yolo;
         let api_key_override = if profile.profile.name == default_profile {
             if let Some(api_base) = &overrides.api_base
                 && let Some(provider) = profile.providers.first_mut()
@@ -487,10 +493,16 @@ fn configured_agent(
 
     let tools = configured_tools(profile)?;
     if tools.is_empty() {
-        Ok(Agent::new(provider, profile.system_prompt.clone()).with_model_options(model_options))
+        Ok(Agent::new(provider, profile.system_prompt.clone())
+            .with_yolo(profile.yolo)
+            .with_model_options(model_options))
     } else {
         Agent::with_tools(provider, profile.system_prompt.clone(), tools)
-            .map(|agent| agent.with_model_options(model_options))
+            .map(|agent| {
+                agent
+                    .with_yolo(profile.yolo)
+                    .with_model_options(model_options)
+            })
             .context("invalid profile tool configuration")
     }
 }
@@ -857,6 +869,21 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn yolo_flag_is_global() {
+        use clap::Parser;
+        assert!(
+            super::Cli::try_parse_from(["rynna", "--yolo", "chat"])
+                .unwrap()
+                .yolo
+        );
+        assert!(
+            super::Cli::try_parse_from(["rynna", "serve", "--yolo"])
+                .unwrap()
+                .yolo
+        );
+    }
+
     use super::sanitize_terminal_text;
 
     #[test]

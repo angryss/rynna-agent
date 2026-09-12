@@ -935,3 +935,30 @@ async fn uncompacted_response_tokens_retain_the_full_prior_transcript() {
         1
     );
 }
+
+#[tokio::test]
+async fn yolo_instructions_are_opt_in_and_can_be_disabled() {
+    let provider = Arc::new(RecordingProvider::default());
+    let agent = Agent::new(provider.clone(), "You are Rynna.");
+    agent.respond(&[], "Do the work").await.unwrap();
+    let agent = agent.with_yolo(true);
+    agent.respond(&[], "Do the work").await.unwrap();
+    agent
+        .with_yolo(false)
+        .respond(&[], "Do the work")
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests[0].messages[0], Message::system("You are Rynna."));
+    assert!(
+        requests[1].messages[0]
+            .content
+            .contains("without asking for permission or confirmation")
+    );
+    assert!(
+        requests[1].messages[0]
+            .content
+            .contains("Respect configured tool access restrictions")
+    );
+    assert_eq!(requests[2].messages[0], requests[0].messages[0]);
+}
