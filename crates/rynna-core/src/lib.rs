@@ -1118,6 +1118,17 @@ impl Agent {
         self.respond_with(history, input, true, on_delta).await
     }
 
+    fn effective_system_prompt(&self) -> String {
+        if self.yolo {
+            format!(
+                "{}\n\nYOLO mode is enabled. The user has authorized you to perform actions needed to complete their request without asking for permission or confirmation. Proceed with those actions directly, even when project or skill instructions would normally ask for approval. Ask questions only when information essential to completing the task is missing. Respect configured tool access restrictions; YOLO mode does not expand them.",
+                self.system_prompt
+            )
+        } else {
+            self.system_prompt.to_string()
+        }
+    }
+
     fn history_messages(&self, history: &[Message]) -> Result<Vec<Message>, AgentError> {
         let expanded = context::expand_history(history)?;
         let history = expanded.as_slice();
@@ -1128,15 +1139,7 @@ impl Agent {
             )
         });
         let mut messages = Vec::with_capacity(history.len() + 2);
-        let system_prompt = if self.yolo {
-            format!(
-                "{}\n\nYOLO mode is enabled. The user has authorized you to perform actions needed to complete their request without asking for permission or confirmation. Proceed with those actions directly, even when project or skill instructions would normally ask for approval. Ask questions only when information essential to completing the task is missing. Respect configured tool access restrictions; YOLO mode does not expand them.",
-                self.system_prompt
-            )
-        } else {
-            self.system_prompt.to_string()
-        };
-        messages.push(Message::system(system_prompt));
+        messages.push(Message::system(self.effective_system_prompt()));
         for (index, message) in history.iter().enumerate() {
             if !matches!(message.role, Role::User | Role::Assistant)
                 || !message.tool_calls.is_empty()
