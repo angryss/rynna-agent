@@ -696,6 +696,7 @@ pub struct ResolvedProfile {
     pub profile: Profile,
     pub providers: Vec<ResolvedProvider>,
     pub system_prompt: String,
+    pub yolo: bool,
     pub capabilities: Vec<ResolvedCapability>,
 }
 
@@ -798,6 +799,7 @@ impl ProfileCatalog {
                     provider: None,
                     model: None,
                     system_prompt: Some(DEFAULT_SYSTEM_PROMPT.to_owned()),
+                    yolo: false,
                     active_skills: Vec::new(),
                     mcp_servers: Vec::new(),
                     capabilities: Vec::new(),
@@ -1007,6 +1009,9 @@ impl ProfileCatalog {
             .and_then(|name| file.profiles.get(name))
             .map(|p| p.workflows.clone())
             .unwrap_or_default();
+        let yolo = original_name
+            .and_then(|name| file.profiles.get(name))
+            .is_some_and(|existing| existing.yolo);
         let system_prompt = original_name
             .and_then(|name| file.profiles.get(name))
             .and_then(|existing| existing.system_prompt.clone());
@@ -1023,6 +1028,7 @@ impl ProfileCatalog {
                 provider: None,
                 model: None,
                 system_prompt,
+                yolo,
                 active_skills: profile.active_skills.clone(),
                 mcp_servers: profile.mcp_servers.clone(),
                 capabilities: profile.capabilities.clone(),
@@ -1195,6 +1201,7 @@ impl ProfileCatalog {
                 subagents: profile.subagents.clone(),
             },
             providers,
+            yolo: profile.yolo,
             system_prompt: profile
                 .system_prompt
                 .clone()
@@ -1508,6 +1515,8 @@ struct ProfileConfig {
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system_prompt: Option<String>,
+    #[serde(default)]
+    yolo: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     active_skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

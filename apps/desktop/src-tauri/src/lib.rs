@@ -1446,9 +1446,10 @@ pub fn compose_agent(
 ) -> Result<Agent, String> {
     let tools = configured_tools(profile)?;
     if tools.is_empty() {
-        Ok(Agent::new(provider, profile.system_prompt.clone()))
+        Ok(Agent::new(provider, profile.system_prompt.clone()).with_yolo(profile.yolo))
     } else {
         Agent::with_tools(provider, profile.system_prompt.clone(), tools)
+            .map(|agent| agent.with_yolo(profile.yolo))
             .map_err(|error| error.to_string())
     }
 }

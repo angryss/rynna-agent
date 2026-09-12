@@ -759,7 +759,7 @@ impl crate::Agent {
         // Only non-secret, effective policy and capability metadata belongs in this digest.
         let mut profile = profile.clone();
         profile.subagents.clear();
-        let policy = serde_json::json!({"system":self.system_prompt.as_ref(),"profile":profile,"tools":self.tools.values().map(|t|t.workflow_policy()).collect::<Vec<_>>(), "source":self.tool_source.as_ref().map(|s|s.workflow_policy()), "provider":self.provider.workflow_policy()});
+        let policy = serde_json::json!({"system":self.effective_system_prompt(),"profile":profile,"tools":self.tools.values().map(|t|t.workflow_policy()).collect::<Vec<_>>(), "source":self.tool_source.as_ref().map(|s|s.workflow_policy()), "provider":self.provider.workflow_policy()});
         Ok(Sha256::digest(policy.to_string().as_bytes())
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -799,7 +799,7 @@ impl crate::Agent {
         // Fail instead of allowing context compaction to remove criteria.
         let request = crate::CompletionRequest {
             messages: vec![
-                crate::Message::system(agent.system_prompt.as_ref()),
+                crate::Message::system(agent.effective_system_prompt()),
                 crate::Message::user(&prompt),
             ],
             tools: agent.tools.values().map(|t| t.definition()).collect(),

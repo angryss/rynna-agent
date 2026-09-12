@@ -24,13 +24,20 @@ fn request() -> Start {
     serde_json::from_value(serde_json::json!({"request_id":uuid::Uuid::new_v4(),"session_id":uuid::Uuid::new_v4(),"profile":"default","project":null,"selection":{"provider":"fake","model":"fake","thinking":"default"},"workflow_id":"rynna-default","goal":"goal","criteria":[{"id":"criterion","text":"criterion met"}],"limits":{"steps":50,"tool_calls":512,"active_seconds":1800}})).unwrap()
 }
 fn profiles(supported: bool, calls: Arc<AtomicUsize>) -> Arc<Mutex<AgentProfiles>> {
+    profiles_with_yolo(supported, calls, false)
+}
+fn profiles_with_yolo(
+    supported: bool,
+    calls: Arc<AtomicUsize>,
+    yolo: bool,
+) -> Arc<Mutex<AgentProfiles>> {
     let profile:Profile=serde_json::from_value(serde_json::json!({"name":"default","providers":[{"provider":"fake","model":"fake","default":true}]})).unwrap();
     Arc::new(Mutex::new(
         AgentProfiles::new(
             "default",
             [(
                 profile,
-                Agent::new(Arc::new(Provider { calls, supported }), "policy"),
+                Agent::new(Arc::new(Provider { calls, supported }), "policy").with_yolo(yolo),
             )],
         )
         .unwrap(),
@@ -113,4 +120,57 @@ async fn blocked_runs_protect_profiles_and_context_drift_blocks_resume() {
     assert_eq!(blocked.status, Status::Blocked);
     assert!(blocked.reason.unwrap().contains("context changed"));
     assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn changing_yolo_after_restart_blocks_workflow_resume() {
+    for initial_yolo in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let host = Host::new(
+            profiles_with_yolo(true, calls.clone(), initial_yolo),
+            None,
+            dir.path().into(),
+        );
+        let request = request();
+        let first = host.start(request.clone()).await.unwrap();
+        let run = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let run = host
+                    .read(first.id, "default", request.session_id)
+                    .await
+                    .unwrap();
+                if run.status == Status::Blocked {
+                    break run;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(host);
+        let calls_before_resume = calls.load(Ordering::SeqCst);
+        let restarted = Host::new(
+            profiles_with_yolo(true, calls.clone(), !initial_yolo),
+            None,
+            dir.path().into(),
+        );
+        let blocked = restarted
+            .control(
+                first.id,
+                Control {
+                    profile: "default".into(),
+                    session_id: request.session_id,
+                    expected_revision: run.revision,
+                    action: Action::Resume {
+                        acknowledge_uncertain: false,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(blocked.status, Status::Blocked);
+        assert!(blocked.reason.unwrap().contains("context changed"));
+        assert_eq!(calls.load(Ordering::SeqCst), calls_before_resume);
+    }
 }
