@@ -18,6 +18,7 @@ fn settings(transport: McpTransport) -> McpSettings {
             "tools".into(),
             McpServer {
                 enabled: true,
+                code_search_tool: None,
                 transport,
             },
         )]),
@@ -361,4 +362,34 @@ async fn raw_environment_token_is_sent_as_a_bearer_header() {
         );
     }
     server.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn code_search_plugin_alias_executes_remote_tool_and_missing_selection_fails() {
+    let mut config = settings(McpTransport::Stdio {
+        command: "python3".into(),
+        args: vec![format!(
+            "{}/tests/fixtures/server.py",
+            env!("CARGO_MANIFEST_DIR")
+        )],
+        env: BTreeMap::new(),
+    });
+    config.servers.get_mut("tools").unwrap().code_search_tool = Some("echo/path".into());
+    let source = McpToolSource(config.clone());
+    assert!(source.replaces_code_search());
+    let tools = source.discover().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].definition().name, "code_search");
+    let result = tools[0]
+        .execute(json!({"text":"plugin-result"}))
+        .await
+        .unwrap();
+    assert!(result.to_string().contains("plugin-result"));
+    config.servers.get_mut("tools").unwrap().code_search_tool = Some("missing".into());
+    assert!(McpToolSource(config.clone()).discover().await.is_err());
+    config.servers.get_mut("tools").unwrap().enabled = false;
+    let source = McpToolSource(config);
+    assert!(!source.replaces_code_search());
+    assert!(source.discover().await.unwrap().is_empty());
 }

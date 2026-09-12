@@ -1,3 +1,5 @@
+mod code_search;
+
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -30,6 +32,8 @@ pub struct FileSystemConfig {
     pub max_traversal_files: usize,
     pub max_traversal_depth: usize,
     pub max_search_bytes: usize,
+    /// Override the private, persistent code index directory (primarily for embedding/tests).
+    pub code_search_cache: Option<PathBuf>,
 }
 
 impl FileSystemConfig {
@@ -55,6 +59,7 @@ impl FileSystemConfig {
             max_traversal_files: DEFAULT_MAX_TRAVERSAL_FILES,
             max_traversal_depth: DEFAULT_MAX_TRAVERSAL_DEPTH,
             max_search_bytes: DEFAULT_MAX_SEARCH_BYTES,
+            code_search_cache: None,
         }
     }
 }
@@ -88,6 +93,9 @@ impl FileSystemToolset {
                 operation,
             }) as Arc<dyn Tool>
         })
+        .chain(std::iter::once(
+            Arc::new(code_search::CodeSearchTool::new(Arc::clone(&self.inner))) as Arc<dyn Tool>,
+        ))
         .collect()
     }
 }
@@ -860,7 +868,7 @@ impl Tool for FileSystemTool {
             ),
             Operation::SearchFiles => ToolDefinition::new(
                 "search_files",
-                "Search policy-visible UTF-8 workspace files with a regular expression",
+                "Regex fallback for targeted searches; prefer code_search for indexed literal code searches",
                 json!({
                     "type": "object",
                     "properties": {

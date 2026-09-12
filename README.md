@@ -228,6 +228,14 @@ Account models are initially disabled to preserve existing defaults and tool-ena
 
 The desktop app also exposes **Connect OpenAI**. Choose **Use ChatGPT subscription** to complete Codex's supported browser sign-in, or enter an OpenAI API key for usage-based API billing. When adding a ChatGPT-backed OpenAI provider later, Rynna checks the user's existing Codex account and asks whether to reuse those ChatGPT credentials or complete a new browser sign-in in Rynna's private Codex configuration directory. Rynna verifies reused credentials with `codex login status`, passes API keys to Codex over stdin, and never returns credentials through Tauri IPC. After connecting, select the `openai-account` profile to send prompts through that account. This account-backed profile does not receive Rynna tools. Its ephemeral Codex thread has no execution environment; shell, image, planning, and web-search tools are disabled, any tool lifecycle item aborts the response, and the model is instructed to answer only from the supplied conversation. The provider is pinned to the reviewed `codex-cli 0.149.1` protocol/tool surface; upgrading Codex requires an Rynna compatibility review and release.
 
+## Indexed code search
+
+Filesystem capabilities include `code_search` by default. It lazily builds a private, persistent SQLite index for each repository, reuses those indexes across sessions, updates changed files on subsequent searches, and returns short path/line snippets instead of whole files. The model is instructed through tool descriptions to prefer it for literal code searches; `search_files` remains available for targeted regex or one/two-character searches.
+
+Multi-repository project sessions search their selected indexes together under one output budget; each match identifies its repository. Indexing handles repositories beyond the ordinary filesystem traversal and aggregate-read limits. It streams files to disk, honors nested `.gitignore` and `.ignore` files, and never follows source symlinks. Long builds return `status: indexing` while continuing in the background; repeat the query to retrieve the result. MCP plugins can replace the built-in search tool by selecting their remote `code_search_tool` in a profile's MCP settings.
+
+See [code search configuration, scale measurements, and limits](docs/code-search.md).
+
 ## Conversation context and compaction
 
 CLI chat (terminal and plain text), web, and desktop support `/compact`. It asks the selected model to summarize previous conversation context while preserving the transcript. Summaries travel with the assistant message, survive saved-session reloads and model changes, and remain untrusted user-level reference data. Compaction does not execute tools or retain an extra memory exchange. Failed compaction leaves history intact.

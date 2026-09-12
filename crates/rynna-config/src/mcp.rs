@@ -14,6 +14,9 @@ pub struct McpSettings {
 pub struct McpServer {
     #[serde(default = "enabled")]
     pub enabled: bool,
+    /// Remote tool name to expose in place of the built-in code_search tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_search_tool: Option<String>,
     #[serde(flatten)]
     pub transport: McpTransport,
 }
@@ -54,7 +57,25 @@ impl McpSettings {
         if self.servers.len() > 32 {
             return Err(invalid("configure at most 32 MCP servers per profile"));
         }
+        if self
+            .servers
+            .values()
+            .filter(|server| server.enabled && server.code_search_tool.is_some())
+            .count()
+            > 1
+        {
+            return Err(invalid(
+                "select at most one enabled code search provider per profile",
+            ));
+        }
         for (name, server) in &self.servers {
+            if server
+                .code_search_tool
+                .as_ref()
+                .is_some_and(|name| name.trim().is_empty() || name.contains('\0'))
+            {
+                return Err(invalid("enter a nonempty remote code search tool name"));
+            }
             if name.is_empty()
                 || name.len() > 40
                 || !name

@@ -205,6 +205,11 @@ impl ToolError {
 
 #[async_trait]
 pub trait ToolSource: Send + Sync {
+    /// Explicitly replace the built-in code_search tool with a discovered provider.
+    /// The discovered tool must be named code_search and owns its argument schema.
+    fn replaces_code_search(&self) -> bool {
+        false
+    }
     fn workflow_policy(&self) -> String {
         String::new()
     }
@@ -213,6 +218,11 @@ pub trait ToolSource: Send + Sync {
 
 #[async_trait]
 pub trait Tool: Send + Sync {
+    /// Bind a request-local tool to trusted project directories without expanding its permissions.
+    /// A replacement must preserve the tool name.
+    fn for_project(&self, _directories: &[PathBuf]) -> Option<Arc<dyn Tool>> {
+        None
+    }
     fn workflow_policy(&self) -> String {
         serde_json::to_string(&self.definition()).expect("tool definition")
     }
@@ -1194,6 +1204,18 @@ impl Agent {
                 tokio::time::timeout(std::time::Duration::from_secs(30), source.discover())
                     .await
                     .map_err(|_| ToolError::new("MCP discovery timed out"))??;
+            if source.replaces_code_search() {
+                if !discovered
+                    .iter()
+                    .any(|tool| tool.definition().name == "code_search")
+                {
+                    return Err(ToolError::new(
+                        "configured code search provider did not supply code_search",
+                    )
+                    .into());
+                }
+                available_tools.remove("code_search");
+            }
             for tool in discovered {
                 let name = tool.definition().name;
                 if name.trim().is_empty() {
@@ -1660,6 +1682,19 @@ impl AgentProfiles {
         if project_name.is_none() && default_directory == std::path::Path::new(".") {
             return Ok(self);
         }
+        agent.tools = Arc::new(
+            agent
+                .tools
+                .iter()
+                .map(|(name, tool)| {
+                    (
+                        name.clone(),
+                        tool.for_project(directories)
+                            .unwrap_or_else(|| tool.clone()),
+                    )
+                })
+                .collect(),
+        );
         let project_context = serde_json::json!({
             "name": project_name,
             "directories": directories,

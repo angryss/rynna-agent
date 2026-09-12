@@ -24,11 +24,21 @@ describe('MCP settings', () => {
     expect(api.saveMcpSettings).toHaveBeenLastCalledWith(empty, 'work');
   });
 
+  it('preserves an explicitly selected code search plugin through load and save', async () => {
+    const selected: McpSettings = { mcpServers: { search: { transport: 'stdio', command: 'search-plugin', code_search_tool: 'search_code' } } };
+    const api = client(); const user = userEvent.setup();
+    vi.mocked(api.getMcpSettings!).mockResolvedValue(selected);
+    render(<McpSettingsPanel client={api} profile="work" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save MCP servers' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Save MCP servers' }));
+    expect(api.saveMcpSettings).toHaveBeenCalledWith(selected, 'work');
+  });
+
   it('rejects malformed JSON and unsupported server fields without saving', async () => {
     const api = client(); const user = userEvent.setup();
     render(<McpSettingsPanel client={api} profile="work" />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save MCP servers' })).toBeEnabled());
-    for (const value of ['{broken', '{"mcpServers":{"tools":{"transport":"sse","url":"https://example.com"}}}']) {
+    for (const value of ['{broken', '{"mcpServers":{"tools":{"transport":"stdio","command":"search","code_search_tool":42}}}', '{"mcpServers":{"tools":{"transport":"sse","url":"https://example.com"}}}']) {
       fireEvent.change(screen.getByLabelText('Server configuration (JSON)'), { target: { value } });
       await user.click(screen.getByRole('button', { name: 'Save MCP servers' }));
       expect(screen.getByRole('alert')).toBeInTheDocument();
