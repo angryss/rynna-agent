@@ -126,3 +126,27 @@ fn legacy_mcp_file_cannot_be_silently_replaced() {
         "private legacy settings"
     );
 }
+
+#[test]
+fn code_search_provider_selection_is_explicit_unique_and_persistent() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = McpSettingsStore::new(dir.path().join("mcp.yaml"));
+    let mut settings = config("search-plugin");
+    assert!(settings.servers["tools"].code_search_tool.is_none());
+    settings.servers.get_mut("tools").unwrap().code_search_tool = Some("search_code".into());
+    store.save("work", settings.clone()).unwrap();
+    assert_eq!(
+        store.load("work").unwrap().servers["tools"]
+            .code_search_tool
+            .as_deref(),
+        Some("search_code")
+    );
+    settings
+        .servers
+        .insert("second".into(), settings.servers["tools"].clone());
+    assert!(settings.validate().is_err());
+    settings.servers.get_mut("second").unwrap().enabled = false;
+    settings.validate().unwrap();
+    settings.servers.get_mut("tools").unwrap().code_search_tool = Some(" ".into());
+    assert!(settings.validate().is_err());
+}

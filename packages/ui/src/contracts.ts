@@ -136,7 +136,7 @@ export function isMemorySettings(value: unknown): value is MemorySettings {
     'api_key_configured' in value && typeof value.api_key_configured === 'boolean';
 }
 
-export type McpServer = { enabled?: boolean } & (
+export type McpServer = { enabled?: boolean; code_search_tool?: string } & (
   | { transport: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
   | { transport: 'streamable_http'; url: string; bearer_token_env?: string }
 );
@@ -147,10 +147,11 @@ export function isMcpSettings(value: unknown): value is McpSettings {
   if (!object(value) || Object.keys(value).some(k => k !== 'mcpServers') || !object(value.mcpServers)) return false;
   return Object.values(value.mcpServers).every(server => {
     if (!object(server) || (server.enabled !== undefined && typeof server.enabled !== 'boolean')) return false;
-    if (server.transport === 'stdio') return Object.keys(server).every(k => ['transport', 'enabled', 'command', 'args', 'env'].includes(k)) &&
+    if (server.code_search_tool !== undefined && (typeof server.code_search_tool !== 'string' || !server.code_search_tool.trim())) return false;
+    if (server.transport === 'stdio') return Object.keys(server).every(k => ['transport', 'enabled', 'code_search_tool', 'command', 'args', 'env'].includes(k)) &&
       typeof server.command === 'string' && (server.args === undefined || Array.isArray(server.args) && server.args.every(v => typeof v === 'string')) &&
       (server.env === undefined || object(server.env) && Object.values(server.env).every(v => typeof v === 'string'));
-    return server.transport === 'streamable_http' && Object.keys(server).every(k => ['transport', 'enabled', 'url', 'bearer_token_env'].includes(k)) &&
+    return server.transport === 'streamable_http' && Object.keys(server).every(k => ['transport', 'enabled', 'code_search_tool', 'url', 'bearer_token_env'].includes(k)) &&
       typeof server.url === 'string' && (server.bearer_token_env === undefined || typeof server.bearer_token_env === 'string');
   });
 }

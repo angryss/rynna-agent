@@ -42,6 +42,12 @@ pub struct McpToolSource(pub McpSettings);
 
 #[async_trait]
 impl ToolSource for McpToolSource {
+    fn replaces_code_search(&self) -> bool {
+        self.0
+            .servers
+            .values()
+            .any(|server| server.enabled && server.code_search_tool.is_some())
+    }
     fn workflow_policy(&self) -> String {
         let mut settings = self.0.clone();
         for server in settings.servers.values_mut() {
@@ -66,20 +72,27 @@ impl ToolSource for McpToolSource {
             .map_err(|_| ToolError::new("invalid MCP settings"))?;
         let servers = self.0.servers.iter().filter(|(_, server)| server.enabled);
         let results = try_join_all(servers.map(|(name, server)| async move {
-            timeout(Duration::from_secs(10), connect(name, &server.transport))
-                .await
-                .map_err(|_| {
-                    ToolError::new(format!(
-                        "MCP server `{name}` connection or discovery timed out"
-                    ))
-                })?
+            timeout(
+                Duration::from_secs(10),
+                connect(name, &server.transport, server.code_search_tool.as_deref()),
+            )
+            .await
+            .map_err(|_| {
+                ToolError::new(format!(
+                    "MCP server `{name}` connection or discovery timed out"
+                ))
+            })?
         }))
         .await?;
         Ok(results.into_iter().flatten().collect())
     }
 }
 
-async fn connect(name: &str, transport: &McpTransport) -> Result<Vec<Arc<dyn Tool>>, ToolError> {
+async fn connect(
+    name: &str,
+    transport: &McpTransport,
+    code_search_tool: Option<&str>,
+) -> Result<Vec<Arc<dyn Tool>>, ToolError> {
     // Transport errors may contain URLs, arguments, or credentials. Keep those out of responses.
     let failed = || {
         ToolError::new(format!(
@@ -172,6 +185,13 @@ async fn connect(name: &str, transport: &McpTransport) -> Result<Vec<Arc<dyn Too
             break;
         }
     }
+    if let Some(selected) = code_search_tool
+        && !definitions.iter().any(|tool| tool.name == selected)
+    {
+        return Err(ToolError::new(format!(
+            "MCP server `{name}` did not supply its configured code search tool"
+        )));
+    }
     Ok(definitions
         .into_iter()
         .map(|tool| {
@@ -182,7 +202,11 @@ async fn connect(name: &str, transport: &McpTransport) -> Result<Vec<Arc<dyn Too
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>();
             let definition = ToolDefinition::new(
-                format!("mcp_{name}_{suffix}"),
+                if code_search_tool == Some(tool.name.as_ref()) {
+                    "code_search".to_owned()
+                } else {
+                    format!("mcp_{name}_{suffix}")
+                },
                 format!(
                     "MCP {name} / {}: {}",
                     tool.name,
