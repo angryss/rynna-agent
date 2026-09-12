@@ -731,11 +731,6 @@ fn search_repository(
     let mut rows = statement.query([phrase]).map_err(error)?;
     let mut stop = false;
     while let Some(row) = rows.next().map_err(error)? {
-        if output.candidates >= MAX_CANDIDATES {
-            output.truncated = true;
-            break;
-        }
-        output.candidates += 1;
         let relative: String = row.get(0).map_err(error)?;
         if include
             .as_ref()
@@ -743,6 +738,11 @@ fn search_repository(
         {
             continue;
         }
+        if output.candidates >= MAX_CANDIDATES {
+            output.truncated = true;
+            break;
+        }
+        output.candidates += 1;
         // Recheck the live capability before returning persisted source text.
         let live = filesystem
             .open_parent_nofollow(&relative, false)

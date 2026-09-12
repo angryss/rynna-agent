@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1530,7 +1530,7 @@ describe('App', () => {
       ...profile, providers: [...profile.providers, { provider, model, enabled: true, default: false }],
     });
     expect(await screen.findByRole('checkbox', { name: `Select ${model}` })).toBeInTheDocument();
-    expect(input).toHaveValue('');
+    await waitFor(() => expect(input).toHaveValue(''));
     await user.type(input, model);
     await user.click(add);
     expect(screen.getByRole('alert')).toHaveTextContent('already configured');

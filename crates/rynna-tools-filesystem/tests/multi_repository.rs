@@ -367,3 +367,33 @@ async fn completed(tool: &Arc<dyn Tool>) -> Value {
         }
     }
 }
+
+#[tokio::test]
+async fn include_glob_filters_before_consuming_candidate_budget() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let repo = repository(root.path(), "repo");
+    for number in 0..10_001 {
+        std::fs::write(
+            repo.join(format!("src/excluded{number}.rs")),
+            "common_query",
+        )
+        .unwrap();
+    }
+    let search = tool(root.path(), cache.path());
+    // Index excluded files first so the newly added target follows them in FTS order.
+    search
+        .execute(json!({"query":"common_query"}))
+        .await
+        .unwrap();
+    std::fs::write(repo.join("src/target.txt"), "common_query").unwrap();
+    let result = search
+        .execute(json!({"query":"common_query", "include_glob":"**/*.txt"}))
+        .await
+        .unwrap();
+    assert_eq!(result["status"], "ready");
+    assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(result["matches"][0]["path"], "repo/src/target.txt");
+    assert_eq!(result["candidates_examined"], 1);
+    assert_eq!(result["truncated"], false);
+}
