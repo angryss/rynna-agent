@@ -1,4 +1,4 @@
-import { isContextResponse, type ContextRequest, type ContextResponse } from '@rynna/ui';
+import { parseProviderModels, type ProviderModel, isContextResponse, type ContextRequest, type ContextResponse } from '@rynna/ui';
 import type { Workflow, WorkflowMetadata, WorkflowStart, WorkflowRun, WorkflowControl } from '@rynna/ui';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { isMcpSettings, isMemorySettings } from '@rynna/ui';
@@ -135,12 +135,9 @@ export class TauriAgentClient implements AgentClient {
     return account;
   }
 
-  async listProviderModels(profile: string, provider: string): Promise<string[]> {
+  async listProviderModels(profile: string, provider: string): Promise<ProviderModel[]> {
     const models = await this.invoke('list_provider_models', { profile, provider });
-    if (!Array.isArray(models) || !models.every((model) => typeof model === 'string')) {
-      throw new Error('Rynna returned invalid model data');
-    }
-    return models;
+    return parseProviderModels(models);
   }
 
   async listProviders(profile: string): Promise<ConfiguredProvider[]> {

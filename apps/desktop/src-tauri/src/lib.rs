@@ -885,7 +885,7 @@ async fn list_provider_models(
     provider_settings: State<'_, Mutex<ProviderSettingsStore>>,
     profile: String,
     provider: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<rynna_provider_openai::models::ProviderModel>, String> {
     let provider = catalog
         .lock()
         .await
@@ -1354,6 +1354,12 @@ fn configured_agent(
             configured_model_provider(
                 &profile.profile.name,
                 provider,
+                profile
+                    .profile
+                    .providers
+                    .iter()
+                    .find(|entry| entry.provider == provider.name && entry.model == provider.model)
+                    .and_then(|entry| entry.context_window),
                 if index == 0 {
                     api_key_override.clone()
                 } else {
@@ -1386,6 +1392,7 @@ fn configured_agent(
 fn configured_model_provider(
     profile_name: &str,
     provider: &ResolvedProvider,
+    context_window: Option<usize>,
     api_key_override: Option<String>,
 ) -> Result<Arc<dyn ModelProvider>, String> {
     let api_key = match api_key_override {
@@ -1404,11 +1411,14 @@ fn configured_model_provider(
             .transpose()?,
     };
     let configured: Arc<dyn ModelProvider> = match provider.provider_kind {
-        ProviderKind::OpenAiAccount => Arc::new(CodexAppServerProvider::for_profile(
-            configured_provider_settings()?.path().to_owned(),
-            profile_name,
-            &provider.model,
-        )?),
+        ProviderKind::OpenAiAccount => Arc::new(
+            CodexAppServerProvider::for_profile(
+                configured_provider_settings()?.path().to_owned(),
+                profile_name,
+                &provider.model,
+            )?
+            .with_context_window(context_window),
+        ),
         ProviderKind::OpenAiCompatible | ProviderKind::Mlx => Arc::new(
             OpenAiCompatibleProvider::new(&provider.api_base, &provider.model, api_key)
                 .map_err(|error| error.to_string())?,

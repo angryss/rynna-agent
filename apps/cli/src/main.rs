@@ -452,6 +452,12 @@ fn configured_agent(
             configured_provider(
                 &profile.profile.name,
                 provider,
+                profile
+                    .profile
+                    .providers
+                    .iter()
+                    .find(|entry| entry.provider == provider.name && entry.model == provider.model)
+                    .and_then(|entry| entry.context_window),
                 provider_config,
                 if index == 0 {
                     api_key_override.clone()
@@ -492,6 +498,7 @@ fn configured_agent(
 fn configured_provider(
     profile_name: &str,
     provider: &ResolvedProvider,
+    context_window: Option<usize>,
     provider_config: &std::path::Path,
     api_key_override: Option<String>,
 ) -> Result<Arc<dyn ModelProvider>> {
@@ -517,7 +524,8 @@ fn configured_provider(
                 profile_name,
                 &provider.model,
             )
-            .map_err(anyhow::Error::msg)?,
+            .map_err(anyhow::Error::msg)?
+            .with_context_window(context_window),
         ),
         ProviderKind::OpenAiCompatible | ProviderKind::Mlx => Arc::new(
             OpenAiCompatibleProvider::new(&provider.api_base, &provider.model, api_key)

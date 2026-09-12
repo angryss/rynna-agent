@@ -34,12 +34,18 @@ for line in sys.stdin:
         continue
     result = {}
     if method == "model/list":
+        if os.environ.get("CODEX_HOME"):
+            (Path(os.environ["CODEX_HOME"]) / "models_cache.json").write_text(json.dumps({"models": [
+                {"slug": "account-model", "context_window": 128000, "max_context_window": 256000}
+            ]}))
         assert message["params"]["includeHidden"] is False
         if message["params"].get("cursor") is None:
             result = {"data": [{"id": "picker-id", "model": "account-model"}], "nextCursor": "next"}
         else:
             assert message["params"]["cursor"] == "next"
             result = {"data": [{"model": "second-model"}, {"model": "hidden", "hidden": True}], "nextCursor": None}
+    elif method == "config/read":
+        result = {"config": {"model": "account-model"}}
     elif method == "thread/start":
         params = message["params"]
         assert params["environments"] == []
@@ -48,6 +54,8 @@ for line in sys.stdin:
         assert params["config"]["features"]["shell_tool"] is False
         assert params["config"]["tools"]["update_plan"]["enabled"] is False
         assert params["config"]["web_search"] == "disabled"
+        if params.get("model") == "account-model":
+            assert params["config"]["model_context_window"] == 256000
         with open(os.environ["RYNNA_TEST_LOG"], "a") as output:
             output.write(json.dumps({"model": params.get("model"), "home": os.environ.get("CODEX_HOME")}) + "\n")
         result = {"thread": {"id": "thread-1"}}

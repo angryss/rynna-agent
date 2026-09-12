@@ -29,6 +29,7 @@ import type {
   OpenAiAccount,
   Profile,
   ProfileProvider,
+  ProviderModel,
   ProviderInput,
 } from './contracts';
 import {
@@ -185,7 +186,9 @@ export function App({ client }: AppProps) {
   const [contextNotice, setContextNotice] = useState('');
   const [storageFailure, setStorageFailure] = useState<'quota' | 'unavailable' | null>(null);
   const [customModel, setCustomModel] = useState('');
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [availableModels, setAvailableModels] = useState<ProviderModel[]>([]);
+  const [modelCatalogOwner, setModelCatalogOwner] = useState('');
+  const appliedModelCatalog = useRef<ProviderModel[] | null>(null);
   const [modelLookup, setModelLookup] = useState<'loading' | 'ready' | 'failed'>('ready');
   const [mlxApiBase, setMlxApiBase] = useState('http://127.0.0.1:8000/v1');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
@@ -376,13 +379,33 @@ export function App({ client }: AppProps) {
     setModelLookup('loading');
     void client.listProviderModels(selectedSettingsProfile, modelProvider).then((models) => {
       if (!active) return;
-      setAvailableModels([...new Set(models)].sort());
+      setAvailableModels(models);
+      setModelCatalogOwner(JSON.stringify([selectedSettingsProfile, modelProvider]));
       setModelLookup('ready');
     }).catch(() => {
       if (active) setModelLookup('failed');
     });
     return () => { active = false; };
   }, [client, view, settingsSection, selectedSettingsProfile, modelProvider]);
+
+  useEffect(() => {
+    if (view !== 'settings' || settingsSection !== 'models' || savingProfile || customModel
+      || !activeConfiguredProfile || !client.updateProfile || modelLookup !== 'ready'
+      || modelCatalogOwner !== JSON.stringify([selectedSettingsProfile, modelProvider])
+      || appliedModelCatalog.current === availableModels) return;
+    if (document.activeElement instanceof HTMLInputElement && document.activeElement.type === 'number') return;
+    appliedModelCatalog.current = availableModels;
+    let changed = false;
+    const providers = activeConfiguredProfile.providers.map((entry) => {
+      const detected = entry.provider === modelProvider
+        ? availableModels.find((model) => model.id === entry.model)?.context_window : undefined;
+      if (entry.context_window !== undefined || detected === undefined) return entry;
+      changed = true;
+      return { ...entry, context_window: detected };
+    });
+    if (changed) void saveModelSettings(providers);
+  }, [availableModels, modelCatalogOwner, activeConfiguredProfile, selectedSettingsProfile,
+    modelProvider, modelLookup, savingProfile, customModel, view, settingsSection, client]);
 
   function selectProfile(name: string) {
     setChatSelection(undefined);
@@ -543,7 +566,9 @@ export function App({ client }: AppProps) {
     }
     await saveModelSettings([
       ...activeConfiguredProfile.providers,
-      { provider: modelProvider, model, enabled: true, default: false },
+      { provider: modelProvider, model, enabled: true, default: false,
+        context_window: modelCatalogOwner === JSON.stringify([selectedSettingsProfile, modelProvider])
+          ? availableModels.find((entry) => entry.id === model)?.context_window : undefined },
     ]);
   }
 
@@ -1825,7 +1850,7 @@ export function App({ client }: AppProps) {
                   {modelProvider === 'openai-account' ? (
                     <p>Enable Codex default to use your connected OpenAI account, or add a model ID available to your account. Account models do not use Rynna tools; fallback chains containing them are tool-free.</p>
                   ) : null}
-                  <p>Search the provider’s models or enter a custom name, then choose which models are available in chat.</p>
+                  <p>Search the provider’s models or enter a custom name, then choose which models are available in chat. Context windows are filled automatically when reported by the provider; manual values are preserved.</p>
                 </div>
               </div>
               <div className="model-filters">
@@ -1854,7 +1879,7 @@ export function App({ client }: AppProps) {
                 <label htmlFor="custom-model-name">Model name</label>
                 <Typeahead
                   allowCustom
-                  options={availableModels}
+                  options={availableModels.map((model) => model.id)}
                   descriptionId="model-lookup-status"
                   id="custom-model-name"
                   value={customModel}

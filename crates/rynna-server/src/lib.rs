@@ -910,7 +910,7 @@ async fn list_provider_settings(
 async fn list_provider_models(
     State(state): State<AppState>,
     AxumPath((profile, provider)): AxumPath<(String, String)>,
-) -> Result<Json<Vec<String>>, ApiError> {
+) -> Result<Json<Vec<rynna_provider_openai::models::ProviderModel>>, ApiError> {
     let provider = catalog_store(&state)?
         .lock()
         .await
