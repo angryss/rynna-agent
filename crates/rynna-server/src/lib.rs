@@ -66,6 +66,7 @@ pub fn router(agent: Agent) -> Router {
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
+        disabled_toolsets: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
         subagents: Vec::new(),
@@ -325,6 +326,7 @@ pub fn router_with_web(agent: Agent, web_dir: impl AsRef<Path>) -> Router {
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
+        disabled_toolsets: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
         subagents: Vec::new(),
@@ -557,6 +559,9 @@ async fn update_saved_profile(
                 .map_err(runtime_profile_error)?;
             runtime
                 .set_subagents(&name, saved.subagents.clone())
+                .map_err(runtime_profile_error)?;
+            runtime
+                .set_disabled_toolsets(&name, saved.disabled_toolsets.clone())
                 .map_err(runtime_profile_error)?;
         }
     }

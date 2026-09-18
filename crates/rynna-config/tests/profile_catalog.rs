@@ -1190,6 +1190,7 @@ fn editable_profile(name: &str, model: &str) -> Profile {
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
+        disabled_toolsets: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
         subagents: Vec::new(),

@@ -693,6 +693,9 @@ pub fn update_saved_profile(
         runtime
             .set_subagents(original_name, saved.subagents.clone())
             .map_err(|error| error.to_string())?;
+        runtime
+            .set_disabled_toolsets(original_name, saved.disabled_toolsets.clone())
+            .map_err(|error| error.to_string())?;
     }
     Ok(saved)
 }
@@ -1286,6 +1289,7 @@ fn configured_profiles(
         active_skills: Vec::new(),
         mcp_servers: Vec::new(),
         capabilities: Vec::new(),
+        disabled_toolsets: Vec::new(),
         default_project_directory: ".".into(),
         projects: Vec::new(),
         subagents: Vec::new(),

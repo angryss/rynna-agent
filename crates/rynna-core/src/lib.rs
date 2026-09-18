@@ -964,6 +964,7 @@ impl ManagedContextStore {
 pub mod process;
 pub mod retry;
 pub mod subagents;
+pub mod toolsets;
 pub mod workflow_runs;
 pub mod workflows;
 pub use subagents::Subagent;
@@ -986,6 +987,7 @@ struct ToolBudget {
 
 #[derive(Clone)]
 pub struct Agent {
+    disabled_toolsets: Vec<toolsets::ToolsetId>,
     subagents: Arc<Vec<Subagent>>,
     tool_budget: Option<Arc<ToolBudget>>,
     tool_source: Option<Arc<dyn ToolSource>>,
@@ -1017,6 +1019,7 @@ impl Agent {
             system_prompt: system_prompt.into(),
             yolo: false,
             tools: Arc::new(BTreeMap::new()),
+            disabled_toolsets: Vec::new(),
             context_manager: Arc::new(ThresholdContextManager::default()),
             managed_context_scope: ManagedContextScope::default(),
             managed_contexts: Arc::new(Mutex::new(ManagedContextStore::default())),
@@ -1050,6 +1053,7 @@ impl Agent {
             system_prompt: system_prompt.into(),
             yolo: false,
             tools: Arc::new(indexed),
+            disabled_toolsets: Vec::new(),
             context_manager: Arc::new(ThresholdContextManager::default()),
             managed_context_scope: ManagedContextScope::default(),
             managed_contexts: Arc::new(Mutex::new(ManagedContextStore::default())),
@@ -1246,7 +1250,18 @@ impl Agent {
                 }
             }
         }
-        if self.provider.supports_external_tools() && !self.subagents.is_empty() {
+        available_tools.retain(|name, _| {
+            !self
+                .disabled_toolsets
+                .iter()
+                .any(|group| group.contains(name))
+        });
+        if self.provider.supports_external_tools()
+            && !self.subagents.is_empty()
+            && !self
+                .disabled_toolsets
+                .contains(&toolsets::ToolsetId::Subagents)
+        {
             let tool = subagents::delegation_tool(self, &available_tools, tool_budget.clone());
             let name = tool.definition().name;
             if available_tools.insert(name.clone(), tool).is_some() {
@@ -1511,6 +1526,8 @@ pub struct Profile {
     pub mcp_servers: Vec<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub disabled_toolsets: Vec<toolsets::ToolsetId>,
     #[serde(default = "default_project_directory")]
     pub default_project_directory: PathBuf,
     #[serde(default)]
@@ -1559,6 +1576,7 @@ impl AgentProfiles {
         let default_profile = default_profile.into();
         let mut indexed = BTreeMap::new();
         for (profile, mut agent) in profiles {
+            agent.disabled_toolsets = profile.disabled_toolsets.clone();
             subagents::validate(&profile.subagents)?;
             agent.subagents = Arc::new(profile.subagents.clone());
             agent.context_manager = context::manager_for(&profile.providers);
@@ -1578,6 +1596,20 @@ impl AgentProfiles {
             default_profile: default_profile.into(),
             profiles: Arc::new(indexed),
         })
+    }
+
+    /// Applies to subsequent requests; in-flight agents retain their original tool policy.
+    pub fn set_disabled_toolsets(
+        &mut self,
+        profile: &str,
+        disabled: Vec<toolsets::ToolsetId>,
+    ) -> Result<(), ProfileError> {
+        let (metadata, agent) = Arc::make_mut(&mut self.profiles)
+            .get_mut(profile)
+            .ok_or_else(|| ProfileError::UnknownProfile(profile.to_owned()))?;
+        metadata.disabled_toolsets = disabled.clone();
+        agent.disabled_toolsets = disabled;
+        Ok(())
     }
 
     /// Applies to subsequent requests; in-flight agents retain their original helpers.
@@ -1810,6 +1842,7 @@ impl AgentProfiles {
     }
 
     pub fn upsert(&mut self, profile: Profile, mut agent: Agent) -> Result<(), ProfileError> {
+        agent.disabled_toolsets = profile.disabled_toolsets.clone();
         if profile.name.trim().is_empty() {
             return Err(ProfileError::BlankName);
         }

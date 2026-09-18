@@ -167,6 +167,7 @@ async fn selected_model_changes_allowance_and_large_restored_history_is_compacte
         active_skills: vec![],
         mcp_servers: vec![],
         capabilities: vec![],
+        disabled_toolsets: vec![],
         default_project_directory: ".".into(),
         projects: vec![],
         subagents: vec![],

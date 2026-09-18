@@ -803,6 +803,7 @@ impl ProfileCatalog {
                     active_skills: Vec::new(),
                     mcp_servers: Vec::new(),
                     capabilities: Vec::new(),
+                    disabled_toolsets: Vec::new(),
                     default_project_directory: default_project_directory(),
                     projects: Vec::new(),
                     subagents: Vec::new(),
@@ -1036,6 +1037,7 @@ impl ProfileCatalog {
                 projects: profile.projects.clone(),
                 subagents: profile.subagents.clone(),
                 workflows,
+                disabled_toolsets: profile.disabled_toolsets.clone(),
             },
         );
         self.apply_file(file)?;
@@ -1191,6 +1193,7 @@ impl ProfileCatalog {
                 .unwrap_or_else(|| Path::new("."))
                 .to_owned(),
             profile: Profile {
+                disabled_toolsets: profile.disabled_toolsets.clone(),
                 name: name.to_owned(),
                 providers: profile.providers.clone(),
                 active_skills: profile.active_skills.clone(),
@@ -1523,6 +1526,8 @@ struct ProfileConfig {
     mcp_servers: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    disabled_toolsets: Vec<rynna_core::toolsets::ToolsetId>,
     #[serde(default = "default_project_directory")]
     default_project_directory: PathBuf,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

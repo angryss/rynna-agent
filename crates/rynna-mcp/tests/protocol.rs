@@ -110,6 +110,7 @@ fn profile(name: &str) -> Profile {
         active_skills: vec![],
         mcp_servers: vec![],
         capabilities: vec![],
+        disabled_toolsets: Vec::new(),
         default_project_directory: ".".into(),
         projects: vec![],
         subagents: Vec::new(),
