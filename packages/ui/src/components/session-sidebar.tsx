@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Folder, MessageSquare, Plus } from 'lucide-react';
+import { Folder, MessageSquare, Plus, Settings } from 'lucide-react';
 
 import type { Project } from '../contracts';
 import type { Session } from '../sessions';
@@ -11,6 +11,7 @@ interface SessionSidebarProps {
   disabled: boolean;
   onNewSession: () => void;
   onDeleteSession: (session: Session) => Promise<boolean>;
+  onManageProjects?: (trigger: HTMLButtonElement) => void;
   onSelectProject: (project?: string) => void;
   onSelectSession: (session: Session) => void;
   profile: string;
@@ -23,6 +24,7 @@ export function SessionSidebar({
   disabled,
   onNewSession,
   onDeleteSession,
+  onManageProjects,
   onSelectProject,
   onSelectSession,
   profile,
@@ -45,16 +47,31 @@ export function SessionSidebar({
           <p className="eyebrow">Projects</p>
           <h2>Sessions</h2>
         </div>
-        <Button
-          aria-label="New session"
-          disabled={disabled}
-          onClick={onNewSession}
-          size="icon"
-          type="button"
-          variant="ghost"
-        >
-          <Plus aria-hidden="true" size={17} />
-        </Button>
+        <div className="session-sidebar-actions">
+          {onManageProjects ? (
+            <Button
+              aria-label="Manage projects"
+              disabled={disabled}
+              onClick={event => onManageProjects(event.currentTarget)}
+              size="icon"
+              title="Manage projects"
+              type="button"
+              variant="ghost"
+            >
+              <Settings aria-hidden="true" size={17} />
+            </Button>
+          ) : null}
+          <Button
+            aria-label="New session"
+            disabled={disabled}
+            onClick={onNewSession}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
+            <Plus aria-hidden="true" size={17} />
+          </Button>
+        </div>
       </div>
       <nav aria-label="Project sessions">
         {groups.map(group => {

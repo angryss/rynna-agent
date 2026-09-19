@@ -15,7 +15,7 @@ import { ThemeToggle } from './components/theme-toggle';
 import { Typeahead } from './components/typeahead';
 import { SubagentSettings } from './components/subagent-settings';
 import { ToolsetSettings } from './components/toolset-settings';
-import { ProjectSettings } from './components/project-settings';
+import { ProjectSettingsDialog } from './components/project-settings';
 import { SessionSidebar } from './components/session-sidebar';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
@@ -125,6 +125,7 @@ function finalizeResponse(messages: DisplayMessage[], message: Message): Display
 
 export function App({ client }: AppProps) {
   const pendingProfileWrites = useRef(new Set<string>());
+  const projectManagerTrigger = useRef<HTMLButtonElement | null>(null);
   // Every settings panel writes full profiles. Keep the guard above panels so
   // navigation/unmount cannot allow a stale draft to overwrite a pending save.
   const profileSettingsClient = useMemo<AgentClient>(() => ({
@@ -174,6 +175,7 @@ export function App({ client }: AppProps) {
   const [apiKey, setApiKey] = useState('');
   const [connectingOpenAi, setConnectingOpenAi] = useState(false);
   const [view, setView] = useState<'chat' | 'settings'>('chat');
+  const [projectManagerOpen, setProjectManagerOpen] = useState(false);
   const [providerSettings, setProviderSettings] = useState<ConfiguredProvider[]>([]);
   const [editingProvider, setEditingProvider] = useState<ConfiguredProvider['kind'] | null>(null);
   const [providerKind, setProviderKind] = useState<ConfiguredProvider['kind']>('ollama');
@@ -187,7 +189,7 @@ export function App({ client }: AppProps) {
   const [reuseExistingChatgpt, setReuseExistingChatgpt] = useState<boolean | null>(null);
   const [providerApiKey, setProviderApiKey] = useState('');
   const [savingProvider, setSavingProvider] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'toolsets' | 'workflows' | 'profiles' | 'projects' | 'subagents' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
+  const [settingsSection, setSettingsSection] = useState<'toolsets' | 'workflows' | 'profiles' | 'subagents' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
     client.createProfile || client.updateProfile || client.deleteProfile
       ? 'profiles'
       : client.listProviders ? 'provider-credentials' : client.getMemorySettings ? 'memory' : 'mcp',
@@ -339,6 +341,9 @@ export function App({ client }: AppProps) {
   }, [client, selectedSettingsProfile]);
 
   const activeProfile = profiles.find((profile) => profile.name === selectedProfile);
+  const projectSettingsProfile = configuredProfiles.find(profile => profile.name === selectedProfile) ?? activeProfile;
+  const selectedProfileRef = useRef(selectedProfile);
+  selectedProfileRef.current = selectedProfile;
   const selection = chatSelection?.profile === selectedProfile && activeProfile?.providers.some(pair =>
     pair.enabled !== false && pair.provider === chatSelection.value?.provider && pair.model === chatSelection.value?.model)
     ? chatSelection.value : undefined;
@@ -426,6 +431,7 @@ export function App({ client }: AppProps) {
     modelProvider, modelLookup, savingProfile, customModel, view, settingsSection, client]);
 
   function selectProfile(name: string) {
+    setProjectManagerOpen(false);
     setChatSelection(undefined);
     setChatProject(undefined);
     setSelectedProfile(name);
@@ -936,6 +942,7 @@ export function App({ client }: AppProps) {
         break;
       case '/settings':
         if (!canOpenSettings) { setError('Settings are not available for this connection.'); return; }
+        setProjectManagerOpen(false);
         setEditingProvider(null);
         setView('settings');
         break;
@@ -1129,6 +1136,7 @@ export function App({ client }: AppProps) {
               disabled={pending}
               className="account-button"
               onClick={() => {
+                setProjectManagerOpen(false);
                 setView(view === 'settings' ? 'chat' : 'settings');
                 setEditingProvider(null);
                 setError(null);
@@ -1179,6 +1187,12 @@ export function App({ client }: AppProps) {
             activeSessionId={activeSessionId}
             disabled={pending || deletingSession}
             onNewSession={() => startNewSession(project)}
+            onManageProjects={client.updateProfile && activeProfile
+              ? trigger => {
+                  projectManagerTrigger.current = trigger;
+                  setProjectManagerOpen(true);
+                }
+              : undefined}
             onSelectProject={startNewSession}
             onSelectSession={selectSession}
             onDeleteSession={removeSession}
@@ -1291,6 +1305,39 @@ export function App({ client }: AppProps) {
         </div>
       ) : null}
 
+      {view === 'chat' && projectManagerOpen && projectSettingsProfile && client.updateProfile ? (
+        <ProjectSettingsDialog
+          client={profileSettingsClient}
+          onClose={() => setProjectManagerOpen(false)}
+          onSaved={saved => {
+            setSessions(current => reconcileProjectSessions(
+              current,
+              saved.name,
+              projectSettingsProfile.projects.map(project => project.name),
+              saved.projects.map(project => project.name),
+            ));
+            setConfiguredProfiles(current => current.map(profile => profile.name === saved.name ? saved : profile));
+            setProfiles(current => current.map(profile => profile.name === saved.name ? {
+              ...profile,
+              default_project_directory: saved.default_project_directory,
+              projects: saved.projects,
+            } : profile));
+            if (selectedProfileRef.current === saved.name) {
+              if (chatProject?.name && !saved.projects.some(candidate => candidate.name === chatProject.name)) {
+                setChatProject(undefined);
+              }
+              setMessages([]);
+              sessionId.current = null;
+              workflowDraftId.current = newSessionId();
+              setWorkflowRunning(false);
+              setActiveSessionId(null);
+            }
+          }}
+          profile={projectSettingsProfile}
+          returnFocus={projectManagerTrigger.current}
+        />
+      ) : null}
+
       {view === 'settings' ? (
         <section className="settings-page" aria-label="Settings">
           <aside className="settings-sidebar">
@@ -1306,16 +1353,7 @@ export function App({ client }: AppProps) {
                   Profiles
                 </Button>
               ) : null}
-              {client.updateProfile && configuredProfiles.length > 0 ? (
-                <Button
-                  aria-current={settingsSection === 'projects' ? 'page' : undefined}
-                  onClick={() => setSettingsSection('projects')}
-                  type="button"
-                  variant="ghost"
-                >
-                  Projects
-                </Button>
-              ) : null}
+
               {client.listProviders ? (
                 <Button
                   aria-current={settingsSection === 'provider-credentials' ? 'page' : undefined}
@@ -1359,50 +1397,7 @@ export function App({ client }: AppProps) {
             </nav>
           </aside>
           <div className="settings-content">
-            {settingsSection === 'projects' && client.updateProfile ? (
-              <>
-                <label className="profile-picker" htmlFor="projects-profile">
-                  <span>Profile</span>
-                  <Typeahead
-                    id="projects-profile"
-                    onChange={selectSettingsProfile}
-                    options={sortedProfiles(configuredProfiles).map(profile => profile.name)}
-                    value={selectedSettingsProfile ?? ''}
-                  />
-                </label>
-                {activeConfiguredProfile ? (
-                  <ProjectSettings
-                    key={activeConfiguredProfile.name}
-                    client={profileSettingsClient}
-                    onSaved={saved => {
-                      setSessions(current => reconcileProjectSessions(
-                        current,
-                        saved.name,
-                        activeConfiguredProfile.projects.map(project => project.name),
-                        saved.projects.map(project => project.name),
-                      ));
-                      setConfiguredProfiles(current => current.map(profile => profile.name === saved.name ? saved : profile));
-                      setProfiles(current => current.map(profile => profile.name === saved.name ? {
-                        ...profile,
-                        default_project_directory: saved.default_project_directory,
-                        projects: saved.projects,
-                      } : profile));
-                      if (selectedProfile === saved.name) {
-                        if (chatProject?.name && !saved.projects.some(candidate => candidate.name === chatProject.name)) {
-                          setChatProject(undefined);
-                        }
-                        setMessages([]);
-                        sessionId.current = null;
-    workflowDraftId.current = newSessionId();
-    setWorkflowRunning(false);
-                        setActiveSessionId(null);
-                      }
-                    }}
-                    profile={activeConfiguredProfile}
-                  />
-                ) : <p>Select a profile to configure its projects.</p>}
-              </>
-            ) : null}
+
             {settingsSection === 'toolsets' && client.updateProfile ? <>
               <label className="profile-picker" htmlFor="toolsets-profile"><span>Profile</span>
                 <Typeahead id="toolsets-profile" onChange={selectSettingsProfile} options={sortedProfiles(configuredProfiles).map(profile => profile.name)} value={selectedSettingsProfile ?? ''} />

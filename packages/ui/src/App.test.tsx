@@ -648,17 +648,94 @@ describe('App', () => {
       updateProfile,
     }} />);
 
-    await user.click(await screen.findByRole('button', { name: 'Settings' }));
-    await user.click(screen.getByRole('button', { name: 'Projects' }));
+    const manageProjects = await screen.findByRole('button', { name: 'Manage projects' });
+    await user.click(manageProjects);
+    expect(screen.getByRole('dialog', { name: 'Manage projects' })).toBeInTheDocument();
+    expect(document.querySelector('.app-shell')).toHaveAttribute('inert');
+    expect(screen.getByRole('button', { name: 'Close project manager' })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Close project manager' })).toHaveFocus();
     await user.click(screen.getByRole('button', { name: 'Edit' }));
     await user.clear(screen.getByLabelText('Name'));
     await user.type(screen.getByLabelText('Name'), 'new-name');
     await user.click(screen.getByRole('button', { name: 'Save project' }));
+    await user.click(screen.getByRole('button', { name: 'Close project manager' }));
+    expect(document.querySelector('.app-shell')).not.toHaveAttribute('inert');
+    expect(manageProjects).toHaveFocus();
+
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(screen.queryByRole('button', { name: 'Projects' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Back to chat' }));
 
     await user.click(screen.getByRole('button', { name: 'Review the project' }));
     expect(within(screen.getByRole('complementary', { name: 'Active profile' })).getByText('new-name · /projects/rynna')).toBeInTheDocument();
     expect(within(screen.getByRole('log')).getByText('Review the project')).toBeInTheDocument();
+  });
+
+  it('preserves configured profile fields that are filtered from the runtime profile', async () => {
+    const runtime = testProfile('work', {
+      providers: [{ provider: 'openai', model: 'enabled' }],
+    });
+    const configured = testProfile('work', {
+      providers: [
+        { provider: 'openai', model: 'enabled' },
+        { provider: 'openai', model: 'disabled', enabled: false },
+      ],
+    });
+    const updateProfile = vi.fn(async (_name: string, saved: Profile) => saved);
+    const user = userEvent.setup();
+    render(<App client={{
+      respond: vi.fn(),
+      listProfiles: vi.fn().mockResolvedValue({
+        default_profile: 'work', provider_ids: ['openai'], profiles: [runtime], configured_profiles: [configured],
+      }),
+      updateProfile,
+    }} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Manage projects' }));
+    await user.clear(screen.getByLabelText('Starting directory'));
+    await user.type(screen.getByLabelText('Starting directory'), '/projects/work');
+    await user.click(screen.getByRole('button', { name: 'Save starting directory' }));
+
+    expect(updateProfile).toHaveBeenCalledWith('work', expect.objectContaining({
+      providers: configured.providers,
+      default_project_directory: '/projects/work',
+    }));
+  });
+
+  it('keeps navigation blocked until a project save finishes', async () => {
+    const work = testProfile('work');
+    let finishSave!: (profile: Profile) => void;
+    const updateProfile = vi.fn((_name: string, _saved: Profile) => new Promise<Profile>(resolve => { finishSave = resolve; }));
+    const user = userEvent.setup();
+    render(<App client={{
+      respond: vi.fn(),
+      listProfiles: vi.fn().mockResolvedValue({
+        default_profile: 'work', provider_ids: [], profiles: [work], configured_profiles: [work],
+      }),
+      updateProfile,
+    }} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Manage projects' }));
+    await user.clear(screen.getByLabelText('Starting directory'));
+    await user.type(screen.getByLabelText('Starting directory'), '/projects/work');
+    await user.click(screen.getByRole('button', { name: 'Save starting directory' }));
+    expect(screen.getByRole('button', { name: 'Close project manager' })).toBeDisabled();
+    expect(document.querySelector('.app-shell')).toHaveAttribute('inert');
+    const dialog = screen.getByRole('dialog', { name: 'Manage projects' });
+    expect(dialog).toHaveFocus();
+    await user.tab();
+    expect(dialog).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(dialog).toHaveFocus();
+
+    await act(async () => finishSave({ ...work, default_project_directory: '/projects/work' }));
+    expect(screen.getByRole('button', { name: 'Close project manager' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Close project manager' }));
+    expect(screen.queryByRole('dialog', { name: 'Manage projects' })).not.toBeInTheDocument();
+    expect(document.querySelector('.app-shell')).not.toHaveAttribute('inert');
   });
 
   it('submits the prompt when Enter is pressed in the composer', async () => {
