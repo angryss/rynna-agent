@@ -808,7 +808,17 @@ impl crate::Agent {
                 crate::Message::system(agent.effective_system_prompt()),
                 crate::Message::user(&prompt),
             ],
-            tools: agent.tools.values().map(|t| t.definition()).collect(),
+            tools: agent
+                .tools
+                .iter()
+                .filter(|(name, _)| {
+                    !agent
+                        .disabled_toolsets
+                        .iter()
+                        .any(|group| group.contains(name))
+                })
+                .map(|(_, tool)| tool.definition())
+                .collect(),
         };
         let plan = agent.context_manager.prepare(request, None);
         if plan.compacted {
