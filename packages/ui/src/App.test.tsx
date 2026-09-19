@@ -54,6 +54,101 @@ function workflowClient(overrides: Partial<AgentClient> = {}): AgentClient {
 }
 
 describe('App', () => {
+  it('prevents overlapping profile writes after leaving pending toolset settings', async () => {
+    const profile = testProfile('work');
+    const personal = testProfile('personal');
+    let finish!: (profile: Profile) => void;
+    const updateProfile = vi.fn().mockImplementation(async (_name: string, next: Profile) => next)
+      .mockImplementationOnce(() => new Promise<Profile>(resolve => { finish = resolve; }));
+    const user = userEvent.setup();
+    render(<App client={{ respond: vi.fn(), updateProfile,
+      listProfiles: vi.fn().mockResolvedValue({ default_profile: 'work', provider_ids: [],
+        profiles: [profile, personal], configured_profiles: [profile, personal] }) }} />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Toolsets' }));
+    await user.click(screen.getByRole('button', { name: 'Configure File Operations' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Enable File Operations' }));
+    await user.click(screen.getByRole('button', { name: 'Save toolset' }));
+    expect(updateProfile).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('button', { name: 'Profiles' }));
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    expect(updateProfile).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('alert')).toHaveTextContent('A save is already in progress for work');
+
+    await user.click(screen.getByRole('button', { name: 'Toolsets' }));
+    await user.click(screen.getByRole('button', { name: 'Configure Commands' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Enable Commands' }));
+    await user.click(screen.getByRole('button', { name: 'Save toolset' }));
+    expect(updateProfile).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('combobox', { name: 'Profile' }));
+    await user.click(screen.getByRole('option', { name: 'personal' }));
+    await user.click(screen.getByRole('button', { name: 'Configure Commands' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Enable Commands' }));
+    await user.click(screen.getByRole('button', { name: 'Save toolset' }));
+    expect(updateProfile).toHaveBeenLastCalledWith('personal', { ...personal, disabled_toolsets: ['commands'] });
+    await act(async () => finish({ ...profile, disabled_toolsets: ['file_operations'] }));
+    expect(screen.getByRole('combobox', { name: 'Profile' })).toHaveValue('personal');
+    expect(within(screen.getByRole('article', { name: 'File Operations' })).getByText('Active')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('combobox', { name: 'Profile' }));
+    await user.click(screen.getByRole('option', { name: 'work' }));
+    expect(within(screen.getByRole('article', { name: 'File Operations' })).getByText('Disabled')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Profiles' }));
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    expect(updateProfile).toHaveBeenCalledTimes(3);
+    expect(updateProfile).toHaveBeenLastCalledWith('work', expect.objectContaining({ disabled_toolsets: ['file_operations'] }));
+  });
+
+  it('configures real toolsets for the selected profile in application settings', async () => {
+    const profile = testProfile('work');
+    const updateProfile = vi.fn().mockImplementation(async (_name, next) => next);
+    const user = userEvent.setup();
+    render(<App client={{ respond: vi.fn(), updateProfile,
+      createProfile: vi.fn(), deleteProfile: vi.fn(),
+      listProfiles: vi.fn().mockResolvedValue({ default_profile: 'work', provider_ids: [], profiles: [profile], configured_profiles: [profile] }) }} />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Toolsets' }));
+    const card = screen.getByRole('article', { name: 'File Operations' });
+    expect(within(card).getByText('Active')).toBeInTheDocument();
+    expect(within(card).getByText('read, write, patch, search')).toBeInTheDocument();
+    expect(within(card).getByText('edit_file')).toBeInTheDocument();
+    expect(within(card).queryByText('patch')).not.toBeInTheDocument();
+    await user.click(within(card).getByRole('button', { name: 'Configure File Operations' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Enable File Operations' }));
+    await user.click(screen.getByRole('button', { name: 'Save toolset' }));
+    expect(updateProfile).toHaveBeenCalledWith('work', { ...profile, disabled_toolsets: ['file_operations'] });
+    expect(within(card).getByText('Disabled')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Profiles' }));
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    expect(updateProfile).toHaveBeenLastCalledWith('work', expect.objectContaining({ disabled_toolsets: ['file_operations'] }));
+  });
+
+  it('releases the profile write guard when an unmounted toolset save fails', async () => {
+    const profile = testProfile('work');
+    let fail!: (error: Error) => void;
+    const updateProfile = vi.fn().mockImplementation(async (_name: string, next: Profile) => next)
+      .mockImplementationOnce(() => new Promise<Profile>((_resolve, reject) => { fail = reject; }));
+    const user = userEvent.setup();
+    render(<App client={{ respond: vi.fn(), updateProfile,
+      listProfiles: vi.fn().mockResolvedValue({ default_profile: 'work', provider_ids: [],
+        profiles: [profile], configured_profiles: [profile] }) }} />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Toolsets' }));
+    await user.click(screen.getByRole('button', { name: 'Configure Commands' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Enable Commands' }));
+    await user.click(screen.getByRole('button', { name: 'Save toolset' }));
+    await user.click(screen.getByRole('button', { name: 'Back to chat' }));
+    await act(async () => fail(new Error('Disk full')));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Configure Commands' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Enable Commands' }));
+    await user.click(screen.getByRole('button', { name: 'Save toolset' }));
+    expect(updateProfile).toHaveBeenCalledTimes(2);
+    expect(within(screen.getByRole('article', { name: 'Commands' })).getByText('Disabled')).toBeInTheDocument();
+  });
+
   it('switches between dark and light themes and remembers the selection', async () => {
     const values = new Map<string, string>();
     Object.defineProperty(window, 'localStorage', {

@@ -781,6 +781,12 @@ impl crate::Agent {
         let prompt = run.prompt()?;
         let step = &run.workflow.steps[run.cursor];
         if step.executor == crate::workflows::Executor::Subagent {
+            if self
+                .disabled_toolsets
+                .contains(&crate::toolsets::ToolsetId::Subagents)
+            {
+                return Err("the subagents toolset is disabled for this profile".into());
+            }
             if prompt.len() > 32_000 {
                 return Err("helper task exceeds 32000 bytes".into());
             }
@@ -802,7 +808,17 @@ impl crate::Agent {
                 crate::Message::system(agent.effective_system_prompt()),
                 crate::Message::user(&prompt),
             ],
-            tools: agent.tools.values().map(|t| t.definition()).collect(),
+            tools: agent
+                .tools
+                .iter()
+                .filter(|(name, _)| {
+                    !agent
+                        .disabled_toolsets
+                        .iter()
+                        .any(|group| group.contains(name))
+                })
+                .map(|(_, tool)| tool.definition())
+                .collect(),
         };
         let plan = agent.context_manager.prepare(request, None);
         if plan.compacted {

@@ -84,6 +84,75 @@ fn helper(name: &str) -> Subagent {
         instructions: "Report actionable issues".into(),
     }
 }
+
+#[tokio::test]
+async fn toolset_restrictions_reach_helpers_and_streaming_without_changing_other_profiles() {
+    let provider = Arc::new(provider(json!({"subagent":"reviewer","task":"review"})));
+    let mut profiles = profiles(provider.clone());
+    let original = profiles.clone_agent("work").unwrap();
+    let before = original
+        .workflow_fingerprint(
+            &profiles
+                .profiles()
+                .into_iter()
+                .find(|p| p.name == "work")
+                .unwrap(),
+        )
+        .unwrap();
+    profiles
+        .set_disabled_toolsets(
+            "work",
+            vec![rynna_core::toolsets::ToolsetId::FileOperations],
+        )
+        .unwrap();
+    let after = profiles
+        .clone_agent("work")
+        .unwrap()
+        .workflow_fingerprint(
+            &profiles
+                .profiles()
+                .into_iter()
+                .find(|p| p.name == "work")
+                .unwrap(),
+        )
+        .unwrap();
+    assert_ne!(before, after);
+    profiles
+        .respond_stream(Some("work"), &[], "review", &mut |_| {})
+        .await
+        .unwrap();
+    {
+        let requests = provider.requests.lock().unwrap();
+        let child = requests
+            .iter()
+            .find(|request| request.messages[0].content.contains("Subagent role:"))
+            .unwrap();
+        assert!(child.tools.is_empty());
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.tools.iter().all(|t| t.name != "read_file"))
+        );
+    }
+    assert!(
+        profiles
+            .profiles()
+            .into_iter()
+            .find(|p| p.name == "personal")
+            .unwrap()
+            .disabled_toolsets
+            .is_empty()
+    );
+    provider.requests.lock().unwrap().clear();
+    original.respond(&[], "review").await.unwrap();
+    assert!(
+        provider.requests.lock().unwrap()[0]
+            .tools
+            .iter()
+            .any(|t| t.name == "read_file")
+    );
+}
+
 fn profile(name: &str, subagents: Vec<Subagent>) -> Profile {
     serde_json::from_value(json!({"name":name,"providers":[],"subagents":subagents})).unwrap()
 }

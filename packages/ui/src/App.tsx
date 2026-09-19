@@ -8,12 +8,13 @@ import { WorkflowPanel, workflowTerminal } from './components/workflow-panel';
 import type { WorkflowRun } from './contracts';
 import { ModelSelector } from './components/model-selector';
 import { McpSettingsPanel } from './components/mcp-settings';
-import { FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { MemorySettingsPanel } from './components/memory-settings';
 import { ThemeToggle } from './components/theme-toggle';
 import { Typeahead } from './components/typeahead';
 import { SubagentSettings } from './components/subagent-settings';
+import { ToolsetSettings } from './components/toolset-settings';
 import { ProjectSettings } from './components/project-settings';
 import { SessionSidebar } from './components/session-sidebar';
 import { Badge } from './components/ui/badge';
@@ -123,6 +124,23 @@ function finalizeResponse(messages: DisplayMessage[], message: Message): Display
 }
 
 export function App({ client }: AppProps) {
+  const pendingProfileWrites = useRef(new Set<string>());
+  // Every settings panel writes full profiles. Keep the guard above panels so
+  // navigation/unmount cannot allow a stale draft to overwrite a pending save.
+  const profileSettingsClient = useMemo<AgentClient>(() => ({
+    respond: (...args) => client.respond(...args),
+    updateProfile: client.updateProfile ? async (name, profile) => {
+      if (pendingProfileWrites.current.has(name)) {
+        throw new Error(`A save is already in progress for ${name}. Wait for it to finish, then try again.`);
+      }
+      pendingProfileWrites.current.add(name);
+      try {
+        return await client.updateProfile!(name, profile);
+      } finally {
+        pendingProfileWrites.current.delete(name);
+      }
+    } : undefined,
+  }), [client]);
   const sessionId = useRef<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [deletingSession, setDeletingSession] = useState(false);
@@ -169,7 +187,7 @@ export function App({ client }: AppProps) {
   const [reuseExistingChatgpt, setReuseExistingChatgpt] = useState<boolean | null>(null);
   const [providerApiKey, setProviderApiKey] = useState('');
   const [savingProvider, setSavingProvider] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'workflows' | 'profiles' | 'projects' | 'subagents' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
+  const [settingsSection, setSettingsSection] = useState<'toolsets' | 'workflows' | 'profiles' | 'projects' | 'subagents' | 'provider-credentials' | 'models' | 'memory' | 'mcp'>(
     client.createProfile || client.updateProfile || client.deleteProfile
       ? 'profiles'
       : client.listProviders ? 'provider-credentials' : client.getMemorySettings ? 'memory' : 'mcp',
@@ -512,6 +530,7 @@ export function App({ client }: AppProps) {
       default_project_directory: addingProfile ? '.' : (activeConfiguredProfile?.default_project_directory ?? '.'),
       projects: addingProfile ? [] : (activeConfiguredProfile?.projects ?? []),
       subagents: addingProfile ? [] : (activeConfiguredProfile?.subagents ?? []),
+      ...(!addingProfile && activeConfiguredProfile?.disabled_toolsets ? { disabled_toolsets: activeConfiguredProfile.disabled_toolsets } : {}),
     };
   }
 
@@ -531,7 +550,7 @@ export function App({ client }: AppProps) {
     try {
       const saved = addingProfile
         ? await client.createProfile!(draft)
-        : await client.updateProfile!(selectedSettingsProfile ?? draft.name, draft);
+        : await profileSettingsClient.updateProfile!(selectedSettingsProfile ?? draft.name, draft);
       setConfiguredProfiles((current) => {
         const withoutPrevious = addingProfile
           ? current
@@ -577,7 +596,7 @@ export function App({ client }: AppProps) {
     setSavingProfile(true);
     setError(null);
     try {
-      const saved = await client.updateProfile(activeConfiguredProfile.name, {
+      const saved = await profileSettingsClient.updateProfile!(activeConfiguredProfile.name, {
         ...activeConfiguredProfile,
         providers: nextProviders,
       });
@@ -1317,6 +1336,7 @@ export function App({ client }: AppProps) {
                   Models
                 </Button>
               ) : null}
+              {client.updateProfile ? <Button aria-current={settingsSection === 'toolsets' ? 'page' : undefined} onClick={() => setSettingsSection('toolsets')} type="button" variant="ghost">Toolsets</Button> : null}
               {client.getMcpSettings ? (
                 <Button aria-current={settingsSection === 'mcp' ? 'page' : undefined}
                   onClick={() => setSettingsSection('mcp')} type="button" variant="ghost">
@@ -1353,7 +1373,7 @@ export function App({ client }: AppProps) {
                 {activeConfiguredProfile ? (
                   <ProjectSettings
                     key={activeConfiguredProfile.name}
-                    client={client}
+                    client={profileSettingsClient}
                     onSaved={saved => {
                       setSessions(current => reconcileProjectSessions(
                         current,
@@ -1383,6 +1403,15 @@ export function App({ client }: AppProps) {
                 ) : <p>Select a profile to configure its projects.</p>}
               </>
             ) : null}
+            {settingsSection === 'toolsets' && client.updateProfile ? <>
+              <label className="profile-picker" htmlFor="toolsets-profile"><span>Profile</span>
+                <Typeahead id="toolsets-profile" onChange={selectSettingsProfile} options={sortedProfiles(configuredProfiles).map(profile => profile.name)} value={selectedSettingsProfile ?? ''} />
+              </label>
+              {activeConfiguredProfile ? <ToolsetSettings key={activeConfiguredProfile.name} client={profileSettingsClient} profile={activeConfiguredProfile} onSaved={saved => {
+                setConfiguredProfiles(current => current.map(profile => profile.name === saved.name ? saved : profile));
+                setProfiles(current => current.map(profile => profile.name === saved.name ? { ...profile, disabled_toolsets: saved.disabled_toolsets } : profile));
+              }} /> : <p>Select a profile to configure its toolsets.</p>}
+            </> : null}
             {settingsSection === 'workflows' && client.listWorkflows ? <>
               <label className="profile-picker">Profile<select value={selectedSettingsProfile ?? ''} onChange={e => selectSettingsProfile(e.target.value)}>{configuredProfiles.map(p => <option key={p.name}>{p.name}</option>)}</select></label>
               {activeConfiguredProfile && <WorkflowSettings key={activeConfiguredProfile.name} client={client} profile={activeConfiguredProfile} />}
@@ -1396,7 +1425,7 @@ export function App({ client }: AppProps) {
                     value={selectedSettingsProfile ?? ''} />
                 </label>
                 {activeConfiguredProfile ? (
-                  <SubagentSettings key={activeConfiguredProfile.name} client={client}
+                  <SubagentSettings key={activeConfiguredProfile.name} client={profileSettingsClient}
                     profile={activeConfiguredProfile}
                     onSaved={saved => {
                       setConfiguredProfiles(current => current.map(profile => profile.name === saved.name ? saved : profile));

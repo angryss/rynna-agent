@@ -65,6 +65,7 @@ export interface ProfileProvider {
 }
 
 export interface Profile {
+  disabled_toolsets?: ToolsetId[];
   name: string;
   providers: ProfileProvider[];
   active_skills: string[];
@@ -74,6 +75,8 @@ export interface Profile {
   projects: Project[];
   subagents: Subagent[];
 }
+
+export type ToolsetId = 'file_operations' | 'code_search' | 'commands' | 'skills' | 'subagents';
 
 export interface Subagent {
   name: string;
