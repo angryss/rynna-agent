@@ -1,4 +1,6 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { X } from 'lucide-react';
 
 import type { AgentClient, Profile, Project } from '../contracts';
 import { Button } from './ui/button';
@@ -7,11 +9,12 @@ import { Textarea } from './ui/textarea';
 
 interface ProjectSettingsProps {
   client: AgentClient;
+  onSavingChange?(saving: boolean): void;
   profile: Profile;
   onSaved(profile: Profile): void;
 }
 
-export function ProjectSettings({ client, profile, onSaved }: ProjectSettingsProps) {
+export function ProjectSettings({ client, onSaved, onSavingChange, profile }: ProjectSettingsProps) {
   const [startingDirectory, setStartingDirectory] = useState(profile.default_project_directory);
   const [editingName, setEditingName] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -28,6 +31,7 @@ export function ProjectSettings({ client, profile, onSaved }: ProjectSettingsPro
   async function save(next: Profile): Promise<boolean> {
     if (!client.updateProfile || saving) return false;
     setSaving(true);
+    onSavingChange?.(true);
     setError(null);
     try {
       onSaved(await client.updateProfile(profile.name, next));
@@ -37,6 +41,7 @@ export function ProjectSettings({ client, profile, onSaved }: ProjectSettingsPro
       return false;
     } finally {
       setSaving(false);
+      onSavingChange?.(false);
     }
   }
 
@@ -170,5 +175,84 @@ export function ProjectSettings({ client, profile, onSaved }: ProjectSettingsPro
       ) : null}
       {error ? <p className="request-error" role="alert">{error}</p> : null}
     </div>
+  );
+}
+
+interface ProjectSettingsDialogProps extends Omit<ProjectSettingsProps, 'onSavingChange'> {
+  onClose(): void;
+  returnFocus?: HTMLElement | null;
+}
+
+export function ProjectSettingsDialog({ client, profile, onClose, onSaved, returnFocus }: ProjectSettingsDialogProps) {
+  const dialog = useRef<HTMLElement>(null);
+  const [saving, setSaving] = useState(false);
+
+  function close() {
+    if (!saving) onClose();
+  }
+
+  useEffect(() => {
+    const app = document.querySelector<HTMLElement>('.app-shell');
+    app?.setAttribute('inert', '');
+    return () => {
+      app?.removeAttribute('inert');
+      returnFocus?.focus();
+    };
+  }, [returnFocus]);
+
+  useEffect(() => {
+    if (saving) dialog.current?.focus();
+  }, [saving]);
+
+  return createPortal(
+    <div className="project-manager-backdrop" onMouseDown={event => {
+      if (event.target === event.currentTarget) close();
+    }}>
+      <section
+        aria-label="Manage projects"
+        aria-modal="true"
+        className="project-manager-dialog"
+        ref={dialog}
+        tabIndex={-1}
+        onKeyDown={event => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            close();
+          } else if (event.key === 'Tab') {
+            const controls = Array.from(dialog.current?.querySelectorAll<HTMLElement>(
+              'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+            ) ?? []);
+            const first = controls[0];
+            const last = controls.at(-1);
+            if (controls.length === 0) {
+              event.preventDefault();
+              dialog.current?.focus();
+            } else if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first?.focus();
+            }
+          }
+        }}
+        role="dialog"
+      >
+        <Button
+          aria-label="Close project manager"
+          autoFocus
+          className="project-manager-close"
+          disabled={saving}
+          onClick={close}
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <X aria-hidden="true" />
+        </Button>
+        <ProjectSettings client={client} onSaved={onSaved} onSavingChange={setSaving} profile={profile} />
+      </section>
+    </div>,
+    document.body,
   );
 }
