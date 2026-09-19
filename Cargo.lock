@@ -3576,19 +3576,6 @@ dependencies = [
 
 [[package]]
 name = "process-wrap"
-version = "9.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e842efad9119158434d193c6682e2ebee4b44d6ad801d7b349623b3f57cdf55"
-dependencies = [
- "futures",
- "indexmap 2.14.0",
- "nix 0.31.3",
- "tokio",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "process-wrap"
 version = "10.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e3f4237d0e4741eb50bc5584db701f1299c85fa31ff0274dd6445e79dc42d12"
@@ -3973,7 +3960,7 @@ dependencies = [
  "http",
  "indexmap 2.14.0",
  "pin-project-lite",
- "process-wrap 10.0.0",
+ "process-wrap",
  "reqwest",
  "serde",
  "serde_json",
@@ -4217,7 +4204,7 @@ dependencies = [
  "axum",
  "futures-util",
  "libc",
- "process-wrap 9.1.0",
+ "process-wrap",
  "reqwest",
  "rmcp",
  "rynna-config",
@@ -4324,7 +4311,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "libc",
- "process-wrap 10.0.0",
+ "process-wrap",
  "rynna-core",
  "serde",
  "serde_json",

@@ -11,8 +11,8 @@ repository.workspace = true
 rynna-core = { path = "../rynna-core" }
 rynna-config = { path = "../rynna-config" }
 rmcp = { version = "3.2", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
-# rmcp 3.2 accepts process-wrap 9 command types; upgrade these dependencies together.
-process-wrap = { version = "9.1", default-features = false, features = ["kill-on-drop", "process-group", "tokio1", "job-object"] }
+# rmcp's child-process transport and this crate must use the same process-wrap types.
+process-wrap = { workspace = true, features = ["job-object"] }
 libc.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
