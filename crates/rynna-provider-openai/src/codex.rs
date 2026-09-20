@@ -18,7 +18,6 @@ use super::codex_protocol::{
 };
 
 const CODEX_OPERATION_TIMEOUT: Duration = Duration::from_secs(180);
-const SUPPORTED_CODEX_VERSION: &str = "codex-cli 0.149.1";
 const MAX_CODEX_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_CODEX_TURN_MESSAGES: usize = 4096;
 
@@ -138,7 +137,7 @@ impl CodexAppServerProvider {
         Ok(command)
     }
 
-    /// Read-only discovery: no thread or turn is started, so the inference version pin does not apply.
+    /// Read-only discovery: no thread or turn is started.
     pub async fn list_models(&self) -> Result<Vec<ProviderModel>, ProviderError> {
         let deadline = Instant::now() + Duration::from_secs(15);
         let workspace = tempfile::tempdir().map_err(provider_error)?;
@@ -279,7 +278,7 @@ impl CodexAppServerProvider {
         on_delta: &mut (dyn for<'delta> FnMut(&'delta CompletionDelta) + Send),
     ) -> Result<Completion, ProviderError> {
         let deadline = Instant::now() + CODEX_OPERATION_TIMEOUT;
-        verify_codex_version(&self.program, deadline).await?;
+
         if !request.tools.is_empty()
             || request
                 .messages
@@ -515,35 +514,6 @@ impl CodexAppServerProvider {
         }
         Ok(Completion::new(Message::assistant(content)))
     }
-}
-
-async fn verify_codex_version(
-    program: &std::path::Path,
-    deadline: Instant,
-) -> Result<(), ProviderError> {
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .ok_or_else(|| ProviderError::new("Codex version check timed out"))?;
-    let output = tokio::time::timeout(
-        remaining.min(Duration::from_secs(5)),
-        Command::new(program)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output(),
-    )
-    .await
-    .map_err(|_| ProviderError::new("Codex version check timed out"))?
-    .map_err(provider_error)?;
-    if !output.status.success()
-        || output.stdout.len() > 128
-        || String::from_utf8_lossy(&output.stdout).trim() != SUPPORTED_CODEX_VERSION
-    {
-        return Err(ProviderError::new(format!(
-            "unsupported Codex CLI version; Rynna requires {SUPPORTED_CODEX_VERSION}"
-        )));
-    }
-    Ok(())
 }
 
 #[async_trait]

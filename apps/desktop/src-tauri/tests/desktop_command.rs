@@ -503,14 +503,14 @@ async fn codex_app_server_provider_returns_the_subscription_answer() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn codex_app_server_provider_rejects_unreviewed_codex_versions() {
+async fn codex_app_server_provider_rejects_an_unavailable_app_server() {
     use std::os::unix::fs::PermissionsExt;
 
     let directory = tempfile::tempdir().unwrap();
     let program = directory.path().join("unsupported-codex");
     std::fs::write(
         &program,
-        "#!/bin/sh\n[ \"$1\" = \"--version\" ] && { printf '%s\\n' 'codex-cli 0.150.0'; exit 0; }\nexit 9\n",
+        "#!/bin/sh\n[ \"$1\" = \"--version\" ] && { printf '%s\\n' 'codex-cli 0.155.1'; exit 0; }\nIFS= read -r initialize\nexit 9\n",
     )
     .unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -521,7 +521,7 @@ async fn codex_app_server_provider_rejects_unreviewed_codex_versions() {
 
     assert_eq!(
         error.to_string(),
-        "model provider failed: unsupported Codex CLI version; Rynna requires codex-cli 0.149.1"
+        "model provider failed: Codex app-server stopped unexpectedly"
     );
 }
 

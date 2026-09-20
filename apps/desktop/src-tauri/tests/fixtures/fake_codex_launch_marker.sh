@@ -1,4 +1,4 @@
 #!/bin/sh
-[ "$1" = "--version" ] && { printf '%s\n' 'codex-cli 0.149.1'; exit 0; }
+[ "$1" = "app-server" ] || exit 2
 printf launched > "$CODEX_HOME/launched"
 exit 9

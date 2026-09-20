@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reviewed-protocol double; never contacts OpenAI or reads real credentials."""
+"""App-server protocol double; never contacts OpenAI or reads real credentials."""
 import json
 import os
 import sys
@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 if sys.argv[1:] == ["--version"]:
-    print("codex-cli 0.149.1")
+    print("codex-cli 0.155.1")
     sys.exit(0)
 if sys.argv[1:] == ["login", "status"]:
     print("Logged in using ChatGPT", file=sys.stderr)
