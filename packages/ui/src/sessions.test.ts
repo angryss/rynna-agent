@@ -10,6 +10,13 @@ import {
 } from './sessions';
 
 describe('sessions', () => {
+  it('discards malformed tool metadata without losing the transcript', () => {
+    const session = { id: 's', name: 'Saved', profile: '', project: null, messages: [], created_at: '', updated_at: '' };
+    for (const tool_calls of [{}, [null], [{ id: 'x', name: 42 }]]) {
+      expect(readSessions({ getItem: key => key === 'rynna-sessions-v1' ? JSON.stringify([{ ...session, tool_calls }]) : null }))
+        .toEqual([{ ...session, tool_calls: [] }]);
+    }
+  });
   it('names a session from a normalized, bounded first prompt', () => {
     expect(sessionName('  Review\n\nthis change  ')).toBe('Review this change');
     expect(sessionName('a'.repeat(60))).toBe(`${'a'.repeat(51)}…`);

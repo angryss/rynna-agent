@@ -2257,7 +2257,35 @@ it('shows the workflow goal once when polling and start resolve before a render'
 });
 
 
-it.each(['finish', 'error', 'stop', 'done'] as const)('clears transient command activity on %s without saving it', async ending => {
+it('restores compact tool calls across sessions and reload without sending metadata', async () => {
+  const respond = vi.fn<AgentClient['respond']>(async (_request, emit) => {
+    emit?.({ kind: 'tool_started', call: { id: 'same', name: 'skill_view', arguments: { name: 'systematic-debugging' } } });
+    emit?.({ kind: 'tool_finished', id: 'same' });
+    return { message: { role: 'assistant', content: 'Done.' } };
+  });
+  const user = userEvent.setup();
+  const mounted = render(<App client={{ respond }} />);
+  await user.type(screen.getByLabelText('Message Rynna'), 'Inspect tools');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  expect(await screen.findByText('Tool calls (1)')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'New session' }));
+  expect(screen.queryByText('Tool calls (1)')).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Inspect tools' }));
+  expect(screen.getByText('Skill View')).toBeInTheDocument();
+  mounted.unmount();
+  render(<App client={{ respond }} />);
+  await user.click(screen.getByRole('button', { name: 'Inspect tools' }));
+  expect(screen.getByText('Tool calls (1)')).toBeInTheDocument();
+  await user.type(screen.getByLabelText('Message Rynna'), 'Again');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  expect(await screen.findByText('Tool calls (2)')).toBeInTheDocument();
+  expect(respond.mock.calls[1]![0].history).toEqual([
+    { role: 'user', content: 'Inspect tools' }, { role: 'assistant', content: 'Done.' },
+  ]);
+  expect(readSessions()[0]!.tool_calls).toHaveLength(2);
+});
+
+it.each(['finish', 'error', 'stop', 'done'] as const)('retains compact tool activity on %s outside model history', async ending => {
   let emit: NonNullable<Parameters<AgentClient['respond']>[1]> = () => {};
   let resolve!: (value: Awaited<ReturnType<AgentClient['respond']>>) => void;
   let reject!: (reason: Error) => void;
@@ -2273,7 +2301,11 @@ it.each(['finish', 'error', 'stop', 'done'] as const)('clears transient command 
   await user.type(screen.getByLabelText('Message Rynna'), 'Check the project');
   await user.click(screen.getByRole('button', { name: 'Send' }));
   act(() => emit({ kind: 'tool_started', call: { id: 'cmd', name: 'run_command', arguments: { program: 'git', arguments: ['status', 'a b'] } } }));
-  expect(screen.getByRole('status')).toHaveTextContent('Running git status "a b"');
+  expect(screen.getByText('Tool calls (1)')).toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('Running');
+  expect(screen.getByText('Terminal')).toBeInTheDocument();
+  expect(screen.getByText(/git status/)).toBeInTheDocument();
+  expect(document.querySelector('.tool-call details')).not.toHaveAttribute('open');
   expect(readSessions().some(session => JSON.stringify(session.messages).includes('Running'))).toBe(false);
   if (ending === 'finish') {
     act(() => emit({ kind: 'tool_finished', id: 'unrelated' }));
@@ -2291,7 +2323,10 @@ it.each(['finish', 'error', 'stop', 'done'] as const)('clears transient command 
     await act(async () => resolve({ message: { role: 'assistant', content: 'Done.' } }));
   }
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
-  expect(readSessions().some(session => JSON.stringify(session.messages).includes('Running'))).toBe(false);
+  expect(screen.getByText('Tool calls (1)')).toBeInTheDocument();
+  const status = ending === 'error' ? 'error' : ending === 'stop' ? 'cancelled' : ending === 'done' ? 'interrupted' : 'completed';
+  expect(readSessions()[0]!.tool_calls).toEqual([expect.objectContaining({ name: 'run_command', status, elapsed_ms: expect.any(Number) })]);
+  expect(readSessions().some(session => JSON.stringify(session.messages).includes('run_command'))).toBe(false);
 });
 
 

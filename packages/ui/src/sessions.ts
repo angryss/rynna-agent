@@ -1,5 +1,14 @@
 import type { Message } from './contracts';
 
+export interface ToolCallActivity {
+  id: string;
+  name: string;
+  arguments: unknown;
+  started_at: number;
+  elapsed_ms?: number;
+  status: 'running' | 'completed' | 'error' | 'cancelled' | 'interrupted';
+}
+
 export interface Session {
   id: string;
   workflow_id?: string;
@@ -10,6 +19,8 @@ export interface Session {
   profile: string;
   project: string | null;
   messages: Message[];
+  /** UI-only activity; never included in provider history. */
+  tool_calls?: ToolCallActivity[];
   created_at: string;
   updated_at: string;
 }
@@ -130,7 +141,18 @@ export function reconcileProjectSessions(
 
 function decodeSessions(stored: string): Session[] {
   const decoded: unknown = JSON.parse(stored);
-  return Array.isArray(decoded) ? decoded.filter(isSession) : [];
+  return Array.isArray(decoded) ? decoded.filter(isSession).map(session => session.tool_calls === undefined ? session : {
+    ...session, tool_calls: Array.isArray(session.tool_calls) ? session.tool_calls.filter(isToolCallActivity) : [],
+  }) : [];
+}
+
+function isToolCallActivity(value: unknown): value is ToolCallActivity {
+  if (!value || typeof value !== 'object') return false;
+  const call = value as Partial<ToolCallActivity>;
+  return typeof call.id === 'string' && typeof call.name === 'string' &&
+    typeof call.started_at === 'number' && Number.isFinite(call.started_at) &&
+    (call.elapsed_ms === undefined || typeof call.elapsed_ms === 'number' && Number.isFinite(call.elapsed_ms) && call.elapsed_ms >= 0) &&
+    ['running', 'completed', 'error', 'cancelled', 'interrupted'].includes(call.status ?? '');
 }
 
 function isSession(value: unknown): value is Session {
