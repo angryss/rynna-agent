@@ -9,6 +9,13 @@ use rynna_core::Tool;
 use rynna_tools_command::{CommandConfig, CommandTool};
 use serde_json::json;
 
+// CommandTool forks before exec to set its working directory. A parallel test
+// can fork while executable() holds a writable fixture descriptor, inheriting
+// it until exec even with CLOEXEC. Linux then rejects that fixture with ETXTBSY.
+// Serialize fixture creation and execution in this test process; locking only
+// executable() would still allow another test to fork during its write.
+static FIXTURE_PROCESS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn executable(directory: &tempfile::TempDir, name: &str, source: &str) -> std::path::PathBuf {
     let program = directory.path().join(name);
     let mut fixture = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
@@ -51,6 +58,7 @@ fn config(
 
 #[tokio::test]
 async fn runs_an_explicitly_mapped_program_without_a_shell() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let program = executable(
         &directory,
@@ -72,6 +80,7 @@ async fn runs_an_explicitly_mapped_program_without_a_shell() {
 
 #[tokio::test]
 async fn rejects_unmapped_programs_without_executing_them() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let marker = directory.path().join("marker");
     let program = executable(
@@ -92,6 +101,7 @@ async fn rejects_unmapped_programs_without_executing_them() {
 
 #[tokio::test]
 async fn terminates_commands_that_exceed_the_timeout() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let program = executable(&directory, "sleep", "#!/bin/sh\nsleep 10\n");
     let mut command_config = config(&directory, "sleep", program);
@@ -105,6 +115,7 @@ async fn terminates_commands_that_exceed_the_timeout() {
 
 #[tokio::test]
 async fn timeout_terminates_descendants_before_they_can_escape() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let marker = directory.path().join("escaped");
     let program = executable(
@@ -128,6 +139,7 @@ async fn timeout_terminates_descendants_before_they_can_escape() {
 
 #[tokio::test]
 async fn executes_the_authorized_file_even_if_its_path_is_replaced() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let program = executable(&directory, "inspect", "#!/bin/sh\nprintf 'authorized'\n");
     let tool = CommandTool::new(config(&directory, "inspect", program.clone())).unwrap();
@@ -141,6 +153,7 @@ async fn executes_the_authorized_file_even_if_its_path_is_replaced() {
 
 #[tokio::test]
 async fn uses_the_authorized_working_directory_even_if_its_path_is_replaced() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let parent = tempfile::tempdir().unwrap();
     let working_directory = parent.path().join("working");
     std::fs::create_dir(&working_directory).unwrap();
@@ -168,6 +181,7 @@ async fn uses_the_authorized_working_directory_even_if_its_path_is_replaced() {
 
 #[tokio::test]
 async fn terminates_commands_when_combined_output_exceeds_the_limit() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let program = executable(
         &directory,
@@ -189,6 +203,7 @@ async fn terminates_commands_when_combined_output_exceeds_the_limit() {
 
 #[tokio::test]
 async fn overflow_on_one_stream_is_not_starved_by_an_idle_stream() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let program = executable(
         &directory,
@@ -207,6 +222,7 @@ async fn overflow_on_one_stream_is_not_starved_by_an_idle_stream() {
 
 #[tokio::test]
 async fn output_overflow_terminates_descendants_before_they_can_escape() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let marker = directory.path().join("escaped-after-output");
     let program = executable(
@@ -230,6 +246,7 @@ async fn output_overflow_terminates_descendants_before_they_can_escape() {
 
 #[tokio::test]
 async fn dropping_execution_terminates_descendants() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let marker = directory.path().join("escaped-after-drop");
     let started = directory.path().join("descendant-started");
@@ -263,6 +280,7 @@ async fn dropping_execution_terminates_descendants() {
 
 #[tokio::test]
 async fn accepts_exact_combined_output_boundary_from_both_streams() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let program = executable(
         &directory,
@@ -281,6 +299,7 @@ async fn accepts_exact_combined_output_boundary_from_both_streams() {
 
 #[tokio::test]
 async fn provides_null_stdin() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let program = executable(
         &directory,
@@ -296,6 +315,7 @@ async fn provides_null_stdin() {
 
 #[tokio::test]
 async fn enforces_argument_count_and_byte_limits() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let program = executable(&directory, "arguments", "#!/bin/sh\nexit 0\n");
     let tool = CommandTool::new(config(&directory, "arguments", program)).unwrap();
@@ -315,6 +335,7 @@ async fn enforces_argument_count_and_byte_limits() {
 
 #[tokio::test]
 async fn rejects_invalid_utf8_output() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let program = executable(&directory, "binary", "#!/bin/sh\nprintf '\\377'\n");
     let tool = CommandTool::new(config(&directory, "binary", program)).unwrap();
@@ -324,11 +345,12 @@ async fn rejects_invalid_utf8_output() {
         .await
         .unwrap_err();
 
-    assert!(error.to_string().contains("not valid UTF-8"));
+    assert!(error.to_string().contains("not valid UTF-8"), "{error}");
 }
 
 #[tokio::test]
 async fn reports_null_exit_code_for_signaled_processes() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let program = executable(&directory, "signaled", "#!/bin/sh\nkill -TERM $$\n");
     let tool = CommandTool::new(config(&directory, "signaled", program)).unwrap();
@@ -341,6 +363,7 @@ async fn reports_null_exit_code_for_signaled_processes() {
 
 #[test]
 fn rejects_invalid_working_directories_and_program_objects() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.blocking_lock();
     let directory = tempfile::tempdir().unwrap();
     let working_file = directory.path().join("not-a-directory");
     std::fs::write(&working_file, "content").unwrap();
@@ -369,6 +392,7 @@ fn rejects_invalid_working_directories_and_program_objects() {
 
 #[test]
 fn rejects_a_fifo_working_directory_without_blocking() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.blocking_lock();
     let directory = tempfile::tempdir().unwrap();
     let working_directory = fifo(&directory, "working-directory.fifo");
     let program = executable(&directory, "program", "#!/bin/sh\nexit 0\n");
@@ -388,6 +412,7 @@ fn rejects_a_fifo_working_directory_without_blocking() {
 
 #[test]
 fn rejects_a_fifo_program_without_blocking() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.blocking_lock();
     let directory = tempfile::tempdir().unwrap();
     let program = fifo(&directory, "program.fifo");
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -409,6 +434,7 @@ fn rejects_a_fifo_program_without_blocking() {
 
 #[test]
 fn rejects_non_executable_programs() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.blocking_lock();
     let directory = tempfile::tempdir().unwrap();
     let program = directory.path().join("not-executable");
     std::fs::write(&program, "content").unwrap();
@@ -423,6 +449,7 @@ fn rejects_non_executable_programs() {
 
 #[tokio::test]
 async fn does_not_inherit_the_agent_process_home() {
+    let _fixture_guard = FIXTURE_PROCESS_LOCK.lock().await;
     assert!(std::env::var_os("HOME").is_some());
     let directory = tempfile::tempdir().unwrap();
     let program = executable(
