@@ -1,4 +1,5 @@
 use std::io::{self, Stdout};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -122,6 +123,7 @@ const SLASH_COMMANDS: &[SlashCommand] = &[
 enum MessageKind {
     User,
     Thinking,
+    Tools,
     Assistant,
     Error,
 }
@@ -132,6 +134,16 @@ struct DisplayMessage {
     content: String,
     expanded: bool,
     scroll_from_bottom: u16,
+    tools: Vec<DisplayToolCall>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DisplayToolCall {
+    id: String,
+    label: String,
+    started: Instant,
+    elapsed: Option<Duration>,
+    interrupted: bool,
 }
 
 struct ChatUi {
@@ -174,6 +186,7 @@ impl ChatUi {
             content: content.into(),
             expanded: false,
             scroll_from_bottom: 0,
+            tools: Vec::new(),
         });
         self.scroll_from_bottom = 0;
     }
@@ -317,6 +330,22 @@ impl ChatUi {
         self.push_message(MessageKind::Assistant, String::new());
     }
 
+    fn finish_response(&mut self) {
+        self.busy = false;
+        for call in self
+            .messages
+            .iter_mut()
+            .rev()
+            .take_while(|message| message.kind != MessageKind::User)
+            .flat_map(|message| &mut message.tools)
+        {
+            if call.elapsed.is_none() {
+                call.elapsed = Some(call.started.elapsed());
+                call.interrupted = true;
+            }
+        }
+    }
+
     fn append_assistant_delta(&mut self, delta: &str) {
         if let Some(message) = self.messages.last_mut()
             && message.kind == MessageKind::Assistant
@@ -328,7 +357,50 @@ impl ChatUi {
 
     fn append_completion_delta(&mut self, delta: &CompletionDelta) {
         match delta {
-            CompletionDelta::ToolStarted(_) | CompletionDelta::ToolFinished(_) => {}
+            CompletionDelta::ToolStarted(call) => {
+                let group = self
+                    .messages
+                    .iter()
+                    .rposition(|message| message.kind == MessageKind::Tools);
+                let last_user = self
+                    .messages
+                    .iter()
+                    .rposition(|message| message.kind == MessageKind::User);
+                let index = match group.filter(|index| last_user.is_none_or(|user| *index > user)) {
+                    Some(index) => index,
+                    None => {
+                        self.push_message(MessageKind::Tools, "");
+                        self.messages.len() - 1
+                    }
+                };
+                if self.messages[index]
+                    .tools
+                    .iter()
+                    .any(|existing| existing.id == call.id)
+                {
+                    return;
+                }
+                self.messages[index].tools.push(DisplayToolCall {
+                    id: call.id.clone(),
+                    label: tool_label(call),
+                    started: Instant::now(),
+                    elapsed: None,
+                    interrupted: false,
+                });
+                self.scroll_from_bottom = 0;
+            }
+            CompletionDelta::ToolFinished(id) => {
+                if let Some(call) = self
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .take_while(|message| message.kind != MessageKind::User)
+                    .flat_map(|message| message.tools.iter_mut().rev())
+                    .find(|call| call.id == *id && call.elapsed.is_none())
+                {
+                    call.elapsed = Some(call.started.elapsed());
+                }
+            }
             CompletionDelta::Thinking(delta) => {
                 if delta.is_empty() {
                     return;
@@ -344,6 +416,7 @@ impl ChatUi {
                         content: delta.clone(),
                         expanded: true,
                         scroll_from_bottom: 0,
+                        tools: Vec::new(),
                     });
                 }
                 self.scroll_from_bottom = 0;
@@ -659,6 +732,80 @@ fn thinking_lines(message: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+fn tool_label(call: &rynna_core::ToolCall) -> String {
+    let name = super::sanitize_terminal_text(&call.name)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let name = name
+        .split(['_', '-', '.'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command = call
+        .arguments
+        .get("program")
+        .and_then(serde_json::Value::as_str)
+        .map(|program| {
+            std::iter::once(program)
+                .chain(
+                    call.arguments
+                        .get("arguments")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(serde_json::Value::as_str),
+                )
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+    let argument = command.as_deref().or_else(|| {
+        ["command", "name", "query", "pattern", "path", "url"]
+            .iter()
+            .find_map(|key| call.arguments.get(key).and_then(serde_json::Value::as_str))
+    });
+    match argument {
+        Some(argument) => {
+            let argument = super::sanitize_terminal_text(argument)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "{name}({})",
+                serde_json::to_string(&argument).unwrap_or_default()
+            )
+        }
+        None => format!("{name}()"),
+    }
+}
+
+fn abbreviated(text: &str, width: usize) -> String {
+    if Line::from(text).width() <= width {
+        return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut preview = String::new();
+    for character in text.chars() {
+        let mut candidate = preview.clone();
+        candidate.push(character);
+        if Line::from(candidate.as_str()).width() >= width {
+            break;
+        }
+        preview = candidate;
+    }
+    preview.push('…');
+    preview
+}
+
 fn transcript_text(ui: &ChatUi, width: u16) -> Text<'static> {
     let mut lines = vec![Line::styled(
         "Rynna",
@@ -678,6 +825,46 @@ fn transcript_text(ui: &ChatUi, width: u16) -> Text<'static> {
         let mut content = message.content.split('\n');
         let first = content.next().unwrap_or_default().to_owned();
         match message.kind {
+            MessageKind::Tools => {
+                lines.push(Line::from(format!("Tool calls ({})", message.tools.len())));
+                for (index, call) in message.tools.iter().enumerate() {
+                    let connector = if index + 1 == message.tools.len() {
+                        "└─ "
+                    } else {
+                        "├─ "
+                    };
+                    let (marker, color, timing) = match call.elapsed {
+                        Some(elapsed) if call.interrupted => (
+                            "! ",
+                            Color::Red,
+                            format!(" (interrupted {:.1}s)", elapsed.as_secs_f64()),
+                        ),
+                        // ToolFinished carries only an ID, not an outcome. Neutral
+                        // completion must not imply success; response errors stay separate.
+                        Some(elapsed) => (
+                            "● ",
+                            Color::Gray,
+                            format!(" ({:.1}s)", elapsed.as_secs_f64()),
+                        ),
+                        None => (
+                            "◌ ",
+                            Color::Yellow,
+                            format!(" (running {:.1}s)", call.started.elapsed().as_secs_f64()),
+                        ),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(connector, Style::default().fg(Color::DarkGray)),
+                        Span::styled(marker, Style::default().fg(color)),
+                        Span::raw(abbreviated(
+                            &call.label,
+                            usize::from(width)
+                                .saturating_sub(5 + Line::from(timing.as_str()).width())
+                                .min(80),
+                        )),
+                        Span::styled(timing, Style::default().fg(Color::DarkGray)),
+                    ]));
+                }
+            }
             MessageKind::User => {
                 lines.push(highlighted_user_line(
                     Line::from(vec![
@@ -822,6 +1009,19 @@ enum ResponseEvent {
         prompt: String,
         result: Result<Message, String>,
     },
+}
+
+fn forward_delta(sender: &mpsc::UnboundedSender<ResponseEvent>, delta: &CompletionDelta) {
+    let delta = match delta {
+        CompletionDelta::ToolStarted(_) | CompletionDelta::ToolFinished(_) => delta.clone(),
+        CompletionDelta::Thinking(content) => {
+            CompletionDelta::Thinking(super::sanitize_terminal_text(content))
+        }
+        CompletionDelta::Content(content) => {
+            CompletionDelta::Content(super::sanitize_terminal_text(content))
+        }
+    };
+    let _ = sender.send(ResponseEvent::Delta(delta));
 }
 
 struct TerminalSession {
@@ -1005,20 +1205,7 @@ pub async fn run(
                             let result = {
                                 let delta_sender = sender.clone();
                                 let mut on_delta = move |delta: &CompletionDelta| {
-                                    let delta = match delta {
-                                        CompletionDelta::ToolStarted(_) | CompletionDelta::ToolFinished(_) => return,
-                                        CompletionDelta::Thinking(content) => {
-                                            CompletionDelta::Thinking(
-                                                super::sanitize_terminal_text(content),
-                                            )
-                                        }
-                                        CompletionDelta::Content(content) => {
-                                            CompletionDelta::Content(
-                                                super::sanitize_terminal_text(content),
-                                            )
-                                        }
-                                    };
-                                    let _ = delta_sender.send(ResponseEvent::Delta(delta));
+                                    forward_delta(&delta_sender, delta);
                                 };
                                 profiles
                                     .respond_stream(
@@ -1047,7 +1234,7 @@ pub async fn run(
                     }
                     ResponseEvent::Delta(delta) => ui.append_completion_delta(&delta),
                     ResponseEvent::Finished { prompt, result } => {
-                        ui.busy = false;
+                        ui.finish_response();
                         match result {
                             Ok(message) => {
                                 history.push(Message::user(prompt));
@@ -1073,6 +1260,171 @@ mod tests {
         ChatUi, CommandAction, CompletionDelta, InputAction, MAX_COMPOSER_CONTENT_HEIGHT, Message,
         MessageKind, apply_command, chat_layout, composer_cursor, composer_height, render,
     };
+
+    #[test]
+    fn tool_calls_render_as_a_persistent_tree_without_results() {
+        let mut ui = ChatUi::new("local", "small");
+        ui.append_completion_delta(&CompletionDelta::ToolStarted(rynna_core::ToolCall::new(
+            "skill-1",
+            "skill_view",
+            serde_json::json!({"name": "systematic-debugging"}),
+        )));
+        ui.append_completion_delta(&CompletionDelta::ToolStarted(rynna_core::ToolCall::new(
+            "shell-1",
+            "terminal",
+            serde_json::json!({"command": "ssh host uptime"}),
+        )));
+        ui.append_completion_delta(&CompletionDelta::ToolFinished("skill-1".into()));
+        ui.messages[0].tools[0].elapsed = Some(std::time::Duration::ZERO);
+        ui.append_completion_delta(&CompletionDelta::Content("Answer".into()));
+        let mut terminal = Terminal::new(TestBackend::new(100, 18)).unwrap();
+        terminal.draw(|frame| render(frame, &ui)).unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Tool calls (2)"), "{screen}");
+        assert!(
+            screen.contains("├─ ● Skill View(\"systematic-debugging\") (0.0s)"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("└─ ◌ Terminal(\"ssh host uptime\") (running"),
+            "{screen}"
+        );
+        assert!(screen.contains("Answer"), "{screen}");
+        assert!(!screen.contains("skill-1"), "{screen}");
+    }
+
+    #[test]
+    fn tool_previews_are_safe_compact_and_fit_narrow_terminals() {
+        let mut ui = ChatUi::new("local", "small");
+        ui.append_completion_delta(&CompletionDelta::ToolStarted(rynna_core::ToolCall::new(
+            "long", "terminal", serde_json::json!({"command": format!("ssh\n\u{1b}[31m {}", "界".repeat(100)), "token": "SECRET"}),
+        )));
+        let text = super::transcript_text(&ui, 48);
+        let row = text
+            .lines
+            .iter()
+            .find(|line| line.to_string().contains("Terminal"))
+            .unwrap();
+        assert!(row.width() <= 48, "{row}");
+        assert!(row.to_string().contains('…'), "{row}");
+        assert!(!row.to_string().contains("SECRET"));
+        assert!(!row.to_string().contains('\\'));
+        assert!(row.spans.last().unwrap().style.fg == Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn streaming_bridge_forwards_tool_ids_and_sanitizes_text() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let start = CompletionDelta::ToolStarted(rynna_core::ToolCall::new(
+            "id",
+            "terminal",
+            serde_json::json!({"command": "pwd"}),
+        ));
+        let finish = CompletionDelta::ToolFinished("id".into());
+        for delta in [
+            &start,
+            &finish,
+            &CompletionDelta::Content("safe\u{1b}".into()),
+        ] {
+            super::forward_delta(&sender, delta);
+        }
+        let received: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok())
+            .map(|event| match event {
+                super::ResponseEvent::Delta(delta) => delta,
+                _ => panic!("unexpected response"),
+            })
+            .collect();
+        assert_eq!(
+            received,
+            vec![start, finish, CompletionDelta::Content("safe".into())]
+        );
+    }
+
+    #[test]
+    fn response_end_marks_unfinished_tools_interrupted_not_successful() {
+        let mut ui = ChatUi::new("local", "small");
+        ui.append_completion_delta(&CompletionDelta::ToolStarted(rynna_core::ToolCall::new(
+            "a",
+            "terminal",
+            serde_json::json!({"command": "pwd"}),
+        )));
+        ui.append_completion_delta(&CompletionDelta::ToolStarted(rynna_core::ToolCall::new(
+            "b",
+            "terminal",
+            serde_json::json!({"command": "sleep 10"}),
+        )));
+        ui.append_completion_delta(&CompletionDelta::ToolFinished("a".into()));
+        ui.finish_response();
+        ui.push_message(MessageKind::Error, "Provider failed");
+        let text = super::transcript_text(&ui, 100).to_string();
+        assert!(text.contains("● Terminal(\"pwd\")"), "{text}");
+        assert!(
+            text.contains("! Terminal(\"sleep 10\") (interrupted"),
+            "{text}"
+        );
+        assert!(!text.contains("running"), "{text}");
+        assert!(text.contains("Provider failed"), "{text}");
+    }
+
+    #[test]
+    fn tool_ids_deduplicate_and_correlate_out_of_order_with_frozen_durations() {
+        let mut ui = ChatUi::new("local", "small");
+        let start = CompletionDelta::ToolStarted(rynna_core::ToolCall::new(
+            "a",
+            "terminal",
+            serde_json::json!({"command": "first"}),
+        ));
+        ui.append_completion_delta(&start);
+        ui.append_completion_delta(&start);
+        ui.append_completion_delta(&CompletionDelta::ToolStarted(rynna_core::ToolCall::new(
+            "b",
+            "terminal",
+            serde_json::json!({"command": "second"}),
+        )));
+        assert_eq!(ui.messages[0].tools.len(), 2);
+        ui.messages[0].tools[1].started =
+            std::time::Instant::now() - std::time::Duration::from_millis(7100);
+        ui.append_completion_delta(&CompletionDelta::ToolFinished("b".into()));
+        ui.append_completion_delta(&CompletionDelta::ToolFinished("unknown".into()));
+        let elapsed = ui.messages[0].tools[1].elapsed;
+        ui.append_completion_delta(&CompletionDelta::ToolFinished("b".into()));
+        assert_eq!(ui.messages[0].tools[1].elapsed, elapsed);
+        assert!(ui.messages[0].tools[0].elapsed.is_none());
+        assert!(elapsed.unwrap() >= std::time::Duration::from_millis(7100));
+        ui.messages[0].tools[1].elapsed = Some(std::time::Duration::from_millis(7100));
+        assert!(
+            super::transcript_text(&ui, 100)
+                .to_string()
+                .contains("● Terminal(\"second\") (7.1s)")
+        );
+        ui.finish_response();
+        ui.push_message(MessageKind::User, "next turn");
+        ui.append_completion_delta(&start);
+        assert_eq!(ui.messages.last().unwrap().tools.len(), 1);
+        let mut history = Vec::new();
+        apply_command(&mut ui, &mut history, CommandAction::Clear);
+        assert!(
+            !super::transcript_text(&ui, 100)
+                .to_string()
+                .contains("Tool calls")
+        );
+    }
+
+    #[test]
+    fn built_in_command_preview_includes_program_and_arguments() {
+        let call = rynna_core::ToolCall::new(
+            "cmd",
+            "run_command",
+            serde_json::json!({"program": "ssh", "arguments": ["host", "uptime"]}),
+        );
+        assert_eq!(super::tool_label(&call), "Run Command(\"ssh host uptime\")");
+        let search = rynna_core::ToolCall::new(
+            "search",
+            "search_files",
+            serde_json::json!({"pattern": "TODO"}),
+        );
+        assert_eq!(super::tool_label(&search), "Search Files(\"TODO\")");
+    }
 
     #[test]
     fn selection_commands_complete_and_dispatch_without_becoming_prompts() {

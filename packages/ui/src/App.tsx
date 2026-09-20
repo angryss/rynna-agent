@@ -1,5 +1,7 @@
 import { ThinkingContent } from './components/thinking-content';
-import { ArrowUp, Square, Terminal } from 'lucide-react';
+import { ArrowUp, Square } from 'lucide-react';
+import { ToolCallList } from './components/tool-call-list';
+import type { ToolCallActivity } from './sessions';
 import type { ContextResponse } from './contracts';
 import { SlashCommandInput, slashCommands } from './components/slash-command-input';
 import { newSessionId } from './sessions';
@@ -64,13 +66,6 @@ const PROVIDER_KINDS: readonly ConfiguredProvider['kind'][] = [
   'openai',
   'openrouter',
 ];
-
-function commandLabel(call: Extract<CompletionDelta, { kind: 'tool_started' }>['call']): string {
-  const argumentsValue = call.arguments;
-  if (call.name !== 'run_command' || !argumentsValue || typeof argumentsValue !== 'object' || !('program' in argumentsValue) || typeof argumentsValue.program !== 'string') return call.name;
-  const args = 'arguments' in argumentsValue && Array.isArray(argumentsValue.arguments) ? argumentsValue.arguments.filter((arg): arg is string => typeof arg === 'string') : [];
-  return [argumentsValue.program, ...args].map(arg => /^[a-zA-Z0-9_./:=@%+,-]+$/.test(arg) ? arg : JSON.stringify(arg)).join(' ');
-}
 
 function sortedProfiles(profiles: Profile[]): Profile[] {
   return [...profiles].sort((left, right) => left.name.localeCompare(right.name));
@@ -156,7 +151,7 @@ export function App({ client }: AppProps) {
   const [modelOpenRequest, setModelOpenRequest] = useState(0);
   const [pending, setPending] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const [runningTools, setRunningTools] = useState<Extract<CompletionDelta, { kind: 'tool_started' }>['call'][]>([]);
+  const [toolCalls, setToolCalls] = useState<ToolCallActivity[]>([]);
   const activeResponse = useRef<AbortController | null>(null);
   useEffect(() => () => activeResponse.current?.abort(), []);
   const [error, setError] = useState<string | null>(null);
@@ -437,6 +432,7 @@ export function App({ client }: AppProps) {
     setSelectedProfile(name);
     setAddingProfile(false);
     setMessages([]);
+    setToolCalls([]);
     sessionId.current = null;
     workflowDraftId.current = newSessionId();
     setWorkflowRunning(false);
@@ -453,6 +449,7 @@ export function App({ client }: AppProps) {
     setPending(false);
     setCompacting(false);
     setMessages([]);
+    setToolCalls([]);
     setInput('');
     sessionId.current = null;
     workflowDraftId.current = newSessionId();
@@ -489,6 +486,7 @@ export function App({ client }: AppProps) {
     setChatProject(session.profile ? { profile: session.profile, name: session.project ?? undefined } : undefined);
     setChatSelection(undefined);
     setMessages(session.messages);
+    setToolCalls(session.tool_calls ?? []);
     setInput('');
     sessionId.current = session.id;
     setWorkflowRunning(false);
@@ -664,6 +662,7 @@ export function App({ client }: AppProps) {
       if (selectedProfile === selectedSettingsProfile) {
         setSelectedProfile(profiles.find((profile) => profile.name !== selectedSettingsProfile)?.name ?? null);
         setMessages([]);
+        setToolCalls([]);
         sessionId.current = null;
     workflowDraftId.current = newSessionId();
     setWorkflowRunning(false);
@@ -1013,10 +1012,16 @@ export function App({ client }: AppProps) {
     const controller = new AbortController();
     activeResponse.current = controller;
     setStopping(false);
-    setRunningTools([]);
     setPending(true);
     setMessages([...displayHistory, { role: 'user', content: prompt }]);
 
+    let activity = [...toolCalls];
+    const firstCall = activity.length;
+    function settleTools(status: ToolCallActivity['status']) {
+      activity = activity.map(call => call.status === 'running'
+        ? { ...call, status, elapsed_ms: Math.max(0, Date.now() - call.started_at) } : call);
+      setToolCalls(activity);
+    }
     const currentSessionId = sessionId.current ?? newSessionId();
     sessionId.current = currentSessionId;
     let streamedMessages: DisplayMessage[] = [...displayHistory, { role: 'user', content: prompt }];
@@ -1032,6 +1037,7 @@ export function App({ client }: AppProps) {
           profile: selectedProfile ?? '',
           project: project ?? null,
           messages: visibleMessages,
+          tool_calls: activity,
           created_at: existing?.created_at ?? now,
           updated_at: now,
         };
@@ -1051,11 +1057,16 @@ export function App({ client }: AppProps) {
       }, (delta) => {
         if (!controller.signal.aborted && activeResponse.current === controller && sessionId.current === currentSessionId) {
           if (delta.kind === 'tool_started') {
-            setRunningTools(current => [...current.filter(call => call.id !== delta.call.id), delta.call]);
+            if (!activity.slice(firstCall).some(call => call.id === delta.call.id)) {
+              activity = [...activity, { ...delta.call, started_at: Date.now(), status: 'running' }];
+              setToolCalls(activity);
+            }
             return;
           }
           if (delta.kind === 'tool_finished') {
-            setRunningTools(current => current.filter(call => call.id !== delta.id));
+            activity = activity.map((call, index) => index >= firstCall && call.id === delta.id && call.status === 'running'
+              ? { ...call, status: 'completed', elapsed_ms: Math.max(0, Date.now() - call.started_at) } : call);
+            setToolCalls(activity);
             return;
           }
           streamedMessages = appendDelta(streamedMessages, delta);
@@ -1063,22 +1074,30 @@ export function App({ client }: AppProps) {
         }
       }, controller.signal);
       if (controller.signal.aborted || activeResponse.current !== controller || sessionId.current !== currentSessionId || isSessionDeleted(currentSessionId)) return;
+      settleTools('interrupted');
       setMessages((current) => finalizeResponse(current, response.message));
       saveMessages([...history, { role: 'user', content: prompt }, response.message]);
     } catch (requestError) {
       if (activeResponse.current !== controller || sessionId.current !== currentSessionId) return;
-      if (controller.signal.aborted && requestError instanceof Error && requestError.name === 'AbortError') {
-        if (!isSessionDeleted(currentSessionId)) saveMessages(conversationHistory(streamedMessages));
+      if (controller.signal.aborted) {
         setError('Response stopped.');
         return;
       }
+      settleTools('error');
+      if (activity.length > firstCall && !isSessionDeleted(currentSessionId)) saveMessages(conversationHistory(previousMessages));
       setError(requestError instanceof Error ? requestError.message : 'Rynna could not complete the request');
       setMessages(previousMessages);
       setInput(prompt);
     } finally {
       if (activeResponse.current === controller) {
         activeResponse.current = null;
-        if (sessionId.current === currentSessionId) { setPending(false); setStopping(false); setRunningTools([]); }
+        if (sessionId.current === currentSessionId) {
+          if (controller.signal.aborted) {
+            settleTools('cancelled');
+            if (!isSessionDeleted(currentSessionId)) saveMessages(conversationHistory(streamedMessages));
+          }
+          setPending(false); setStopping(false);
+        }
       }
     }
   }
@@ -1093,7 +1112,7 @@ export function App({ client }: AppProps) {
     if (conversation && (followConversation.current || messages.at(-1)?.role === 'user')) {
       conversation.scrollTop = conversation.scrollHeight;
     }
-  }, [messages, runningTools, displayedSessionId, view]);
+  }, [messages, toolCalls, displayedSessionId, view]);
 
   return (
     <main className="app-shell">
@@ -1257,12 +1276,7 @@ export function App({ client }: AppProps) {
                     ),
                   )
                 )}
-                {pending && runningTools.map(call => (
-                  <div className="running-command" key={call.id} role="status">
-                    <Terminal size={18} aria-hidden="true" />
-                    <span>Running <code>{commandLabel(call)}</code></span>
-                  </div>
-                ))}
+                <ToolCallList calls={toolCalls} />
               </div>
 
               {storageFailure ? (
@@ -1293,7 +1307,7 @@ export function App({ client }: AppProps) {
                   </span>
                   {activeProfile ? <ModelSelector openRequest={modelOpenRequest} profile={activeProfile} selection={selection} disabled={pending || deletingSession}
                     onChange={value => setChatSelection({ profile: activeProfile.name, value })} /> : null}
-                  {pending && compacting ? <Button disabled type="button">Compacting…</Button> : pending ? <Button className="composer-submit" aria-label={stopping ? 'Stopping…' : 'Stop'} title={stopping ? 'Stopping…' : 'Stop'} type="button" disabled={stopping} onClick={() => { setStopping(true); setRunningTools([]); activeResponse.current?.abort(); }}>
+                  {pending && compacting ? <Button disabled type="button">Compacting…</Button> : pending ? <Button className="composer-submit" aria-label={stopping ? 'Stopping…' : 'Stop'} title={stopping ? 'Stopping…' : 'Stop'} type="button" disabled={stopping} onClick={() => { setStopping(true); activeResponse.current?.abort(); }}>
                     <Square aria-hidden="true" size={14} fill="currentColor" />
                   </Button> : <Button className="composer-submit" aria-label={workflowRunning ? 'Use workflow steering above' : 'Send'} title={workflowRunning ? 'Use workflow steering above' : 'Send'} disabled={workflowRunning || deletingSession || !input.trim()} type="submit">
                     <ArrowUp aria-hidden="true" />
@@ -1327,6 +1341,7 @@ export function App({ client }: AppProps) {
                 setChatProject(undefined);
               }
               setMessages([]);
+              setToolCalls([]);
               sessionId.current = null;
               workflowDraftId.current = newSessionId();
               setWorkflowRunning(false);

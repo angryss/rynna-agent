@@ -391,10 +391,28 @@ select:disabled { opacity: .5; }
 .workflow-panel > label:first-child { flex-direction: row; align-items: center; gap: .75rem; font-size: .8rem; color: hsl(var(--muted-foreground)); }
 .workflow-panel > label:first-child select { width: auto; flex: 0 1 auto; }
 
-.running-command { display: flex; align-items: flex-start; gap: .65rem; color: hsl(var(--muted-foreground)); font-size: .9rem; line-height: 1.6; }
-.running-command svg { flex-shrink: 0; margin-top: .2rem; }
-.running-command span { min-width: 0; overflow-wrap: anywhere; }
-.running-command code { white-space: pre-wrap; font-size: inherit; }
+.tool-call-list { min-width: 0; font-size: .8rem; line-height: 1.6; }
+.tool-call-list h3 { margin: 0 0 .3rem; font-size: inherit; font-weight: 590; }
+.tool-call-list ul { list-style: none; padding: 0 0 0 .4rem; margin: 0; }
+.tool-call { position: relative; border-left: 1px solid hsl(var(--border)); padding-left: .85rem; }
+.tool-call::before { content: ''; position: absolute; top: .9rem; left: 0; width: .6rem; border-top: 1px solid hsl(var(--border)); }
+.tool-call:last-child { border-left-color: transparent; }
+.tool-call:last-child::after { content: ''; position: absolute; left: -1px; top: 0; height: .9rem; border-left: 1px solid hsl(var(--border)); }
+.tool-call summary { display: flex; align-items: baseline; gap: .4rem; padding: .2rem 0; cursor: pointer; list-style: none; }
+.tool-call summary::-webkit-details-marker { display: none; }
+.tool-call summary:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; border-radius: .2rem; }
+.tool-call-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-call-label strong { font-weight: 590; }
+.tool-call-label code { margin-left: .2rem; font-size: inherit; }
+.tool-call-elapsed, .tool-call-status { flex-shrink: 0; color: hsl(var(--muted-foreground)); font-size: .75rem; }
+.tool-call-dot { color: hsl(var(--muted-foreground)); font-size: .65rem; }
+.tool-call-running .tool-call-dot { color: hsl(var(--primary)); }
+.tool-call-error .tool-call-dot, .tool-call-error .tool-call-status { color: hsl(var(--destructive)); }
+.tool-call pre { max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: .25rem 0 .5rem; padding: .5rem; background: hsl(var(--muted)); border-radius: .3rem; }
+@media (max-width: 480px) {
+  .tool-call summary { gap: .25rem; }
+  .tool-call-status, .tool-call-elapsed { font-size: .65rem; }
+}
 
 .model-type-options { max-height: 16rem; overflow-y: auto; }
 .model-type-options button { overflow-wrap: anywhere; text-align: left; }
