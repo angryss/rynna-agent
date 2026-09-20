@@ -1366,16 +1366,6 @@ impl ProfileCatalog {
                     });
                 }
             }
-            if profile.providers.iter().any(|provider| {
-                file.providers[&provider.provider].kind == ProviderKind::ClaudeSubscription
-            }) && (!profile.active_skills.is_empty()
-                || !profile.mcp_servers.is_empty()
-                || !profile.capabilities.is_empty())
-            {
-                return Err(ConfigError::ClaudeSubscriptionContext {
-                    profile: name.clone(),
-                });
-            }
             rynna_core::subagents::validate(&profile.subagents)?;
             rynna_core::workflows::validate_custom(&profile.workflows, &profile.subagents)
                 .map_err(ConfigError::InvalidWorkflow)?;
@@ -1676,10 +1666,6 @@ pub enum ConfigError {
         "the default directory for project `{project}` in profile `{profile}` must be one of its directories"
     )]
     UnknownProjectDefaultDirectory { profile: String, project: String },
-    #[error(
-        "Claude subscription profile `{profile}` cannot declare skills, MCP servers, or capabilities"
-    )]
-    ClaudeSubscriptionContext { profile: String },
     #[error(
         "Claude subscription provider `{provider}` cannot declare an API base URL or API key environment variable"
     )]

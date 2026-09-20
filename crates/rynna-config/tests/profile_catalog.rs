@@ -111,8 +111,8 @@ fn example_catalog_configures_openrouter_through_the_openai_compatible_adapter()
 }
 
 #[test]
-fn claude_subscription_profiles_reject_rynna_context() {
-    let error = ProfileCatalog::from_yaml(
+fn claude_subscription_profiles_accept_rynna_context() {
+    let catalog = ProfileCatalog::from_yaml(
         r#"
 version: 1
 default_profile: subscription
@@ -130,12 +130,14 @@ profiles:
     - rust
 "#,
     )
-    .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("cannot declare skills, MCP servers, or capabilities")
+    .unwrap();
+    assert_eq!(
+        catalog
+            .resolve("subscription")
+            .unwrap()
+            .profile
+            .active_skills,
+        ["rust"]
     );
 }
 

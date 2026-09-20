@@ -152,10 +152,10 @@ mod unix {
     }
 
     #[tokio::test]
-    async fn subscription_mode_rejects_rynna_tools_before_starting_cli() {
-        let program = fixture("fake_claude.sh");
+    async fn subscription_mode_bridges_rynna_tools_without_enabling_ambient_tools() {
+        let program = fixture("fake_claude_tools.py");
         let provider = ClaudeCodeProvider::new(program, "sonnet");
-        let error = provider
+        let completion = provider
             .complete(CompletionRequest {
                 messages: vec![Message::user("Hi")],
                 tools: vec![ToolDefinition::new(
@@ -165,8 +165,121 @@ mod unix {
                 )],
             })
             .await
-            .unwrap_err();
-        assert!(error.to_string().contains("do not accept Rynna tool calls"));
+            .unwrap();
+        assert!(provider.supports_external_tools());
+        assert_eq!(
+            completion.message.tool_calls,
+            vec![rynna_core::ToolCall::new(
+                "call-1",
+                "read_file",
+                json!({"path":"test.txt"})
+            )]
+        );
+        let continued = provider
+            .complete(CompletionRequest {
+                messages: vec![
+                    Message::user("Hi"),
+                    completion.message,
+                    Message::tool("call-1", "file contents"),
+                ],
+                tools: vec![ToolDefinition::new(
+                    "read_file",
+                    "Read",
+                    json!({"type":"object"}),
+                )],
+            })
+            .await
+            .unwrap();
+        assert_eq!(continued.message, Message::assistant("Read: file contents"));
+    }
+
+    #[tokio::test]
+    async fn subscription_bridge_rejects_native_execution_and_ambiguous_results() {
+        for scenario in ["native", "native-stream", "missing", "duplicate"] {
+            let mut deltas = vec![];
+            let result = ClaudeCodeProvider::new(fixture("fake_claude_tools.py"), "sonnet")
+                .with_test_environment("RYNNA_TEST_SCENARIO", scenario)
+                .complete_stream(
+                    CompletionRequest {
+                        messages: vec![Message::user("Hi")],
+                        tools: vec![ToolDefinition::new(
+                            "read_file",
+                            "Read",
+                            json!({"type":"object"}),
+                        )],
+                    },
+                    &mut |d| deltas.push(d.clone()),
+                )
+                .await;
+            assert!(result.is_err(), "accepted {scenario}");
+            assert!(
+                deltas.is_empty(),
+                "leaked intermediary output for {scenario}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn subscription_bridge_rejects_reused_call_ids_before_dispatch() {
+        let result = ClaudeCodeProvider::new(fixture("fake_claude_tools.py"), "sonnet")
+            .with_test_environment("RYNNA_TEST_SCENARIO", "reused")
+            .complete(CompletionRequest {
+                messages: vec![
+                    Message::user("Hi"),
+                    Message::assistant_with_tool_calls(vec![rynna_core::ToolCall::new(
+                        "call-1",
+                        "read_file",
+                        json!({"path":"test.txt"}),
+                    )]),
+                    Message::tool("call-1", "data"),
+                ],
+                tools: vec![ToolDefinition::new(
+                    "read_file",
+                    "Read",
+                    json!({"type":"object"}),
+                )],
+            })
+            .await;
+        assert!(result.is_err(), "reused tool call could execute twice");
+    }
+
+    #[tokio::test]
+    async fn subscription_mode_rejects_malformed_history_before_launch() {
+        use rynna_core::ToolCall;
+        for messages in [
+            vec![Message::tool("orphan", "data")],
+            vec![Message::assistant_with_tool_calls(vec![ToolCall::new(
+                "one",
+                "read_file",
+                json!({}),
+            )])],
+            vec![
+                Message::assistant_with_tool_calls(vec![ToolCall::new(
+                    "one",
+                    "read_file",
+                    json!({}),
+                )]),
+                Message::tool("other", "data"),
+            ],
+            vec![
+                Message::assistant_with_tool_calls(vec![ToolCall::new(
+                    "one",
+                    "read_file",
+                    json!({}),
+                )]),
+                Message::tool("one", "data"),
+                Message::tool("one", "duplicate"),
+            ],
+        ] {
+            let error = ClaudeCodeProvider::new("/nonexistent/claude", "sonnet")
+                .complete(CompletionRequest {
+                    messages,
+                    tools: vec![],
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("tool history"), "{error}");
+        }
     }
 
     #[tokio::test]

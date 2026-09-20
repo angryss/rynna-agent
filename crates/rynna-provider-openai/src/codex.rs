@@ -278,17 +278,7 @@ impl CodexAppServerProvider {
         on_delta: &mut (dyn for<'delta> FnMut(&'delta CompletionDelta) + Send),
     ) -> Result<Completion, ProviderError> {
         let deadline = Instant::now() + CODEX_OPERATION_TIMEOUT;
-
-        if !request.tools.is_empty()
-            || request
-                .messages
-                .iter()
-                .any(|message| !message.tool_calls.is_empty() || message.tool_call_id.is_some())
-        {
-            return Err(ProviderError::new(
-                "Codex account profiles do not accept Rynna tool calls",
-            ));
-        }
+        validate_tool_history(&request.messages)?;
 
         let system_prompt = request
             .messages
@@ -301,10 +291,25 @@ impl CodexAppServerProvider {
             .iter()
             .rposition(|message| message.role == Role::User)
             .ok_or_else(|| ProviderError::new("Codex request has no user message"))?;
-        let prompt = request.messages[last_user].content.clone();
-        let history_items = request.messages[..last_user]
+        // Each completion owns an ephemeral process. Yield a dynamic call to core,
+        // then replay its native call/result items on the next completion; no
+        // shared process/thread state can leak across concurrent conversations.
+        let continuing = request.messages[last_user + 1..]
             .iter()
-            .filter_map(history_item)
+            .any(|m| m.role == Role::Tool);
+        let prompt = if continuing {
+            "Continue using the supplied tool results.".to_owned()
+        } else {
+            request.messages[last_user].content.clone()
+        };
+        let history_end = if continuing {
+            request.messages.len()
+        } else {
+            last_user
+        };
+        let history_items = request.messages[..history_end]
+            .iter()
+            .flat_map(history_items)
             .collect::<Vec<_>>();
         let workspace = tempfile::tempdir().map_err(provider_error)?;
         let mut command = self.account_command()?;
@@ -364,8 +369,12 @@ impl CodexAppServerProvider {
             },
             "ephemeral": true,
             "baseInstructions": format!(
-                "{system_prompt}\n\nDo not run commands, inspect files, or use tools. Answer only from the supplied conversation."
+                "{system_prompt}\n\nUse only the explicitly supplied Rynna tools. Never use Codex shell, filesystem, web, MCP, or other ambient tools. Rynna enforces tool permissions; do not bypass denials. Without a supplied tool, answer only from the conversation."
             ),
+            "dynamicTools": request.tools.iter().map(|tool| serde_json::json!({
+                "type": "function", "name": tool.name, "description": tool.description,
+                "inputSchema": tool.input_schema
+            })).collect::<Vec<_>>(),
             "serviceName": "rynna"
         });
         if let Some(window) = self.context_window {
@@ -440,11 +449,42 @@ impl CodexAppServerProvider {
                 .await
                 .map_err(ProviderError::new)?;
             count_turn_message(&mut message_count)?;
+            if (message.get("id").is_some() && message.get("method").is_some())
+                || message.get("method").and_then(serde_json::Value::as_str)
+                    == Some("item/tool/call")
+            {
+                if message.get("method").and_then(serde_json::Value::as_str)
+                    != Some("item/tool/call")
+                {
+                    return Err(ProviderError::new(
+                        "Codex requested an unsupported operation",
+                    ));
+                }
+                let call = dynamic_tool_call(&message, &request.tools, thread_id, turn_id)?;
+                if request
+                    .messages
+                    .iter()
+                    .flat_map(|message| &message.tool_calls)
+                    .any(|old| old.id == call.id)
+                {
+                    return Err(ProviderError::new("Codex reused a tool call ID"));
+                }
+                let mut answer = Message::assistant_with_tool_calls(vec![call]);
+                answer.content = content;
+                return Ok(Completion::new(answer));
+            }
             match message.get("method").and_then(serde_json::Value::as_str) {
                 Some("item/started") if message_matches_turn(&message, thread_id, turn_id) => {
                     let item = message
                         .pointer("/params/item")
                         .ok_or_else(|| ProviderError::new("Codex omitted a started item"))?;
+                    if item.get("type").and_then(serde_json::Value::as_str)
+                        == Some("dynamicToolCall")
+                    {
+                        // The server request, not a lifecycle notification, authorizes
+                        // yielding a call. Validate its full identity below.
+                        continue;
+                    }
                     if let Some(item_id) = started_agent_item_id(item)? {
                         agent_item_ids.insert(item_id.to_owned());
                     }
@@ -528,7 +568,7 @@ impl ModelProvider for CodexAppServerProvider {
     }
 
     fn supports_external_tools(&self) -> bool {
-        false
+        true
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
@@ -544,8 +584,48 @@ impl ModelProvider for CodexAppServerProvider {
     }
 }
 
-fn history_item(message: &Message) -> Option<serde_json::Value> {
-    match message.role {
+fn validate_tool_history(messages: &[Message]) -> Result<(), ProviderError> {
+    let invalid = || ProviderError::new("Codex request contains invalid tool history");
+    let mut seen = HashSet::new();
+    let mut pending = HashSet::new();
+    for message in messages {
+        if message.role == Role::Tool {
+            let id = message.tool_call_id.as_deref().ok_or_else(invalid)?;
+            if !message.tool_calls.is_empty() || !pending.remove(id) {
+                return Err(invalid());
+            }
+        } else {
+            if message.tool_call_id.is_some() || !pending.is_empty() {
+                return Err(invalid());
+            }
+            for call in &message.tool_calls {
+                if message.role != Role::Assistant
+                    || call.id.is_empty()
+                    || call.name.is_empty()
+                    || !call.arguments.is_object()
+                    || !seen.insert(call.id.as_str())
+                {
+                    return Err(invalid());
+                }
+                pending.insert(call.id.as_str());
+            }
+        }
+    }
+    if !pending.is_empty() {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn history_items(message: &Message) -> Vec<serde_json::Value> {
+    let mut items = Vec::new();
+    if message.role == Role::Tool {
+        if let Some(id) = &message.tool_call_id {
+            items.push(serde_json::json!({"type":"function_call_output", "call_id":id, "output":message.content}));
+        }
+        return items;
+    }
+    let text = match message.role {
         Role::User => Some(serde_json::json!({
             "type": "message",
             "role": "user",
@@ -557,7 +637,53 @@ fn history_item(message: &Message) -> Option<serde_json::Value> {
             "content": [{"type": "output_text", "text": message.content}]
         })),
         _ => None,
+    };
+    if !message.content.is_empty() {
+        items.extend(text);
     }
+    for call in &message.tool_calls {
+        items.push(
+            serde_json::json!({"type":"function_call", "call_id":call.id,
+            "name":call.name, "arguments":call.arguments.to_string()}),
+        );
+    }
+    items
+}
+
+fn dynamic_tool_call(
+    message: &serde_json::Value,
+    tools: &[rynna_core::ToolDefinition],
+    thread_id: &str,
+    turn_id: &str,
+) -> Result<rynna_core::ToolCall, ProviderError> {
+    let invalid = || ProviderError::new("Codex requested an invalid or unadvertised Rynna tool");
+    if !message_matches_turn(message, thread_id, turn_id)
+        || !message
+            .get("id")
+            .is_some_and(|id| id.is_string() || id.is_u64())
+        || message
+            .pointer("/params/namespace")
+            .is_some_and(|v| !v.is_null())
+    {
+        return Err(invalid());
+    }
+    let name = message
+        .pointer("/params/tool")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(invalid)?;
+    let id = message
+        .pointer("/params/callId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(invalid)?;
+    let arguments = message
+        .pointer("/params/arguments")
+        .filter(|v| v.is_object())
+        .ok_or_else(invalid)?;
+    if !tools.iter().any(|t| t.name == name) {
+        return Err(invalid());
+    }
+    Ok(rynna_core::ToolCall::new(id, name, arguments.clone()))
 }
 
 fn message_matches_turn(message: &serde_json::Value, thread_id: &str, turn_id: &str) -> bool {

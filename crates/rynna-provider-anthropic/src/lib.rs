@@ -1117,6 +1117,8 @@ async fn read_version_output<R: AsyncRead + Unpin>(reader: R) -> std::io::Result
     Ok(output)
 }
 
+mod claude_tools;
+
 #[derive(Clone)]
 pub struct ClaudeCodeProvider {
     thinking: rynna_core::ThinkingLevel,
@@ -1184,33 +1186,38 @@ impl ClaudeCodeProvider {
         on_delta: &mut (dyn for<'a> FnMut(&'a CompletionDelta) + Send),
     ) -> Result<Completion, ProviderError> {
         let deadline = tokio::time::Instant::now() + self.timeout;
-        if !request.tools.is_empty()
+        let bridge = !request.tools.is_empty()
             || request
                 .messages
                 .iter()
-                .any(|m| !m.tool_calls.is_empty() || m.role == Role::Tool)
-        {
-            return Err(ProviderError::new(
-                "Claude subscription profiles do not accept Rynna tool calls",
-            ));
+                .any(|m| !m.tool_calls.is_empty() || m.role == Role::Tool);
+        if bridge {
+            claude_tools::validate_history(&request.messages)?;
         }
-        let prompt = request
-            .messages
-            .into_iter()
-            .map(|m| {
-                format!(
-                    "{}: {}",
-                    match m.role {
-                        Role::System => "System",
-                        Role::User => "User",
-                        Role::Assistant => "Assistant",
-                        Role::Tool => "Tool",
-                    },
-                    m.content
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let prompt = if bridge {
+            serde_json::to_string(
+                &serde_json::json!({"messages": request.messages, "tools": request.tools}),
+            )
+            .map_err(|_| ProviderError::new("failed to encode Claude tool request"))?
+        } else {
+            request
+                .messages
+                .iter()
+                .map(|m| {
+                    format!(
+                        "{}: {}",
+                        match m.role {
+                            Role::System => "System",
+                            Role::User => "User",
+                            Role::Assistant => "Assistant",
+                            Role::Tool => "Tool",
+                        },
+                        m.content
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        };
         if prompt.len() > MAX_CLAUDE_PROMPT_BYTES {
             return Err(ProviderError::new(
                 "Claude Code prompt exceeded the size limit",
@@ -1325,6 +1332,13 @@ impl ClaudeCodeProvider {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        if bridge {
+            command
+                .arg("--json-schema")
+                .arg(claude_tools::SCHEMA)
+                .arg("--system-prompt")
+                .arg(claude_tools::INSTRUCTIONS);
+        }
         if self.thinking != rynna_core::ThinkingLevel::Default {
             command.arg("--effort").arg(self.thinking.as_str());
         }
@@ -1374,6 +1388,7 @@ impl ClaudeCodeProvider {
         let mut output_bytes = 0usize;
         let mut message_count = 0usize;
         let mut successful_result = false;
+        let mut structured_output = None;
         loop {
             let line = match read_claude_message(&mut stdout, deadline).await {
                 Ok(Some(line)) => line,
@@ -1400,7 +1415,25 @@ impl ClaudeCodeProvider {
                     )));
                 }
             };
-            if value["type"] == "assistant"
+            // StructuredOutput is Claude's schema formatter, not an executable
+            // Rynna tool. No other native or MCP tool lifecycle is accepted.
+            let forbidden = |block: &Value| {
+                block["type"] == "tool_use" && !(bridge && block["name"] == "StructuredOutput")
+            };
+            if value
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .is_some_and(|blocks| blocks.iter().any(forbidden))
+                || value.pointer("/event/content_block").is_some_and(forbidden)
+                || (successful_result && value["type"] == "result")
+            {
+                terminate_child(&mut child).await;
+                return Err(ProviderError::new(
+                    "Claude Code returned a prohibited native tool or duplicate result",
+                ));
+            }
+            if !bridge
+                && value["type"] == "assistant"
                 && content.is_empty()
                 && let Some(blocks) = value.pointer("/message/content").and_then(Value::as_array)
             {
@@ -1413,7 +1446,8 @@ impl ClaudeCodeProvider {
                     }
                 }
             }
-            if value["type"] == "stream_event"
+            if !bridge
+                && value["type"] == "stream_event"
                 && value.pointer("/event/delta/type")
                     == Some(&Value::String("text_delta".to_owned()))
                 && let Some(text) = value.pointer("/event/delta/text").and_then(Value::as_str)
@@ -1430,6 +1464,7 @@ impl ClaudeCodeProvider {
             }
             if value["type"] == "result" && value["subtype"] == "success" {
                 successful_result = true;
+                structured_output = value.get("structured_output").cloned();
             }
         }
         let status = match tokio::time::timeout_at(deadline, child.wait()).await {
@@ -1454,6 +1489,24 @@ impl ClaudeCodeProvider {
             return Err(ProviderError::new(
                 "Claude Code stream ended without a successful result event",
             ));
+        }
+        if bridge {
+            let completion = claude_tools::completion(structured_output, &request.tools)?;
+            if completion.message.tool_calls.iter().any(|call| {
+                request
+                    .messages
+                    .iter()
+                    .flat_map(|m| &m.tool_calls)
+                    .any(|old| old.id == call.id)
+            }) {
+                return Err(ProviderError::new("Claude Code reused a tool call ID"));
+            }
+            if !completion.message.content.is_empty() {
+                on_delta(&CompletionDelta::Content(
+                    completion.message.content.clone(),
+                ));
+            }
+            return Ok(completion);
         }
         if content.is_empty() {
             return Err(ProviderError::new("Claude Code returned an empty response"));
@@ -1511,7 +1564,7 @@ impl ModelProvider for ClaudeCodeProvider {
     }
 
     fn supports_external_tools(&self) -> bool {
-        false
+        true
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {

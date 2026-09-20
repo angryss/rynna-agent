@@ -17,6 +17,8 @@ Execution uses one retained working directory, null stdin, and an empty inherite
 
 The built-in profile and example profiles do not activate command authority. Operators must deliberately add a command capability and should map only narrow programs. A macOS operator can map `/usr/bin/uname` and `/usr/bin/sw_vers` to support operating-system inspection. Mapping a shell, interpreter, package manager, network client, or other general-purpose executable intentionally grants the model that program's full authority.
 
+OpenAI account-backed models use this same provider-neutral capability through the [bounded Codex dynamic-tool bridge](../codex-tools.md). Enabling a model does not activate command authority or bypass profile permissions. Codex native shell execution remains disabled.
+
 ## Consequences
 
 - The same bounded command behavior is available through CLI, one-shot, HTTP/web, and Tauri desktop composition.
