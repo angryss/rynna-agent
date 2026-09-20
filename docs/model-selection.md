@@ -29,7 +29,7 @@ Selector commands do not become chat history. Invalid selections report an error
 - Claude subscription: Claude Code `--effort`.
 - ChatGPT subscription: Codex app-server `turn/start` `effort`.
 
-Thinking support depends on the provider and model. For example, older Claude models may not support adaptive thinking, and some Ollama models support only on/off thinking. Provider errors are shown in chat; use Default when a model does not support the requested effort. Rynna does not translate effort into arbitrary token budgets. The existing pinned subscription CLI versions still apply.
+Thinking support depends on the provider and model. For example, older Claude models may not support adaptive thinking, and some Ollama models support only on/off thinking. Provider errors are shown in chat; use Default when a model does not support the requested effort. Rynna does not translate effort into arbitrary token budgets. The Claude Code subscription CLI version pin still applies. Codex account models require a compatible app-server protocol, not an exact CLI version.
 
 ## HTTP and desktop requests
 
