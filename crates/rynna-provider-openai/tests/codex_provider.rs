@@ -54,6 +54,66 @@ async fn incompatible_app_server_fails_without_an_answer() {
 }
 
 #[tokio::test]
+async fn inherited_mcp_servers_are_disabled_before_starting_a_turn() {
+    let directory = tempfile::tempdir().unwrap();
+    let provider = CodexAppServerProvider::with_home(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_codex_ambient.py"),
+        directory.path().join("home"),
+        None,
+    );
+    let agent = Agent::new(Arc::new(provider), "Test policy");
+    let answer = agent
+        .respond(&[], "What operating system is installed on this computer?")
+        .await
+        .unwrap();
+    assert_eq!(answer, Message::assistant("No ambient tools available"));
+}
+
+#[tokio::test]
+async fn invalid_mcp_inventory_fails_closed_without_disclosing_configuration() {
+    for (scenario, expected) in [
+        ("inventory-failed", "Codex MCP inventory failed"),
+        (
+            "inventory-malformed",
+            "Codex returned invalid MCP inventory",
+        ),
+        (
+            "inventory-oversized",
+            "Codex MCP inventory exceeded the size limit",
+        ),
+        ("inventory-missing-name", "Codex omitted an MCP server name"),
+        (
+            "inventory-unsupported",
+            "Codex returned an unsupported MCP transport",
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join(scenario);
+        symlink(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_codex_ambient.py"),
+            &program,
+        )
+        .unwrap();
+        let provider =
+            CodexAppServerProvider::with_home(program, directory.path().join("home"), None);
+        let error = provider
+            .complete(CompletionRequest {
+                messages: vec![Message::user("Hello")],
+                tools: vec![],
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            format!("model provider failed: {expected}"),
+            "{scenario}"
+        );
+        assert!(!error.contains("private-config-canary"));
+    }
+}
+
+#[tokio::test]
 async fn dynamic_tools_round_trip_through_rynna_history() {
     let directory = tempfile::tempdir().unwrap();
     let provider = CodexAppServerProvider::with_home(

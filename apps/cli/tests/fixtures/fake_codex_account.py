@@ -3,6 +3,10 @@
 import json
 import os
 import sys
+
+if sys.argv[1:] == ["mcp", "list", "--json"]:
+    print("[]")
+    sys.exit(0)
 import time
 from pathlib import Path
 

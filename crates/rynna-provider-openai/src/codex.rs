@@ -272,6 +272,83 @@ impl CodexAppServerProvider {
         ))
     }
 
+    async fn disabled_mcp_servers(
+        &self,
+        workspace: &std::path::Path,
+        deadline: Instant,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, ProviderError> {
+        use tokio::io::AsyncReadExt;
+        // config/read omits runtime-added servers. The CLI inventory includes
+        // them without connecting to or executing any server. Its transport
+        // configuration may contain secrets: never log or forward that data.
+        let mut command = self.account_command()?;
+        command
+            .args(["mcp", "list", "--json"])
+            .current_dir(workspace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let (mut child, _group) =
+            rynna_core::process::ProcessGroup::spawn(&mut command).map_err(provider_error)?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ProviderError::new("Codex MCP inventory unavailable"))?;
+        tokio::time::timeout_at(deadline, async {
+            let mut bytes = Vec::new();
+            stdout
+                .take(MAX_CODEX_RESPONSE_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .await
+                .map_err(provider_error)?;
+            if bytes.len() > MAX_CODEX_RESPONSE_BYTES {
+                return Err(ProviderError::new(
+                    "Codex MCP inventory exceeded the size limit",
+                ));
+            }
+            if !child.wait().await.map_err(provider_error)?.success() {
+                return Err(ProviderError::new("Codex MCP inventory failed"));
+            }
+            let servers: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|_| ProviderError::new("Codex returned invalid MCP inventory"))?;
+            let servers = servers
+                .as_array()
+                .ok_or_else(|| ProviderError::new("Codex returned invalid MCP inventory"))?;
+            let mut disabled = serde_json::Map::new();
+            for server in servers {
+                let name = server
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| ProviderError::new("Codex omitted an MCP server name"))?;
+                // Runtime-added servers may have no raw config entry. Supply
+                // an inert, valid transport so the disabled entry deserializes;
+                // never copy commands, URLs, headers, or environment secrets.
+                let entry = match server
+                    .pointer("/transport/type")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some("stdio") => {
+                        serde_json::json!({"enabled":false,"command":"rynna-disabled-mcp"})
+                    }
+                    Some("streamable_http") => {
+                        serde_json::json!({"enabled":false,"url":"http://127.0.0.1:1"})
+                    }
+                    _ => {
+                        return Err(ProviderError::new(
+                            "Codex returned an unsupported MCP transport",
+                        ));
+                    }
+                };
+                disabled.insert(name.to_owned(), entry);
+            }
+            Ok(disabled)
+        })
+        .await
+        .map_err(|_| ProviderError::new("Codex MCP inventory timed out"))?
+    }
+
     async fn run(
         &self,
         request: CompletionRequest,
@@ -357,12 +434,16 @@ impl CodexAppServerProvider {
         .await
         .map_err(ProviderError::new)?;
 
+        let disabled_mcp = self
+            .disabled_mcp_servers(workspace.path(), deadline)
+            .await?;
         let mut thread_params = serde_json::json!({
             "cwd": workspace.path(),
             "environments": [],
             "approvalPolicy": "never",
             "sandbox": "read-only",
             "config": {
+                "mcp_servers": disabled_mcp,
                 "features": {"shell_tool": false, "view_image": false},
                 "tools": {"update_plan": {"enabled": false}},
                 "web_search": "disabled"

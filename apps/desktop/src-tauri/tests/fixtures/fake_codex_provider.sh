@@ -1,5 +1,6 @@
 #!/bin/sh
 [ "$1" = "--version" ] && { printf '%s\n' 'codex-cli 0.155.1'; exit 0; }
+[ "$1" = "mcp" ] && { printf '%s\n' '[]'; exit 0; }
 [ "$1" = "app-server" ] || exit 2
 [ "${CODEX_HOME##*/}" = "rynna-codex" ] || exit 4
 IFS= read -r initialize
