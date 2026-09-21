@@ -3,6 +3,10 @@
 import json
 import sys
 
+if sys.argv[1:] == ["mcp", "list", "--json"]:
+    print("[]")
+    sys.exit(0)
+
 
 def read():
     return json.loads(sys.stdin.readline())

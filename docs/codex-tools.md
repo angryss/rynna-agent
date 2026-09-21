@@ -8,6 +8,8 @@ The adapter does not execute tools. It accepts only `item/tool/call` requests wi
 
 Codex runs in an ephemeral temporary working directory with read-only sandboxing, `approvalPolicy = never`, and its shell, image viewer, plan updater, and web search disabled. Native tool lifecycle items and unsupported server requests fail closed. The bridge never approves a Codex command or falls back to Codex shell execution. Profile permissions, disabled toolsets, command aliases, credential selection, and model enablement defaults are unchanged. Host commands remain explicitly opt-in as described in ADR 0003.
 
+Before starting a thread, the adapter inventories the selected account's MCP servers with the read-only `codex mcp list --json` command and explicitly disables every returned name in the per-thread configuration. This includes runtime-added servers which may be absent from app-server `config/read`. An empty `mcp_servers` table does **not** clear inherited servers: Codex merges it. Disabled runtime-added entries also need a valid transport, so the adapter supplies inert stdio/HTTP transports rather than forwarding commands, URLs, headers, or environment values. Inventory output is bounded, never logged, and fails closed on malformed data or unsupported transports. No account configuration is modified. Rynna-advertised dynamic tools remain available and policy-controlled.
+
 ## Continuations and bounds
 
 Each provider completion owns its own process group and ephemeral thread. On a dynamic call the completion returns immediately and the process group is dropped; the outstanding Codex RPC is deliberately not kept alive across core tool execution. The next completion injects the complete supplied history with native Responses API `function_call` and `function_call_output` items, preserving call IDs, arguments, result text (including denials), and order. It starts a continuation turn rather than repeating the original user request. A later user turn receives the same preceding history. This stateless replay avoids shared mutable session state and cross-conversation routing. It does not preserve private Codex reasoning state or execute speculative parallel calls after the first yielded request.
@@ -17,6 +19,15 @@ Malformed, orphaned, duplicate, or unfinished tool history is rejected before la
 ## Regression coverage
 
 The deterministic subprocess peer verifies dynamic-tool schemas and sandbox settings, emits protocol requests, and checks native result injection. Tests exercise provider round trips, streaming through the real core tool loop, tool-level denial, unavailable tools, malformed arguments/IDs, wrong-turn and namespaced calls, unsupported requests, malformed history, and existing tool-free/version-independent behavior. No account inference or credentials are required for these tests.
+
+The opt-in live smoke test exercises both a no-tools OS question and an explicitly advertised host tool followed by native result replay with existing Rynna account authentication:
+
+```sh
+RYNNA_LIVE_CODEX_MODEL=<enabled-account-model> cargo test -p rynna-provider-openai \
+  --features tokio/fs --test codex_live -- --ignored --nocapture
+```
+
+It makes real inference requests and reads only `/etc/os-release` for the explicitly requested host result. Normal test runs ignore it. The profile defaults to `default`; override with `RYNNA_LIVE_CODEX_PROFILE`. A profile with no opted-in host capability should answer that it cannot inspect the host, not use Codex's ambient MCP tools.
 
 ## Provider invariant and Claude subscription bridge
 

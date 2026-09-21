@@ -10,6 +10,7 @@ if [ "$1" = "--version" ]; then
   esac
   exit 0
 fi
+[ "$1" = "mcp" ] && { printf '%s\n' '[]'; exit 0; }
 [ "$1" = "app-server" ] || exit 2
 IFS= read -r initialize
 case "$scenario" in
