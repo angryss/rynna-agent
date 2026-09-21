@@ -606,7 +606,7 @@ fn responses_request(
     request: CompletionRequest,
     compact_threshold: Option<usize>,
 ) -> Result<serde_json::Value, ProviderError> {
-    let mut input = Vec::new();
+    let mut input = Vec::<serde_json::Value>::new();
     for message in request.messages {
         if let Some(ProviderContext::OpenAi(output)) = message.provider_context {
             validate_openai_output(&output)?;
@@ -614,7 +614,9 @@ fn responses_request(
                 .iter()
                 .rposition(|item| item["type"].as_str() == Some("compaction"))
             {
-                input.clear();
+                // Compaction supersedes conversation history, not the current system policy
+                // or tool inventory, which may have changed since the opaque summary.
+                input.retain(|item| item["role"] == "system");
                 input.extend(output.into_iter().skip(compaction_index));
             } else {
                 input.extend(output);

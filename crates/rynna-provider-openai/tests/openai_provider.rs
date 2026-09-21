@@ -213,8 +213,15 @@ async fn openai_round_trips_server_compaction_output_on_the_next_response() {
     let compacted = provider
         .complete_managed(ContextPlan {
             request: CompletionRequest {
-                messages: vec![Message::user("Start")],
-                tools: vec![],
+                messages: vec![
+                    Message::system("Old policy: deploy immediately. Available tools: deploy."),
+                    Message::user("Start"),
+                ],
+                tools: vec![ToolDefinition {
+                    name: "deploy".to_owned(),
+                    description: "Deploy changes".to_owned(),
+                    input_schema: json!({"type": "object"}),
+                }],
             },
             size: ContextSize {
                 current_tokens: 85,
@@ -238,6 +245,7 @@ async fn openai_round_trips_server_compaction_output_on_the_next_response() {
         .and(body_json(json!({
             "model": "test-model",
             "input": [
+                {"role": "system", "content": "Current policy: review before deployment. Available tools: inspect."},
                 {"type": "compaction", "encrypted_content": "opaque-summary"},
                 {"type": "reasoning", "encrypted_content": "opaque-reasoning"},
                 {
@@ -247,6 +255,12 @@ async fn openai_round_trips_server_compaction_output_on_the_next_response() {
                 },
                 {"role": "user", "content": "Continue"}
             ],
+            "tools": [{
+                "type": "function",
+                "name": "inspect",
+                "description": "Inspect changes",
+                "parameters": {"type": "object"}
+            }],
             "include": ["reasoning.encrypted_content"],
             "store": false
         })))
@@ -265,12 +279,19 @@ async fn openai_round_trips_server_compaction_output_on_the_next_response() {
         .complete_managed(ContextPlan {
             request: CompletionRequest {
                 messages: vec![
+                    Message::system(
+                        "Current policy: review before deployment. Available tools: inspect.",
+                    ),
                     Message::user("Old prompt that was compacted"),
                     Message::assistant("Old answer that was compacted"),
                     compacted.message,
                     Message::user("Continue"),
                 ],
-                tools: vec![],
+                tools: vec![ToolDefinition {
+                    name: "inspect".to_owned(),
+                    description: "Inspect changes".to_owned(),
+                    input_schema: json!({"type": "object"}),
+                }],
             },
             size: ContextSize {
                 current_tokens: 20,
@@ -286,7 +307,7 @@ async fn openai_round_trips_server_compaction_output_on_the_next_response() {
 }
 
 #[tokio::test]
-async fn openai_streaming_preserves_a_server_compaction_continuation() {
+async fn openai_streaming_preserves_system_messages_across_multiple_compactions() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
@@ -306,18 +327,39 @@ async fn openai_streaming_preserves_a_server_compaction_continuation() {
         Some("test-key".to_owned()),
     )
     .unwrap();
-    let mut prior = Message::assistant("Compacted answer");
-    prior.provider_context = Some(ProviderContext::OpenAi(vec![json!({
+    let mut earlier = Message::assistant("Earlier compacted answer");
+    earlier.provider_context = Some(ProviderContext::OpenAi(vec![json!({
         "type": "compaction",
-        "encrypted_content": "opaque-summary"
+        "encrypted_content": "superseded-summary"
     })]));
+    let mut prior = Message::assistant("Compacted answer");
+    prior.provider_context = Some(ProviderContext::OpenAi(vec![
+        json!({"type": "reasoning", "encrypted_content": "superseded-reasoning"}),
+        json!({"type": "compaction", "encrypted_content": "also-superseded-summary"}),
+        json!({"type": "function_call", "call_id": "old-call", "name": "inspect", "arguments": "{}"}),
+        json!({"type": "compaction", "encrypted_content": "latest-summary"}),
+        json!({"type": "reasoning", "encrypted_content": "latest-reasoning"}),
+        json!({"type": "function_call", "call_id": "current-call", "name": "inspect", "arguments": "{}"}),
+    ]));
     let mut deltas = Vec::new();
 
     let completion = provider
         .complete_stream_managed(
             ContextPlan {
                 request: CompletionRequest {
-                    messages: vec![prior, Message::user("Continue")],
+                    messages: vec![
+                        Message::system("Current policy: review before deployment."),
+                        Message::system("Current tool inventory: inspect only."),
+                        Message::user("Superseded user prompt"),
+                        Message::assistant("Superseded assistant answer"),
+                        earlier,
+                        Message::system("Additional current constraint: do not publish."),
+                        Message::user("Also superseded user prompt"),
+                        prior,
+                        Message::tool("current-call", "Inspection complete"),
+                        Message::system("Current output format: concise."),
+                        Message::user("Continue"),
+                    ],
                     tools: vec![],
                 },
                 size: ContextSize {
@@ -333,6 +375,27 @@ async fn openai_streaming_preserves_a_server_compaction_continuation() {
         .unwrap();
 
     assert_eq!(completion.message.content, "Continued answer");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].body_json::<serde_json::Value>().unwrap(),
+        json!({
+            "model": "test-model",
+            "input": [
+                {"role": "system", "content": "Current policy: review before deployment."},
+                {"role": "system", "content": "Current tool inventory: inspect only."},
+                {"role": "system", "content": "Additional current constraint: do not publish."},
+                {"type": "compaction", "encrypted_content": "latest-summary"},
+                {"type": "reasoning", "encrypted_content": "latest-reasoning"},
+                {"type": "function_call", "call_id": "current-call", "name": "inspect", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "current-call", "output": "Inspection complete"},
+                {"role": "system", "content": "Current output format: concise."},
+                {"role": "user", "content": "Continue"}
+            ],
+            "include": ["reasoning.encrypted_content"],
+            "store": false
+        })
+    );
     assert_eq!(
         deltas,
         vec![CompletionDelta::Content("Continued answer".to_owned())]
