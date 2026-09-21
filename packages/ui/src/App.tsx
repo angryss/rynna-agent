@@ -131,7 +131,18 @@ export function App({ client }: AppProps) {
       }
       pendingProfileWrites.current.add(name);
       try {
-        return await client.updateProfile!(name, profile);
+        const saved = await client.updateProfile!(name, profile);
+        if (profile.yolo !== undefined && client.listProfiles) {
+          // Refresh effective mode: the CLI override cannot be inferred from a saved record.
+          try {
+            const catalog = await client.listProfiles();
+            const runtime = catalog.profiles.find(candidate => candidate.name === saved.name);
+            if (runtime) setProfiles(current => current.map(candidate => candidate.name === saved.name ? runtime : candidate));
+          } catch {
+            setError('Profile saved, but runtime mode could not be refreshed. Reload before relying on normal-mode restrictions.');
+          }
+        }
+        return saved;
       } finally {
         pendingProfileWrites.current.delete(name);
       }
@@ -534,6 +545,7 @@ export function App({ client }: AppProps) {
       default_project_directory: addingProfile ? '.' : (activeConfiguredProfile?.default_project_directory ?? '.'),
       projects: addingProfile ? [] : (activeConfiguredProfile?.projects ?? []),
       subagents: addingProfile ? [] : (activeConfiguredProfile?.subagents ?? []),
+      ...(!addingProfile && activeConfiguredProfile?.yolo !== undefined ? { yolo: activeConfiguredProfile.yolo } : {}),
       ...(!addingProfile && activeConfiguredProfile?.disabled_toolsets ? { disabled_toolsets: activeConfiguredProfile.disabled_toolsets } : {}),
     };
   }
@@ -1417,7 +1429,7 @@ export function App({ client }: AppProps) {
               <label className="profile-picker" htmlFor="toolsets-profile"><span>Profile</span>
                 <Typeahead id="toolsets-profile" onChange={selectSettingsProfile} options={sortedProfiles(configuredProfiles).map(profile => profile.name)} value={selectedSettingsProfile ?? ''} />
               </label>
-              {activeConfiguredProfile ? <ToolsetSettings key={activeConfiguredProfile.name} client={profileSettingsClient} profile={activeConfiguredProfile} onSaved={saved => {
+              {activeConfiguredProfile ? <ToolsetSettings key={activeConfiguredProfile.name} client={profileSettingsClient} profile={activeConfiguredProfile} runtimeProfile={profiles.find(profile => profile.name === activeConfiguredProfile.name)} onSaved={saved => {
                 setConfiguredProfiles(current => current.map(profile => profile.name === saved.name ? saved : profile));
                 setProfiles(current => current.map(profile => profile.name === saved.name ? { ...profile, disabled_toolsets: saved.disabled_toolsets } : profile));
               }} /> : <p>Select a profile to configure its toolsets.</p>}

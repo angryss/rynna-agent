@@ -281,6 +281,9 @@ impl std::fmt::Display for ExecutionError {
 
 #[async_trait]
 pub trait WorkflowExecutor: Send + Sync {
+    async fn bypass_execution_limits(&self, _run: &Run) -> bool {
+        false
+    }
     async fn preflight(&self, run: &Run) -> Result<(), String>;
     async fn execute(
         &self,
@@ -618,7 +621,7 @@ impl Runner {
     }
     async fn drive(self: Arc<Self>, id: Uuid) {
         loop {
-            let (run, tools, seconds) = {
+            let (run, tools, seconds, yolo) = {
                 let mut runs = self.runs.lock().await;
                 let Some(mut run) = runs.get(&id).cloned() else {
                     return;
@@ -626,10 +629,28 @@ impl Runner {
                 if run.status != Status::Running {
                     return;
                 }
-                let tools = (run.start.limits.tool_calls - run.consumed.tool_calls).min(64);
-                let seconds =
-                    (run.start.limits.active_seconds - run.consumed.active_seconds).min(300);
-                if run.consumed.steps >= run.start.limits.steps || tools == 0 || seconds == 0 {
+                let yolo = self.executor.bypass_execution_limits(&run).await;
+                let tools = if yolo {
+                    0
+                } else {
+                    run.start
+                        .limits
+                        .tool_calls
+                        .saturating_sub(run.consumed.tool_calls)
+                        .min(64)
+                };
+                let seconds = if yolo {
+                    0
+                } else {
+                    run.start
+                        .limits
+                        .active_seconds
+                        .saturating_sub(run.consumed.active_seconds)
+                        .min(300)
+                };
+                if !yolo
+                    && (run.consumed.steps >= run.start.limits.steps || tools == 0 || seconds == 0)
+                {
                     run.status = Status::BudgetExhausted;
                     run.reason = Some("cumulative execution allowance exhausted".into());
                     let _ = self.commit(&mut runs, run).await;
@@ -642,14 +663,14 @@ impl Runner {
                 if self.commit(&mut runs, run).await.is_err() {
                     return;
                 }
-                (runs[&id].clone(), tools, seconds)
+                (runs[&id].clone(), tools, seconds, yolo)
             };
             let started = Instant::now();
             let result = tokio::select! {
                 biased;
                 _ = self.cancelled(id) => Ok(Err("step stopped".into())),
-                result = tokio::time::timeout(
-                    std::time::Duration::from_secs(seconds),
+                result = crate::execution_timeout(
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(seconds), yolo,
                     self.executor.execute(&run, tools),
                 ) => result,
             };
@@ -657,10 +678,23 @@ impl Runner {
             let mut current = runs[&id].clone();
             current.in_flight = false;
             match result {
-                Ok(Ok(result)) if result.content.len() <= 32_000 && result.tool_calls <= tools => {
-                    current.consumed.tool_calls -= tools - result.tool_calls;
-                    current.consumed.active_seconds -=
-                        seconds - started.elapsed().as_secs().min(seconds);
+                Ok(Ok(result))
+                    if result.content.len() <= 32_000 && (yolo || result.tool_calls <= tools) =>
+                {
+                    if yolo {
+                        current.consumed.tool_calls = current
+                            .consumed
+                            .tool_calls
+                            .saturating_add(result.tool_calls);
+                        current.consumed.active_seconds = current
+                            .consumed
+                            .active_seconds
+                            .saturating_add(started.elapsed().as_secs());
+                    } else {
+                        current.consumed.tool_calls -= tools - result.tool_calls;
+                        current.consumed.active_seconds -=
+                            seconds - started.elapsed().as_secs().min(seconds);
+                    }
                     current.events.push(RunEvent {
                         id: current.events.len() as u64 + 1,
                         step_id: current.workflow.steps[current.cursor].id.clone(),
@@ -735,6 +769,9 @@ impl Runner {
                     Self::record_failure(&mut current, true, reason);
                 }
             }
+            if yolo && current.status == Status::BudgetExhausted {
+                current.status = Status::Blocked;
+            }
             // A control accepted before this commit wins, including verification completion.
             if runs[&id].status == Status::Cancelling {
                 current.status = Status::Cancelled;
@@ -781,9 +818,10 @@ impl crate::Agent {
         let prompt = run.prompt()?;
         let step = &run.workflow.steps[run.cursor];
         if step.executor == crate::workflows::Executor::Subagent {
-            if self
-                .disabled_toolsets
-                .contains(&crate::toolsets::ToolsetId::Subagents)
+            if !self.yolo
+                && self
+                    .disabled_toolsets
+                    .contains(&crate::toolsets::ToolsetId::Subagents)
             {
                 return Err("the subagents toolset is disabled for this profile".into());
             }
@@ -812,10 +850,11 @@ impl crate::Agent {
                 .tools
                 .iter()
                 .filter(|(name, _)| {
-                    !agent
-                        .disabled_toolsets
-                        .iter()
-                        .any(|group| group.contains(name))
+                    agent.yolo
+                        || !agent
+                            .disabled_toolsets
+                            .iter()
+                            .any(|group| group.contains(name))
                 })
                 .map(|(_, tool)| tool.definition())
                 .collect(),

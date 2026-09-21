@@ -30,6 +30,7 @@ impl ModelProvider for Model {
 }
 fn app(path: &std::path::Path, model: Arc<Model>) -> Router {
     let profile = Profile {
+        yolo: false,
         name: "test".into(),
         providers: vec![],
         active_skills: vec![],

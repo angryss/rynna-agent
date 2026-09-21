@@ -162,6 +162,7 @@ async fn selected_model_changes_allowance_and_large_restored_history_is_compacte
     let large = pair("large", 32_000);
     let small = pair("small", 2048);
     let profile = Profile {
+        yolo: false,
         name: "work".into(),
         providers: vec![large.clone(), small.clone()],
         active_skills: vec![],

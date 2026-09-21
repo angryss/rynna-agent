@@ -66,6 +66,7 @@ fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
 
     (
         Profile {
+            yolo: false,
             name: name.to_owned(),
             providers: vec![ProfileProvider {
                 provider: format!("{name}-provider"),
@@ -184,6 +185,7 @@ profiles:
     )
     .unwrap();
     let new_profile = Profile {
+        yolo: false,
         name: "new".to_owned(),
         providers: vec![ProfileProvider {
             provider: "ollama".to_owned(),
@@ -339,6 +341,7 @@ async fn desktop_non_streaming_response_releases_profiles_lock_while_provider_is
         release: Notify::new(),
     });
     let runtime_profile = Profile {
+        yolo: false,
         name: "alpha".to_owned(),
         providers: vec![ProfileProvider {
             provider: "test".to_owned(),
@@ -411,6 +414,7 @@ async fn desktop_stream_command_forwards_typed_deltas() {
     }
 
     let profile = Profile {
+        yolo: false,
         name: "local".to_owned(),
         providers: vec![ProfileProvider {
             provider: "test".to_owned(),
@@ -803,9 +807,13 @@ capabilities:
 
     assert_eq!(response.message, Message::assistant("command complete"));
     let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests[0].tools[0].name, "run_command");
+    let command_tool = requests[0]
+        .tools
+        .iter()
+        .find(|t| t.name == "run_command")
+        .unwrap();
     assert!(
-        !requests[0].tools[0]
+        !command_tool
             .description
             .contains(&program.display().to_string())
     );
@@ -1006,12 +1014,16 @@ profiles:
         .await
         .unwrap();
         let requests = provider.requests.lock().unwrap();
-        assert_eq!(requests[0].tools.len(), count);
+        let skills = requests[0]
+            .tools
+            .iter()
+            .filter(|t| t.name == "read_skill")
+            .collect::<Vec<_>>();
+        assert_eq!(skills.len(), count);
         if count == 1 {
-            assert_eq!(requests[0].tools[0].name, "read_skill");
-            assert!(requests[0].tools[0].description.contains("Review code"));
+            assert!(skills[0].description.contains("Review code"));
             assert!(
-                !requests[0].tools[0]
+                !skills[0]
                     .description
                     .contains("Private review instructions")
             );

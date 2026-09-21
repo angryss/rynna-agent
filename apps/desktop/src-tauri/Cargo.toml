@@ -19,6 +19,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+rynna-runtime = { path = "../../../crates/rynna-runtime" }
 rynna-workflows = { path = "../../../crates/rynna-workflows" }
 rynna-skills = { path = "../../../crates/rynna-skills" }
 uuid.workspace = true

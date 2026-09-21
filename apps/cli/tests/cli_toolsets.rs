@@ -40,5 +40,5 @@ async fn cli_uses_persisted_toolset_switches() {
         .iter()
         .map(|t| t["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["code_search"]);
+    assert_eq!(names, vec!["code_search", "host_info"]);
 }

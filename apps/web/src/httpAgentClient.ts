@@ -455,6 +455,7 @@ function isProfile(value: unknown): value is Profile {
   return Boolean(
     value &&
       typeof value === 'object' &&
+      (!('yolo' in value) || typeof value.yolo === 'boolean') &&
       'name' in value &&
       typeof value.name === 'string' &&
       'providers' in value &&

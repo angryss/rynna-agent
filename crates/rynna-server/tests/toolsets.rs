@@ -138,3 +138,72 @@ async fn saved_toolsets_apply_immediately_and_are_local_only() {
         "read_file"
     );
 }
+
+#[tokio::test]
+async fn saved_yolo_applies_native_tools_immediately_and_can_be_disabled() {
+    for forced in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rynna.yaml");
+        std::fs::write(&path, "version: 1\ndefault_profile: test\nproviders:\n  local:\n    kind: openai-compatible\n    api_base: http://localhost:11434\nprofiles:\n  test:\n    providers:\n      - provider: local\n        model: test\n").unwrap();
+        let catalog = ProfileCatalog::load(&path).unwrap();
+        let profile = catalog.resolve("test").unwrap().profile;
+        let model = Arc::new(Model::default());
+        let runtime = AgentProfiles::new(
+            "test",
+            [(
+                profile.clone(),
+                Agent::with_tools(model.clone(), "", vec![Arc::new(Reader)])
+                    .unwrap()
+                    .with_yolo_override(forced),
+            )],
+        )
+        .unwrap();
+        let app = rynna_server::router_with_profiles_provider_settings_and_catalog(
+            runtime,
+            ProviderSettingsStore::load(dir.path().join("providers.yaml")).unwrap(),
+            catalog,
+        );
+        let mut body = serde_json::to_value(profile).unwrap();
+        body["disabled_toolsets"] = json!(["file_operations", "commands", "code_search"]);
+        for yolo in [true, false] {
+            body["yolo"] = json!(yolo);
+            assert_eq!(
+                request(&app, "PUT", "/v1/profiles/test", body.clone(), true)
+                    .await
+                    .0,
+                StatusCode::OK
+            );
+            assert_eq!(
+                ProfileCatalog::load(&path)
+                    .unwrap()
+                    .resolve("test")
+                    .unwrap()
+                    .yolo,
+                yolo
+            );
+            assert_eq!(
+                request(
+                    &app,
+                    "POST",
+                    "/v1/respond",
+                    json!({"prompt":"hi","history":[]}),
+                    true
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+            let guard = model.0.lock().unwrap();
+            let names = guard
+                .last()
+                .unwrap()
+                .tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(names.contains(&"run_command"), yolo || forced);
+            assert_eq!(names.contains(&"write_file"), yolo || forced);
+            assert_eq!(names.contains(&"read_file"), yolo || forced);
+        }
+    }
+}

@@ -7,14 +7,11 @@ use std::{io, io::BufRead, io::IsTerminal, io::Read, io::Write};
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use rynna_config::{
-    ProfileCatalog, ProviderKind, ProviderSettingsStore, ResolvedCapability, ResolvedProfile,
-    ResolvedProvider,
+    ProfileCatalog, ProviderKind, ProviderSettingsStore, ResolvedProfile, ResolvedProvider,
 };
 use rynna_core::{Agent, AgentProfiles, FallbackProvider, ModelProvider, Project, Tool};
 use rynna_provider_anthropic::{AnthropicMessagesProvider, ClaudeCodeProvider};
 use rynna_provider_openai::OpenAiCompatibleProvider;
-use rynna_tools_command::{CommandConfig, CommandTool};
-use rynna_tools_filesystem::{FileSystemConfig, FileSystemToolset};
 use tracing_subscriber::EnvFilter;
 
 mod chat_ui;
@@ -422,6 +419,7 @@ fn configured_profiles(
     let mut configured = Vec::new();
     for mut profile in resolved {
         profile.yolo |= overrides.yolo;
+        profile.profile.yolo = profile.yolo;
         let api_key_override = if profile.profile.name == default_profile {
             if let Some(api_base) = &overrides.api_base
                 && let Some(provider) = profile.providers.first_mut()
@@ -438,7 +436,8 @@ fn configured_profiles(
         } else {
             None
         };
-        let agent = configured_agent(&profile, api_key_override, provider_config)?;
+        let agent = configured_agent(&profile, api_key_override, provider_config)?
+            .with_yolo_override(overrides.yolo);
         configured.push((profile.profile, agent));
     }
 
@@ -578,52 +577,7 @@ fn configured_tools(profile: &ResolvedProfile) -> Result<Vec<Arc<dyn Tool>>> {
     {
         tools.push(Arc::new(skills));
     }
-    for capability in &profile.capabilities {
-        match capability {
-            ResolvedCapability::Command(capability) => {
-                tools.push(Arc::new(
-                    CommandTool::new(CommandConfig {
-                        working_directory: capability.working_directory.clone(),
-                        programs: capability.programs.clone(),
-                        timeout_seconds: capability.timeout_seconds,
-                        max_output_bytes: capability.max_output_bytes,
-                    })
-                    .context("invalid command capability")?,
-                ));
-            }
-            ResolvedCapability::FileSystem(capability) => {
-                let mut config = FileSystemConfig::new(&capability.root);
-                config.read_only = capability.read_only;
-                config.allowed_patterns = capability.allowed_patterns.clone();
-                if let Some(patterns) = &capability.denied_patterns {
-                    config.denied_patterns.clone_from(patterns);
-                }
-                if let Some(patterns) = &capability.protected_patterns {
-                    config.protected_patterns.clone_from(patterns);
-                }
-                if let Some(limit) = capability.max_read_bytes {
-                    config.max_read_bytes = limit;
-                }
-                if let Some(limit) = capability.max_results {
-                    config.max_results = limit;
-                }
-                if let Some(limit) = capability.max_traversal_files {
-                    config.max_traversal_files = limit;
-                }
-                if let Some(limit) = capability.max_traversal_depth {
-                    config.max_traversal_depth = limit;
-                }
-                if let Some(limit) = capability.max_search_bytes {
-                    config.max_search_bytes = limit;
-                }
-                tools.extend(
-                    FileSystemToolset::new(config)
-                        .context("invalid filesystem capability")?
-                        .tools(),
-                );
-            }
-        }
-    }
+    tools.extend(rynna_runtime::native_tools(profile).map_err(anyhow::Error::msg)?);
     Ok(tools)
 }
 
@@ -869,6 +823,53 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn default_tools_read_search_host_but_do_not_write() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sample.txt"), "native fixture").unwrap();
+        let mut profile = rynna_config::ProfileCatalog::built_in()
+            .resolve("default")
+            .unwrap();
+        profile.profile.default_project_directory = dir.path().to_owned();
+        let tools = super::configured_tools(&profile).unwrap();
+        let read = tools
+            .iter()
+            .find(|t| t.definition().name == "read_file")
+            .expect("default read_file");
+        assert!(
+            read.execute(serde_json::json!({"path":"sample.txt"}))
+                .await
+                .unwrap()
+                .to_string()
+                .contains("native fixture")
+        );
+        let search = tools
+            .iter()
+            .find(|t| t.definition().name == "search_files")
+            .expect("default search_files");
+        assert!(
+            search
+                .execute(serde_json::json!({"path":".","pattern":"native"}))
+                .await
+                .unwrap()
+                .to_string()
+                .contains("sample.txt")
+        );
+        let host = tools
+            .iter()
+            .find(|t| t.definition().name == "host_info")
+            .expect("default host_info");
+        assert_eq!(
+            host.execute(serde_json::json!({})).await.unwrap()["os"],
+            std::env::consts::OS
+        );
+        assert!(
+            !tools
+                .iter()
+                .any(|t| matches!(t.definition().name.as_str(), "write_file" | "run_command"))
+        );
+    }
+
     #[test]
     fn yolo_flag_is_global() {
         use clap::Parser;

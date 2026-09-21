@@ -29,6 +29,7 @@ const MAX_DEPTH: usize = 128;
 
 pub(super) struct CodeSearchTool {
     filesystem: Arc<FileSystem>,
+    additional_filesystems: Vec<Arc<FileSystem>>,
     directories: Option<Vec<PathBuf>>,
     pending: Arc<tokio::sync::Mutex<Option<Pending>>>,
 }
@@ -37,9 +38,16 @@ impl CodeSearchTool {
     pub fn new(filesystem: Arc<FileSystem>) -> Self {
         Self {
             filesystem,
+            additional_filesystems: Vec::new(),
             directories: None,
             pending: Arc::new(tokio::sync::Mutex::new(None)),
         }
+    }
+    pub(super) fn with_roots(filesystems: Vec<Arc<FileSystem>>) -> Self {
+        let mut roots = filesystems.into_iter();
+        let mut tool = Self::new(roots.next().expect("at least one search root"));
+        tool.additional_filesystems = roots.collect();
+        tool
     }
 }
 fn indexing() -> Value {
@@ -70,32 +78,43 @@ fn default_results() -> usize {
     20
 }
 
+pub(super) fn definition() -> ToolDefinition {
+    ToolDefinition::new(
+        "code_search",
+        "Preferred code search: case-sensitive literal substring search using a persistent incremental repository index. Query must contain at least 3 characters on one line. Returns bounded path/line snippets. Searches the session repositories using a separate persistent index for each; later searches update changes. Results identify repository roots and workspace-relative paths. Honors filesystem policy and .gitignore/.ignore. Use search_files for short literals or regex in a narrow directory.",
+        json!({"type":"object", "properties": {
+                "query":{"type":"string","minLength":3,"maxLength":1024},
+                "path":{"type":"string","description":"Workspace-relative directory; defaults to ."},
+                "include_glob":{"type":"string"},
+                "max_results":{"type":"integer","minimum":1,"maximum":100}
+            }, "required":["query"],"additionalProperties":false}),
+    )
+}
+
 #[async_trait]
 impl Tool for CodeSearchTool {
     fn for_project(&self, directories: &[PathBuf]) -> Option<Arc<dyn Tool>> {
         Some(Arc::new(Self {
             filesystem: self.filesystem.clone(),
+            additional_filesystems: self.additional_filesystems.clone(),
             directories: Some(directories.to_vec()),
             pending: self.pending.clone(),
         }))
     }
     fn workflow_policy(&self) -> String {
         format!(
-            "code-search-v1:{:?}:{:?}:{:?}",
-            self.filesystem.root, self.filesystem.config, self.directories
+            "code-search-v1:{:?}:{:?}:{:?}:{:?}",
+            self.filesystem.root,
+            self.filesystem.config,
+            self.directories,
+            self.additional_filesystems
+                .iter()
+                .map(|fs| &fs.config)
+                .collect::<Vec<_>>()
         )
     }
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::new(
-            "code_search",
-            "Preferred code search: case-sensitive literal substring search using a persistent incremental repository index. Query must contain at least 3 characters on one line. Returns bounded path/line snippets. Searches the session repositories using a separate persistent index for each; later searches update changes. Results identify repository roots and workspace-relative paths. Honors filesystem policy and .gitignore/.ignore. Use search_files for short literals or regex in a narrow directory.",
-            json!({"type":"object", "properties": {
-                "query":{"type":"string","minLength":3,"maxLength":1024},
-                "path":{"type":"string","description":"Workspace-relative directory; defaults to ."},
-                "include_glob":{"type":"string"},
-                "max_results":{"type":"integer","minimum":1,"maximum":100}
-            }, "required":["query"],"additionalProperties":false}),
-        )
+        definition()
     }
     async fn execute(&self, arguments: Value) -> Result<Value> {
         let arguments: Arguments = serde_json::from_value(arguments).map_err(error)?;
@@ -127,6 +146,7 @@ impl Tool for CodeSearchTool {
             }
         }
         let filesystem = self.filesystem.clone();
+        let additional_filesystems = self.additional_filesystems.clone();
         let work_arguments = arguments.clone();
         let directories = self.directories.clone();
         // Retain the handle across calls: even a warm scan taking over twenty
@@ -135,7 +155,16 @@ impl Tool for CodeSearchTool {
             directories: self.directories.clone(),
             arguments,
             task: tokio::task::spawn_blocking(move || {
-                search(&filesystem, work_arguments, directories.as_deref())
+                let mut output = SearchResults::default();
+                for filesystem in std::iter::once(&filesystem).chain(&additional_filesystems) {
+                    search(
+                        filesystem,
+                        &work_arguments,
+                        directories.as_deref(),
+                        &mut output,
+                    )?;
+                }
+                Ok(output.finish())
             }),
         });
         let task = &mut pending.as_mut().expect("pending search").task;
@@ -584,9 +613,10 @@ impl SearchResults {
 
 fn search(
     filesystem: &FileSystem,
-    arguments: Arguments,
+    arguments: &Arguments,
     directories: Option<&[PathBuf]>,
-) -> Result<Value> {
+    output: &mut SearchResults,
+) -> Result<()> {
     let query_path = validate_relative(&arguments.path).map_err(error)?;
     let query_path = PathBuf::from(relative_string(&query_path));
     filesystem
@@ -632,7 +662,6 @@ fn search(
         .collect();
     let scopes: Vec<_> = scopes.into_iter().collect();
     let mut visited = BTreeSet::new();
-    let mut output = SearchResults::default();
     while let Some(repository) = queue.pop_front() {
         if !scopes
             .iter()
@@ -642,7 +671,7 @@ fn search(
             continue;
         }
         output.repository_count += 1;
-        match search_repository(filesystem, &repository, &scopes, &arguments, &mut output) {
+        match search_repository(filesystem, &repository, &scopes, arguments, output) {
             Ok(nested) => queue.extend(nested),
             Err(reason) => {
                 output.failed_repositories += 1;
@@ -654,7 +683,7 @@ fn search(
             }
         }
     }
-    Ok(output.finish())
+    Ok(())
 }
 
 fn search_repository(

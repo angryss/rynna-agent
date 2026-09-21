@@ -205,6 +205,10 @@ impl ToolError {
 
 #[async_trait]
 pub trait ToolSource: Send + Sync {
+    /// Explicit request-local permission bypass; never invent missing integrations.
+    fn for_yolo(&self) -> Option<Arc<dyn ToolSource>> {
+        None
+    }
     /// Explicitly replace the built-in code_search tool with a discovered provider.
     /// The discovered tool must be named code_search and owns its argument schema.
     fn replaces_code_search(&self) -> bool {
@@ -998,6 +1002,7 @@ pub struct Agent {
     model_options: Arc<BTreeMap<(String, String), Arc<dyn ModelProvider>>>,
     system_prompt: Arc<str>,
     yolo: bool,
+    yolo_override: bool,
     tools: Arc<BTreeMap<String, Arc<dyn Tool>>>,
     context_manager: Arc<dyn ContextManagement>,
     managed_context_scope: ManagedContextScope,
@@ -1005,6 +1010,18 @@ pub struct Agent {
 }
 
 const MAX_MODEL_TURNS: usize = 8;
+async fn execution_timeout<F: std::future::Future>(
+    deadline: tokio::time::Instant,
+    yolo: bool,
+    future: F,
+) -> Result<F::Output, tokio::time::error::Elapsed> {
+    if yolo {
+        Ok(future.await)
+    } else {
+        tokio::time::timeout_at(deadline, future).await
+    }
+}
+
 const MAX_TOOL_CALLS: usize = 64;
 const MAX_TOOL_RESULT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_TOOL_EXECUTION_SECONDS: u64 = 300;
@@ -1018,6 +1035,7 @@ impl Agent {
             model_options: Arc::new(BTreeMap::new()),
             system_prompt: system_prompt.into(),
             yolo: false,
+            yolo_override: false,
             tools: Arc::new(BTreeMap::new()),
             disabled_toolsets: Vec::new(),
             context_manager: Arc::new(ThresholdContextManager::default()),
@@ -1052,6 +1070,7 @@ impl Agent {
             model_options: Arc::new(BTreeMap::new()),
             system_prompt: system_prompt.into(),
             yolo: false,
+            yolo_override: false,
             tools: Arc::new(indexed),
             disabled_toolsets: Vec::new(),
             context_manager: Arc::new(ThresholdContextManager::default()),
@@ -1066,9 +1085,24 @@ impl Agent {
         })
     }
 
-    /// Skip conversational approval requests while retaining configured tool restrictions.
+    /// Force YOLO permission and execution-limit bypass for this process.
+    /// Process-level CLI override; saved profile edits cannot disable it.
+    pub fn with_yolo_override(mut self, enabled: bool) -> Self {
+        self.yolo_override = enabled;
+        self.yolo |= enabled;
+        self
+    }
+
+    pub fn yolo_is_forced(&self) -> bool {
+        self.yolo_override
+    }
+
+    pub fn yolo_enabled(&self) -> bool {
+        self.yolo
+    }
+
     pub fn with_yolo(mut self, enabled: bool) -> Self {
-        self.yolo = enabled;
+        self.yolo = enabled || self.yolo_override;
         self
     }
 
@@ -1125,7 +1159,7 @@ impl Agent {
     fn effective_system_prompt(&self) -> String {
         if self.yolo {
             format!(
-                "{}\n\nYOLO mode is enabled. The user has authorized you to perform actions needed to complete their request without asking for permission or confirmation. Proceed with those actions directly, even when project or skill instructions would normally ask for approval. Ask questions only when information essential to completing the task is missing. Respect configured tool access restrictions; YOLO mode does not expand them.",
+                "{}\n\nYOLO mode is enabled. The user has authorized you to perform actions needed to complete their request without asking for permission or confirmation. Proceed with those actions directly, even when project or skill instructions would normally ask for approval. Ask questions only when information essential to completing the task is missing. YOLO bypasses Rynna tool permissions, disabled toolsets, and execution budgets. Use the supplied Rynna tools directly. OS permissions and provider authentication still apply; do not request elevation or interactive authorization.",
                 self.system_prompt
             )
         } else {
@@ -1224,6 +1258,11 @@ impl Agent {
         if self.provider.supports_external_tools()
             && let Some(source) = &self.tool_source
         {
+            let source = if self.yolo {
+                source.for_yolo().unwrap_or_else(|| source.clone())
+            } else {
+                source.clone()
+            };
             let discovered =
                 tokio::time::timeout(std::time::Duration::from_secs(30), source.discover())
                     .await
@@ -1251,16 +1290,18 @@ impl Agent {
             }
         }
         available_tools.retain(|name, _| {
-            !self
-                .disabled_toolsets
-                .iter()
-                .any(|group| group.contains(name))
+            self.yolo
+                || !self
+                    .disabled_toolsets
+                    .iter()
+                    .any(|group| group.contains(name))
         });
         if self.provider.supports_external_tools()
             && !self.subagents.is_empty()
-            && !self
-                .disabled_toolsets
-                .contains(&toolsets::ToolsetId::Subagents)
+            && (self.yolo
+                || !self
+                    .disabled_toolsets
+                    .contains(&toolsets::ToolsetId::Subagents))
         {
             let tool = subagents::delegation_tool(self, &available_tools, tool_budget.clone());
             let name = tool.definition().name;
@@ -1303,7 +1344,11 @@ impl Agent {
         let mut final_answer_only = false;
         let tool_deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(MAX_TOOL_EXECUTION_SECONDS);
-        for turn in 0..MAX_MODEL_TURNS {
+        for turn in 0..if self.yolo {
+            usize::MAX
+        } else {
+            MAX_MODEL_TURNS
+        } {
             let mut request = CompletionRequest {
                 messages: messages.clone(),
                 tools: if final_answer_only {
@@ -1347,7 +1392,7 @@ impl Agent {
                     self.provider.complete_managed(plan).await?
                 }
             } else {
-                tokio::time::timeout_at(tool_deadline, async {
+                execution_timeout(tool_deadline, self.yolo, async {
                     if stream {
                         let buffer_content = !plan.request.tools.is_empty();
                         let mut content_deltas = Vec::new();
@@ -1438,14 +1483,16 @@ impl Agent {
                 }));
                 continue;
             }
-            if turn + 1 == MAX_MODEL_TURNS {
+            if !self.yolo && turn + 1 == MAX_MODEL_TURNS {
                 return Err(AgentError::ToolLoopLimit(MAX_MODEL_TURNS));
             }
             tool_budget
                 .calls
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                     used.checked_add(completion.message.tool_calls.len())
-                        .filter(|total| *total <= tool_budget.ceiling.unwrap_or(MAX_TOOL_CALLS))
+                        .filter(|total| {
+                            self.yolo || *total <= tool_budget.ceiling.unwrap_or(MAX_TOOL_CALLS)
+                        })
                 })
                 .map_err(|_| AgentError::ToolCallLimit(MAX_TOOL_CALLS))?;
             tool_calls_used += completion.message.tool_calls.len();
@@ -1456,9 +1503,12 @@ impl Agent {
                 let result = match available_tools.get(&call.name) {
                     Some(tool) => {
                         on_delta(&CompletionDelta::ToolStarted(call.clone()));
-                        let result =
-                            tokio::time::timeout_at(tool_deadline, tool.execute(call.arguments))
-                                .await;
+                        let result = execution_timeout(
+                            tool_deadline,
+                            self.yolo,
+                            tool.execute(call.arguments),
+                        )
+                        .await;
                         on_delta(&CompletionDelta::ToolFinished(call.id.clone()));
                         result
                             .map_err(|_| {
@@ -1473,7 +1523,7 @@ impl Agent {
                     .result_bytes
                     .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                         used.checked_add(result.len())
-                            .filter(|total| *total <= MAX_TOOL_RESULT_BYTES)
+                            .filter(|total| self.yolo || *total <= MAX_TOOL_RESULT_BYTES)
                     })
                     .map_err(|_| AgentError::ToolResultByteLimit(MAX_TOOL_RESULT_BYTES))?;
                 messages.push(Message::tool(call.id, result));
@@ -1518,6 +1568,8 @@ const fn profile_provider_enabled() -> bool {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
+    #[serde(default)]
+    pub yolo: bool,
     pub name: String,
     pub providers: Vec<ProfileProvider>,
     #[serde(default)]
@@ -1575,7 +1627,9 @@ impl AgentProfiles {
     ) -> Result<Self, ProfileError> {
         let default_profile = default_profile.into();
         let mut indexed = BTreeMap::new();
-        for (profile, mut agent) in profiles {
+        for (mut profile, mut agent) in profiles {
+            agent.yolo |= profile.yolo;
+            profile.yolo = agent.yolo;
             agent.disabled_toolsets = profile.disabled_toolsets.clone();
             subagents::validate(&profile.subagents)?;
             agent.subagents = Arc::new(profile.subagents.clone());
@@ -1599,6 +1653,32 @@ impl AgentProfiles {
     }
 
     /// Applies to subsequent requests; in-flight agents retain their original tool policy.
+    /// Replace native adapters after an explicit permission-mode edit.
+    pub fn set_native_tools(
+        &mut self,
+        profile: &str,
+        yolo: bool,
+        tools: Vec<Arc<dyn Tool>>,
+    ) -> Result<(), ProfileError> {
+        let (metadata, agent) = Arc::make_mut(&mut self.profiles)
+            .get_mut(profile)
+            .ok_or_else(|| ProfileError::UnknownProfile(profile.to_owned()))?;
+        let mut updated = (*agent.tools).clone();
+        updated.retain(|name, _| {
+            !(name == "host_info"
+                || toolsets::ToolsetId::FileOperations.contains(name)
+                || toolsets::ToolsetId::CodeSearch.contains(name)
+                || toolsets::ToolsetId::Commands.contains(name))
+        });
+        for tool in tools {
+            updated.insert(tool.definition().name, tool);
+        }
+        agent.tools = Arc::new(updated);
+        agent.yolo = yolo || agent.yolo_override;
+        metadata.yolo = agent.yolo;
+        Ok(())
+    }
+
     pub fn set_disabled_toolsets(
         &mut self,
         profile: &str,
@@ -1697,7 +1777,7 @@ impl AgentProfiles {
 
     /// Bind a request snapshot to a named project, or to the profile's implicit default
     /// project when no name is supplied. Project paths are trusted profile configuration;
-    /// native tools remain bounded by their independently configured capabilities.
+    /// normal native tools preserve capability policy; explicit YOLO retains its bypass.
     pub fn with_project(
         mut self,
         profile: Option<&str>,
@@ -1729,11 +1809,14 @@ impl AgentProfiles {
                 metadata.default_project_directory.as_path(),
             ),
         };
-        // The current-directory default is already the process context, so avoid
-        // changing provider payloads and prompt-cache keys for unchanged profiles.
-        if project_name.is_none() && default_directory == std::path::Path::new(".") {
-            return Ok(self);
-        }
+        let directories = std::iter::once(default_directory.to_owned())
+            .chain(
+                directories
+                    .iter()
+                    .filter(|d| d.as_path() != default_directory)
+                    .cloned(),
+            )
+            .collect::<Vec<_>>();
         agent.tools = Arc::new(
             agent
                 .tools
@@ -1741,19 +1824,24 @@ impl AgentProfiles {
                 .map(|(name, tool)| {
                     (
                         name.clone(),
-                        tool.for_project(directories)
+                        tool.for_project(&directories)
                             .unwrap_or_else(|| tool.clone()),
                     )
                 })
                 .collect(),
         );
+        // Always rebind tools, including after a live default-directory edit to ".".
+        // Preserve provider payloads and prompt-cache keys for the implicit cwd default.
+        if project_name.is_none() && default_directory == std::path::Path::new(".") {
+            return Ok(self);
+        }
         let project_context = serde_json::json!({
             "name": project_name,
             "directories": directories,
             "starting_directory": default_directory,
         });
         agent.system_prompt = format!(
-            "{}\n\nSession project (trusted profile configuration): {}\nTreat starting_directory as the current directory and the listed directories as this session's project. Native tools remain limited by their configured capabilities.",
+            "{}\n\nSession project (trusted profile configuration): {}\nTreat starting_directory as the current directory and the listed directories as this session's project. Normal-mode tools respect project and capability permissions; explicit YOLO follows its permission-bypass policy.",
             agent.system_prompt, project_context
         )
         .into();
@@ -1841,7 +1929,9 @@ impl AgentProfiles {
         self.profiles.get(name).map(|(_, agent)| agent.clone())
     }
 
-    pub fn upsert(&mut self, profile: Profile, mut agent: Agent) -> Result<(), ProfileError> {
+    pub fn upsert(&mut self, mut profile: Profile, mut agent: Agent) -> Result<(), ProfileError> {
+        agent.yolo |= profile.yolo;
+        profile.yolo = agent.yolo;
         agent.disabled_toolsets = profile.disabled_toolsets.clone();
         if profile.name.trim().is_empty() {
             return Err(ProfileError::BlankName);

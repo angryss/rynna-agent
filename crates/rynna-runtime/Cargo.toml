@@ -1,0 +1,17 @@
+[package]
+name = "rynna-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rynna-core = { path = "../rynna-core" }
+rynna-config = { path = "../rynna-config" }
+rynna-tools-command = { path = "../rynna-tools-command" }
+rynna-tools-filesystem = { path = "../rynna-tools-filesystem" }
+async-trait.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

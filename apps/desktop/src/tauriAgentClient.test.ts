@@ -178,6 +178,16 @@ describe('TauriAgentClient', () => {
     expect(invoke).toHaveBeenNthCalledWith(3, 'delete_profile', { name: 'work' });
   });
 
+  it('round trips YOLO booleans and rejects malformed mode values', async () => {
+    const profile = { name: 'work', providers: [{ provider: 'local', model: 'test' }], active_skills: [], mcp_servers: [], capabilities: [], default_project_directory: '.', projects: [], subagents: [], yolo: true };
+    const invoke = vi.fn().mockResolvedValue(profile);
+    const client = new TauriAgentClient(invoke);
+    expect(await client.updateProfile('work', profile)).toEqual(profile);
+    expect(invoke).toHaveBeenCalledWith('update_profile', { name: 'work', profile });
+    invoke.mockResolvedValue({ ...profile, yolo: 'false' });
+    await expect(client.updateProfile('work', profile)).rejects.toThrow('invalid profile data');
+  });
+
   it('uses narrow commands for OpenAI account status and login', async () => {
     const invoke = vi
       .fn()

@@ -617,10 +617,17 @@ async fn providers_without_tool_support_do_not_receive_native_tools() {
 #[tokio::test]
 async fn yolo_is_inherited_by_delegated_agents() {
     let provider = Arc::new(provider(json!({"subagent":"reviewer","task":"Review"})));
-    let agent = profiles(provider.clone())
-        .clone_agent("work")
-        .unwrap()
-        .with_yolo(true);
+    let mut profiles = profiles(provider.clone());
+    profiles
+        .set_disabled_toolsets(
+            "work",
+            vec![
+                rynna_core::toolsets::ToolsetId::Subagents,
+                rynna_core::toolsets::ToolsetId::FileOperations,
+            ],
+        )
+        .unwrap();
+    let agent = profiles.clone_agent("work").unwrap().with_yolo(true);
     agent.respond(&[], "delegate").await.unwrap();
     let requests = provider.requests.lock().unwrap();
     assert!(

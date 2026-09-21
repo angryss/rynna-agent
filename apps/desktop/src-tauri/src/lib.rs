@@ -8,8 +8,7 @@ use rynna_config::mcp::{McpSettings, McpSettingsStore};
 use rynna_config::memory::{MemorySettings, MemorySettingsResponse, MemorySettingsStore};
 use rynna_config::{
     AnthropicAuthentication, ConfiguredProvider, OPENAI_ACCOUNT_PROFILE, OpenAiAuthentication,
-    ProfileCatalog, ProviderKind, ProviderSettingsStore, ResolvedCapability, ResolvedProfile,
-    ResolvedProvider,
+    ProfileCatalog, ProviderKind, ProviderSettingsStore, ResolvedProfile, ResolvedProvider,
 };
 use rynna_core::{
     Agent, AgentProfiles, CompletionDelta, FallbackProvider, Message, ModelProvider, Profile,
@@ -22,8 +21,6 @@ use rynna_provider_anthropic::{
     isolate_claude_subscription_environment, terminate_child,
 };
 use rynna_provider_openai::OpenAiCompatibleProvider;
-use rynna_tools_command::{CommandConfig, CommandTool};
-use rynna_tools_filesystem::{FileSystemConfig, FileSystemToolset};
 use serde::{Deserialize, Serialize};
 use tauri::{State, ipc::Channel};
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -614,6 +611,7 @@ async fn update_profile(
     let mut catalog = catalog.lock().await;
     let original = catalog.resolve(&name).map_err(|e| e.to_string())?.profile;
     if profile.name != name
+        || profile.yolo != original.yolo
         || profile.projects != original.projects
         || profile.default_project_directory != original.default_project_directory
     {
@@ -670,6 +668,17 @@ pub fn update_saved_profile(
     original_name: &str,
     profile: Profile,
 ) -> Result<Profile, String> {
+    let mut resolved = catalog.resolve(original_name).map_err(|e| e.to_string())?;
+    let updated_native = if resolved.yolo != profile.yolo {
+        resolved.yolo = profile.yolo
+            || runtime
+                .clone_agent(original_name)
+                .is_some_and(|a| a.yolo_is_forced());
+        resolved.profile = profile.clone();
+        Some((resolved.yolo, rynna_runtime::native_tools(&resolved)?))
+    } else {
+        None
+    };
     let saved = match provider_settings {
         Some(provider_settings) => rynna_config::profile_update::update_profile_with_settings(
             catalog,
@@ -683,6 +692,11 @@ pub fn update_saved_profile(
             .map_err(|error| error.to_string()),
     }?;
     if saved.name == original_name && runtime.contains(original_name) {
+        if let Some((yolo, tools)) = updated_native {
+            runtime
+                .set_native_tools(original_name, yolo, tools)
+                .map_err(|e| e.to_string())?;
+        }
         runtime
             .set_project_configuration(
                 original_name,
@@ -1277,7 +1291,25 @@ fn configured_profiles(
             "profile name `{OPENAI_ACCOUNT_PROFILE}` is reserved for the desktop OpenAI account"
         ));
     }
+    let openai_provider: Arc<dyn ModelProvider> =
+        Arc::new(CodexAppServerProvider::with_selectable_home(
+            codex_program(),
+            configured_codex_home()?,
+            credential_selection,
+            None,
+        ));
+    configured.push(compose_openai_account_agent(openai_provider)?);
+
+    AgentProfiles::new(default_profile, configured).map_err(|error| error.to_string())
+}
+
+/// Compose the runtime-only account profile without accessing account credentials.
+#[doc(hidden)]
+pub fn compose_openai_account_agent(
+    openai_provider: Arc<dyn ModelProvider>,
+) -> Result<(Profile, Agent), String> {
     let openai_profile = Profile {
+        yolo: false,
         name: OPENAI_ACCOUNT_PROFILE.to_owned(),
         providers: vec![ProfileProvider {
             provider: "openai".to_owned(),
@@ -1294,20 +1326,17 @@ fn configured_profiles(
         projects: Vec::new(),
         subagents: Vec::new(),
     };
-    let openai_provider: Arc<dyn ModelProvider> =
-        Arc::new(CodexAppServerProvider::with_selectable_home(
-            codex_program(),
-            configured_codex_home()?,
-            credential_selection,
-            None,
-        ));
-    let openai_agent = Agent::new(
-        openai_provider,
-        "You are Rynna, a careful and capable AI software agent.",
-    );
-    configured.push((openai_profile, openai_agent));
-
-    AgentProfiles::new(default_profile, configured).map_err(|error| error.to_string())
+    let resolved = ResolvedProfile {
+        skills_directory: ".".into(),
+        profile: openai_profile,
+        // The account provider is runtime-only, not resolved from the catalog.
+        providers: Vec::new(),
+        system_prompt: "You are Rynna, a careful and capable AI software agent.".into(),
+        yolo: false,
+        capabilities: Vec::new(),
+    };
+    let openai_agent = compose_agent(&resolved, openai_provider)?;
+    Ok((resolved.profile, openai_agent))
 }
 
 fn openai_account_reuses_existing_credentials(
@@ -1466,52 +1495,7 @@ fn configured_tools(profile: &ResolvedProfile) -> Result<Vec<Arc<dyn Tool>>, Str
     {
         tools.push(Arc::new(skills));
     }
-    for capability in &profile.capabilities {
-        match capability {
-            ResolvedCapability::Command(capability) => {
-                tools.push(Arc::new(
-                    CommandTool::new(CommandConfig {
-                        working_directory: capability.working_directory.clone(),
-                        programs: capability.programs.clone(),
-                        timeout_seconds: capability.timeout_seconds,
-                        max_output_bytes: capability.max_output_bytes,
-                    })
-                    .map_err(|error| error.to_string())?,
-                ));
-            }
-            ResolvedCapability::FileSystem(capability) => {
-                let mut config = FileSystemConfig::new(&capability.root);
-                config.read_only = capability.read_only;
-                config.allowed_patterns = capability.allowed_patterns.clone();
-                if let Some(patterns) = &capability.denied_patterns {
-                    config.denied_patterns.clone_from(patterns);
-                }
-                if let Some(patterns) = &capability.protected_patterns {
-                    config.protected_patterns.clone_from(patterns);
-                }
-                if let Some(limit) = capability.max_read_bytes {
-                    config.max_read_bytes = limit;
-                }
-                if let Some(limit) = capability.max_results {
-                    config.max_results = limit;
-                }
-                if let Some(limit) = capability.max_traversal_files {
-                    config.max_traversal_files = limit;
-                }
-                if let Some(limit) = capability.max_traversal_depth {
-                    config.max_traversal_depth = limit;
-                }
-                if let Some(limit) = capability.max_search_bytes {
-                    config.max_search_bytes = limit;
-                }
-                tools.extend(
-                    FileSystemToolset::new(config)
-                        .map_err(|error| error.to_string())?
-                        .tools(),
-                );
-            }
-        }
-    }
+    tools.extend(rynna_runtime::native_tools(profile)?);
     Ok(tools)
 }
 

@@ -12,6 +12,7 @@ name = "rynna"
 path = "src/main.rs"
 
 [dependencies]
+rynna-runtime = { path = "../../crates/rynna-runtime" }
 rynna-skills = { path = "../../crates/rynna-skills" }
 uuid.workspace = true
 rynna-mcp = { path = "../../crates/rynna-mcp" }
