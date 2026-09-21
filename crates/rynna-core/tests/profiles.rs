@@ -351,7 +351,7 @@ async fn project_managed_contexts_persist_across_requests_and_remain_isolated() 
 }
 
 #[tokio::test]
-async fn session_titles_use_only_the_opening_submission_without_profile_instructions_or_tools() {
+async fn session_titles_include_runtime_and_profile_policy_without_tools() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let (metadata, _) = profile("work", "unused");
     let agent = Agent::new(
@@ -371,13 +371,28 @@ async fn session_titles_use_only_the_opening_submission_without_profile_instruct
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].tools.is_empty());
-    assert_eq!(requests[0].messages.len(), 2);
+    assert!(
+        requests[0].messages[0]
+            .content
+            .contains("Reason -> Act -> Observe")
+    );
+    assert!(
+        requests[0].messages[0]
+            .content
+            .ends_with("Available tools for this request (JSON):\n[]")
+    );
+    assert!(
+        requests[0].messages[1]
+            .content
+            .contains("Return only the title")
+    );
+    assert_eq!(requests[0].messages.len(), 3);
     assert_eq!(
-        requests[0].messages[1],
+        requests[0].messages[2],
         Message::user("Review my Rust application")
     );
     assert!(
-        !requests[0].messages[0]
+        requests[0].messages[0]
             .content
             .contains("Private profile instructions")
     );

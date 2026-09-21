@@ -14,6 +14,7 @@ Rynna is an open-source AI software agent built with Rust, React, and Tauri. One
 - **Cache aware:** stable prompt prefixes are routed through a replaceable cache optimizer and translated to each provider's supported server-side cache controls.
 - **Profile scoped:** local, work, automation, and hosted profiles can select different providers, models, system prompts, native capabilities, active skills, and MCP servers.
 - **Toolsets:** enable or disable groups of native tools per profile in **Settings → Toolsets**. Saved switches apply across CLI, web, desktop, helpers, and workflows. See [toolsets](docs/toolsets.md) for configuration and enforcement details.
+- **Shared development policy:** every core model request includes software-development/terminal guidance, private reasoning with a Reason → Act → Observe loop, and its actual available tool inventory. Configured prompts, project context, and skills are preserved. See [runtime system prompt](docs/system-prompt.md).
 
 ## Repository layout
 

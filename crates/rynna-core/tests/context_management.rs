@@ -43,7 +43,7 @@ impl ContextManagement for InjectedContextManager {
             request,
             size: ContextSize {
                 current_tokens: 17,
-                max_tokens: 100,
+                max_tokens: 4096,
             },
             server_compaction_threshold: None,
             compacted: true,
@@ -53,7 +53,7 @@ impl ContextManagement for InjectedContextManager {
     fn current_size(&self) -> ContextSize {
         ContextSize {
             current_tokens: 17,
-            max_tokens: 100,
+            max_tokens: 4096,
         }
     }
 }
@@ -70,9 +70,14 @@ async fn agent_context_behavior_can_be_injected_through_the_contract() {
     agent.respond(&[], "hello").await.unwrap();
 
     let plans = provider.plans.lock().unwrap();
+    assert!(
+        plans[0].request.messages[0]
+            .content
+            .contains("Reason -> Act -> Observe")
+    );
     assert_eq!(
-        plans[0].request.messages,
-        vec![Message::system("injected context")]
+        plans[0].request.messages[1],
+        Message::system("injected context")
     );
     assert_eq!(agent.context_size().current_tokens, 17);
 }

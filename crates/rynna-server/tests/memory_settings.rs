@@ -194,7 +194,8 @@ async fn saving_and_disabling_change_live_sync_and_stream_requests_and_survive_r
     );
     {
         let requests = model.0.lock().unwrap();
-        assert_eq!(requests[0].messages[0].content, "policy");
+        assert!(requests[0].messages[0].content.contains("\n\npolicy\n\n"));
+        assert!(!requests[0].messages[0].content.contains("Remembered fact"));
         assert_eq!(requests[0].messages[1].role, rynna_core::Role::User);
         assert!(requests[0].messages[1].content.contains("Remembered fact"));
     }
@@ -225,9 +226,18 @@ async fn saving_and_disabling_change_live_sync_and_stream_requests_and_survive_r
     request(&router, "POST", "/v1/respond", prompt, true).await;
     wait_calls(&calls, 4).await;
     assert_eq!(calls.lock().unwrap().len(), 4);
+    let requests = model.0.lock().unwrap();
     assert_eq!(
-        model.0.lock().unwrap().last().unwrap().messages[0].content,
-        "policy"
+        requests.last().unwrap().messages[0],
+        requests[0].messages[0]
+    );
+    assert!(
+        !requests
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| m.content.contains("Remembered fact"))
     );
     server.abort();
 }

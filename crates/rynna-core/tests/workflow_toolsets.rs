@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+mod common;
 use rynna_core::{
     Agent, AgentProfiles, Completion, CompletionRequest, Message, ModelProvider, Profile,
     ProviderError, ThresholdContextManager, Tool, ToolDefinition, ToolError,
@@ -12,6 +13,7 @@ struct Recorder(Mutex<Vec<CompletionRequest>>);
 #[async_trait]
 impl ModelProvider for Recorder {
     async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
+        common::assert_policy(&request);
         self.0.lock().unwrap().push(request);
         Ok(Completion::new(Message::assistant("Done")))
     }
@@ -53,11 +55,37 @@ async fn workflow_preflight_counts_only_enabled_toolsets() {
             .unwrap()
             .execute_workflow_step(&run, 64)
             .await;
-        let requests = provider.0.lock().unwrap();
         if disabled {
             assert_eq!(result.unwrap().content, "Done");
-            assert_eq!(requests.len(), 1);
-            assert!(requests[0].tools.is_empty());
+            {
+                let requests = provider.0.lock().unwrap();
+                assert_eq!(requests.len(), 1);
+                assert!(requests[0].tools.is_empty());
+            }
+            // Workflow helpers use the same policy once, with their captured role
+            // and without restoring the parent's disabled or delegation tools.
+            let mut run = run;
+            run.workflow.steps[0].executor = rynna_core::workflows::Executor::Subagent;
+            run.workflow.steps[0].helper = Some("reviewer".into());
+            run.helpers = vec![rynna_core::Subagent {
+                name: "reviewer".into(),
+                description: "Review".into(),
+                instructions: "Check the implementation".into(),
+            }];
+            profiles
+                .clone_agent("test")
+                .unwrap()
+                .execute_workflow_step(&run, 64)
+                .await
+                .unwrap();
+            let requests = provider.0.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert!(requests[1].tools.is_empty());
+            assert!(
+                requests[1].messages[0]
+                    .content
+                    .contains("Subagent role: reviewer\nCheck the implementation")
+            );
         } else {
             assert_eq!(
                 result
@@ -66,7 +94,7 @@ async fn workflow_preflight_counts_only_enabled_toolsets() {
                     .message,
                 "workflow context exceeds the model context allowance"
             );
-            assert!(requests.is_empty());
+            assert!(provider.0.lock().unwrap().is_empty());
         }
     }
 }
