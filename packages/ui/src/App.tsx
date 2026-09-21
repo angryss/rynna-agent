@@ -1268,6 +1268,8 @@ export function App({ client }: AppProps) {
                         open={message.expanded}
                         onToggle={(event) => {
                           const expanded = event.currentTarget.open;
+                          // Prop-driven toggles must not overwrite a queued stream update.
+                          if (expanded === message.expanded) return;
                           setMessages((current) =>
                             current.map((candidate, candidateIndex) =>
                               candidateIndex === index && candidate.role === 'thinking'
