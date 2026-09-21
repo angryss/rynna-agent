@@ -182,6 +182,16 @@ describe('HttpAgentClient', () => {
     );
   });
 
+  it('round trips YOLO booleans and rejects malformed mode values', async () => {
+    const profile = { name: 'work', providers: [{ provider: 'local', model: 'test' }], active_skills: [], mcp_servers: [], capabilities: [], default_project_directory: '.', projects: [], subagents: [], yolo: true };
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse(profile));
+    const client = new HttpAgentClient('/v1/respond', fetcher);
+    expect(await client.updateProfile('work', profile)).toEqual(profile);
+    expect(JSON.parse(fetcher.mock.calls[0]![1].body)).toEqual(profile);
+    fetcher.mockResolvedValue(jsonResponse({ ...profile, yolo: 'false' }));
+    await expect(client.updateProfile('work', profile)).rejects.toThrow('invalid profile data');
+  });
+
   it('creates updates and deletes profiles through the profiles API', async () => {
     const profile = {
       name: 'work',

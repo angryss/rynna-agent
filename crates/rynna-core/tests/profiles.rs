@@ -41,6 +41,7 @@ impl ModelProvider for ManagedProvider {
 fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
     (
         Profile {
+            yolo: false,
             name: name.to_owned(),
             providers: vec![ProfileProvider {
                 provider: "ollama".to_owned(),

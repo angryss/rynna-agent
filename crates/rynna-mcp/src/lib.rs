@@ -42,6 +42,13 @@ pub struct McpToolSource(pub McpSettings);
 
 #[async_trait]
 impl ToolSource for McpToolSource {
+    fn for_yolo(&self) -> Option<Arc<dyn ToolSource>> {
+        let mut settings = self.0.clone();
+        for server in settings.servers.values_mut() {
+            server.enabled = true;
+        }
+        Some(Arc::new(Self(settings)))
+    }
     fn replaces_code_search(&self) -> bool {
         self.0
             .servers

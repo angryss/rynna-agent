@@ -174,3 +174,44 @@ async fn changing_yolo_after_restart_blocks_workflow_resume() {
         assert_eq!(calls.load(Ordering::SeqCst), calls_before_resume);
     }
 }
+
+#[tokio::test]
+async fn yolo_workflow_ignores_cumulative_execution_limits() {
+    for yolo in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let host = Host::new(
+            profiles_with_yolo(true, calls.clone(), yolo),
+            None,
+            dir.path().into(),
+        );
+        let mut request = request();
+        request.limits.steps = 1;
+        request.limits.tool_calls = 1;
+        request.limits.active_seconds = 1;
+        let first = host.start(request.clone()).await.unwrap();
+        let run = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let r = host
+                    .read(first.id, "default", request.session_id)
+                    .await
+                    .unwrap();
+                if r.status != Status::Running {
+                    break r;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            run.status,
+            if yolo {
+                Status::Blocked
+            } else {
+                Status::BudgetExhausted
+            }
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), if yolo { 3 } else { 1 });
+    }
+}

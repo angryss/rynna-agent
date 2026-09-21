@@ -105,6 +105,7 @@ impl ModelProvider for Model {
 }
 fn profile(name: &str) -> Profile {
     Profile {
+        yolo: false,
         name: name.into(),
         providers: vec![],
         active_skills: vec![],
@@ -393,4 +394,45 @@ async fn code_search_plugin_alias_executes_remote_tool_and_missing_selection_fai
     let source = McpToolSource(config);
     assert!(!source.replaces_code_search());
     assert!(source.discover().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn yolo_discovers_configured_disabled_mcp_servers() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let app = Router::new()
+        .route("/mcp", post(mcp))
+        .with_state(calls.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let model = Arc::new(Model {
+        requests: Mutex::new(vec![]),
+        supported: true,
+    });
+    let mut profiles = AgentProfiles::new(
+        "work",
+        [(
+            profile("work"),
+            Agent::new(model.clone(), "policy").with_yolo(true),
+        )],
+    )
+    .unwrap();
+    let mut config = settings(McpTransport::StreamableHttp {
+        url,
+        bearer_token_env: None,
+    });
+    config.servers.get_mut("tools").unwrap().enabled = false;
+    profiles
+        .set_tool_source("work", Some(Arc::new(McpToolSource(config))))
+        .unwrap();
+    profiles.respond(None, &[], "use tools").await.unwrap();
+    assert_eq!(model.requests.lock().unwrap()[0].tools.len(), 2);
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request["method"] == "tools/call")
+    );
+    server.abort();
 }

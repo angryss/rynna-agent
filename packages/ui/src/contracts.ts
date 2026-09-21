@@ -65,6 +65,8 @@ export interface ProfileProvider {
 }
 
 export interface Profile {
+  /** Persisted preference; runtime catalogs include the effective CLI override. */
+  yolo?: boolean;
   disabled_toolsets?: ToolsetId[];
   name: string;
   providers: ProfileProvider[];

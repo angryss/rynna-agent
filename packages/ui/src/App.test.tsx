@@ -54,6 +54,56 @@ function workflowClient(overrides: Partial<AgentClient> = {}): AgentClient {
 }
 
 describe('App', () => {
+  it('saves YOLO from canonical data and preserves it through the profile editor', async () => {
+    const profile = testProfile('work', { providers: [{ provider: 'hidden', model: 'off', enabled: false }, { provider: 'work-provider', model: 'work-model' }], capabilities: ['opaque'], disabled_toolsets: ['commands'] });
+    let saved = profile;
+    const updateProfile = vi.fn().mockImplementation(async (_name, next) => { saved = next; return next; });
+    const listProfiles = vi.fn().mockImplementation(async () => ({ default_profile: 'work', provider_ids: [], configured_profiles: [saved], profiles: [{ ...saved, providers: [saved.providers[1]], yolo: true }] }));
+    const user = userEvent.setup();
+    render(<App client={{ respond: vi.fn(), updateProfile, listProfiles }} />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Toolsets' }));
+    expect(screen.getByText(/Restart without --yolo/)).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Enable YOLO' })).not.toBeChecked();
+    await user.click(screen.getByRole('checkbox', { name: 'Enable YOLO' }));
+    await user.click(screen.getByRole('button', { name: 'Save execution mode' }));
+    expect(updateProfile).toHaveBeenLastCalledWith('work', { ...profile, yolo: true });
+    await user.click(screen.getByRole('checkbox', { name: 'Enable YOLO' }));
+    await user.click(screen.getByRole('button', { name: 'Save execution mode' }));
+    expect(await screen.findByText(/Restart without --yolo/)).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: 'Commands' })).getByText('YOLO override')).toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: 'Enable YOLO' }));
+    await user.click(screen.getByRole('button', { name: 'Save execution mode' }));
+    await user.click(screen.getByRole('button', { name: 'Profiles' }));
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    expect(updateProfile).toHaveBeenLastCalledWith('work', expect.objectContaining({ yolo: true, disabled_toolsets: ['commands'], capabilities: ['opaque'], providers: expect.arrayContaining([expect.objectContaining({ provider: 'hidden', enabled: false })]) }));
+  });
+  it('keeps a delayed YOLO save and runtime refresh scoped to the original profile', async () => {
+    const profile = testProfile('work');
+    const personal = testProfile('personal');
+    let finish!: (profile: Profile) => void;
+    let saved = profile;
+    const updateProfile = vi.fn().mockImplementation(() => new Promise<Profile>(resolve => { finish = next => { saved = next; resolve(next); }; }));
+    const listProfiles = vi.fn().mockImplementation(async () => ({ default_profile: 'work', provider_ids: [], profiles: [saved, personal], configured_profiles: [saved, personal] }));
+    const user = userEvent.setup();
+    render(<App client={{ respond: vi.fn(), updateProfile, listProfiles }} />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Toolsets' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Enable YOLO' }));
+    await user.click(screen.getByRole('button', { name: 'Save execution mode' }));
+    await user.click(screen.getByRole('combobox', { name: 'Profile' }));
+    await user.click(screen.getByRole('option', { name: 'personal' }));
+    await act(async () => finish({ ...profile, yolo: true }));
+    expect(screen.getByRole('combobox', { name: 'Profile' })).toHaveValue('personal');
+    expect(screen.getByRole('checkbox', { name: 'Enable YOLO' })).not.toBeChecked();
+    expect(screen.queryByText('YOLO override')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('combobox', { name: 'Profile' }));
+    await user.keyboard('{ArrowDown}');
+    await user.click(screen.getByRole('option', { name: 'work' }));
+    expect(screen.getByRole('checkbox', { name: 'Enable YOLO' })).toBeChecked();
+    expect(within(screen.getByRole('article', { name: 'Commands' })).getByText('YOLO override')).toBeInTheDocument();
+  });
+
   it('prevents overlapping profile writes after leaving pending toolset settings', async () => {
     const profile = testProfile('work');
     const personal = testProfile('personal');
@@ -90,7 +140,7 @@ describe('App', () => {
     expect(updateProfile).toHaveBeenLastCalledWith('personal', { ...personal, disabled_toolsets: ['commands'] });
     await act(async () => finish({ ...profile, disabled_toolsets: ['file_operations'] }));
     expect(screen.getByRole('combobox', { name: 'Profile' })).toHaveValue('personal');
-    expect(within(screen.getByRole('article', { name: 'File Operations' })).getByText('Active')).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: 'File Operations' })).getByText('Ready · read-only')).toBeInTheDocument();
 
     await user.click(screen.getByRole('combobox', { name: 'Profile' }));
     await user.click(screen.getByRole('option', { name: 'work' }));
@@ -111,7 +161,7 @@ describe('App', () => {
     await user.click(await screen.findByRole('button', { name: 'Settings' }));
     await user.click(screen.getByRole('button', { name: 'Toolsets' }));
     const card = screen.getByRole('article', { name: 'File Operations' });
-    expect(within(card).getByText('Active')).toBeInTheDocument();
+    expect(within(card).getByText('Ready · read-only')).toBeInTheDocument();
     expect(within(card).getByText('read, write, patch, search')).toBeInTheDocument();
     expect(within(card).getByText('edit_file')).toBeInTheDocument();
     expect(within(card).queryByText('patch')).not.toBeInTheDocument();

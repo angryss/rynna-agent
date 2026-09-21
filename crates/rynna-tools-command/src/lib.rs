@@ -41,6 +41,7 @@ pub struct CommandConfig {
 
 pub struct CommandTool {
     workflow_policy: String,
+    yolo: bool,
     aliases: Vec<String>,
     #[cfg(unix)]
     working_directory: Arc<File>,
@@ -53,6 +54,29 @@ pub struct CommandTool {
 }
 
 impl CommandTool {
+    /// Explicit unrestricted execution with existing process credentials, no prompts.
+    pub fn new_yolo(working_directory: PathBuf) -> Result<Self, CommandConfigError> {
+        #[cfg(not(unix))]
+        {
+            let _ = working_directory;
+            Err(CommandConfigError::UnsupportedPlatform)
+        }
+        #[cfg(unix)]
+        {
+            let directory = open_working_directory(&working_directory)?;
+            Ok(Self {
+                workflow_policy: format!("yolo:{:?}", working_directory.canonicalize()),
+                yolo: true,
+                aliases: Vec::new(),
+                working_directory: Arc::new(directory),
+                programs: BTreeMap::new(),
+                _program_directory: tempfile::tempdir()
+                    .map_err(CommandConfigError::ProgramDirectory)?,
+                timeout: Duration::from_secs(MAX_TIMEOUT_SECONDS),
+                max_output_bytes: usize::MAX - 1,
+            })
+        }
+    }
     pub fn new(config: CommandConfig) -> Result<Self, CommandConfigError> {
         if config.timeout_seconds == 0
             || config.max_output_bytes == 0
@@ -103,6 +127,7 @@ impl CommandTool {
 
             Ok(Self {
                 aliases,
+                yolo: false,
                 workflow_policy,
                 working_directory: Arc::new(working_directory),
                 programs,
@@ -245,6 +270,13 @@ impl Tool for CommandTool {
         self.workflow_policy.clone()
     }
     fn definition(&self) -> ToolDefinition {
+        if self.yolo {
+            return ToolDefinition::new(
+                "run_command",
+                "YOLO: run any executable (PATH name or absolute path) with arguments in the session project, with inherited environment and existing OS credentials. For shell syntax explicitly run a shell. No permission prompts, stdin is closed.",
+                json!({"type":"object","properties":{"program":{"type":"string"},"arguments":{"type":"array","items":{"type":"string"},"maxItems":MAX_ARGUMENTS}},"required":["program"],"additionalProperties":false}),
+            );
+        }
         ToolDefinition::new(
             "run_command",
             format!(
@@ -301,22 +333,29 @@ impl CommandTool {
         &self,
         arguments: CommandArguments,
     ) -> Result<serde_json::Value, ToolError> {
-        let executable = self.programs.get(&arguments.program).ok_or_else(|| {
-            ToolError::new(format!(
-                "program alias `{}` is not allowed by command policy",
-                arguments.program
-            ))
-        })?;
+        let requested = PathBuf::from(&arguments.program);
+        let executable = if self.yolo {
+            &requested
+        } else {
+            self.programs.get(&arguments.program).ok_or_else(|| {
+                ToolError::new(format!(
+                    "program alias `{}` is not allowed by command policy",
+                    arguments.program
+                ))
+            })?
+        };
         let working_directory = self.working_directory.try_clone().map_err(|error| {
             ToolError::new(format!("failed to prepare working directory: {error}"))
         })?;
         let mut command = CommandWrap::with_new(executable, |command| {
             command
                 .args(&arguments.arguments)
-                .env_clear()
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            if !self.yolo {
+                command.env_clear();
+            }
         });
         command
             .wrap(ProcessGroup::leader())
@@ -348,6 +387,7 @@ impl CommandTool {
             }
         };
         let timeout = self.timeout;
+        let yolo = self.yolo;
         let max_output_bytes = self.max_output_bytes;
         let (cancel_sender, mut cancel_receiver) = oneshot::channel();
         let mut cancellation = ExecutionCancellation::new(cancel_sender);
@@ -368,7 +408,7 @@ impl CommandTool {
                 tokio::pin!(execution);
                 tokio::select! {
                     result = &mut execution => ExecutionOutcome::Completed(result),
-                    _ = tokio::time::sleep(timeout) => ExecutionOutcome::TimedOut,
+                    _ = tokio::time::sleep(timeout), if !yolo => ExecutionOutcome::TimedOut,
                     _ = &mut cancel_receiver => ExecutionOutcome::Cancelled,
                 }
             };

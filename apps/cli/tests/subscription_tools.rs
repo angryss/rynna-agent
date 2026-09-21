@@ -45,30 +45,56 @@ async fn subscription_and_fallback_preserve_opt_in_capabilities_and_disabled_too
         .join("tests/fixtures/claude_profile_tools.py");
     // Test both explicit Claude selection and API -> Claude profile-default fallback.
     for fallback in [false, true] {
-        for (capabilities, disabled, prompt, expected) in [
-            ("[]", "[]", "list", "no-tools"),
-            ("[files]", "[file_operations]", "list", "code_search"),
+        for (capabilities, disabled, prompt, expected, yolo) in [
+            (
+                "[]",
+                "[]",
+                "list",
+                "code_search,file_info,find_files,host_info,list_directory,read_file,search_files",
+                false,
+            ),
+            (
+                "[files]",
+                "[file_operations]",
+                "list",
+                "code_search,host_info",
+                false,
+            ),
             (
                 "[files, host]",
                 "[file_operations, code_search]",
                 "list",
-                "run_command",
+                "host_info,run_command",
+                false,
             ),
             (
                 "[files, host]",
                 "[commands, file_operations]",
                 "list",
-                "code_search",
+                "code_search,host_info",
+                false,
             ),
-            ("[host]", "[]", "inspect", "Linux"),
+            ("[]", "[]", "read-default", "default-file-fixture", false),
+            ("[]", "[]", "search-default", "sample.txt", false),
+            ("[]", "[]", "write-default", "unknown tool", false),
+            ("[host]", "[]", "inspect", "Linux", false),
             (
                 "[host]",
                 "[]",
                 "inspect-denied",
                 "not allowed by command policy",
+                false,
+            ),
+            (
+                "[]",
+                "[file_operations, code_search, commands, skills, subagents]",
+                "yolo-command",
+                "yolo-native-result",
+                true,
             ),
         ] {
             let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("sample.txt"), "default-file-fixture").unwrap();
             let config = dir.path().join("config.yaml");
             let first = if fallback {
                 "      - provider: api\n        model: unavailable\n"
@@ -94,6 +120,7 @@ profiles:
         model: sonnet
     capabilities: {}
     disabled_toolsets: {}
+    yolo: {}
 capabilities:
   files:
     kind: filesystem
@@ -112,6 +139,7 @@ capabilities:
                     first,
                     capabilities,
                     disabled,
+                    false,
                     dir.path().display(),
                     dir.path().display()
                 ),
@@ -119,7 +147,9 @@ capabilities:
             .unwrap();
             let output = Command::cargo_bin("rynna")
                 .unwrap()
+                .current_dir(dir.path())
                 .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
+                .args(if yolo { vec!["--yolo"] } else { vec![] })
                 .args([
                     "--config",
                     config.to_str().unwrap(),
@@ -129,16 +159,21 @@ capabilities:
                     "--prompt",
                     prompt,
                 ])
-                .assert()
-                .success()
-                .get_output()
-                .stdout
-                .clone();
+                .assert();
+            if prompt == "write-default" {
+                output.failure().stderr(predicates::str::contains(
+                    "invalid or unavailable tool decision",
+                ));
+                assert!(!dir.path().join("never-created").exists());
+                continue;
+            }
+            let output = output.success().get_output().stdout.clone();
             let output = String::from_utf8(output).unwrap();
             assert!(
                 output.contains(expected),
                 "fallback={fallback}, {capabilities}, {disabled}: {output}"
             );
+            assert!(!dir.path().join("never-created").exists());
             if prompt == "list" {
                 assert_eq!(output.trim(), expected);
             }

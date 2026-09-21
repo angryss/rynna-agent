@@ -196,6 +196,11 @@ async fn resolve(
 }
 #[async_trait]
 impl WorkflowExecutor for ProfileExecutor {
+    async fn bypass_execution_limits(&self, run: &Run) -> bool {
+        resolve(&self.profiles, &run.start)
+            .await
+            .is_ok_and(|(agent, _)| agent.yolo_enabled())
+    }
     async fn preflight(&self, run: &Run) -> Result<(), String> {
         let (agent, metadata) = resolve(&self.profiles, &run.start).await?;
         if agent.workflow_fingerprint(&metadata)? != run.fingerprint {

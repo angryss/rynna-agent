@@ -1010,9 +1010,7 @@ impl ProfileCatalog {
             .and_then(|name| file.profiles.get(name))
             .map(|p| p.workflows.clone())
             .unwrap_or_default();
-        let yolo = original_name
-            .and_then(|name| file.profiles.get(name))
-            .is_some_and(|existing| existing.yolo);
+        let yolo = profile.yolo;
         let system_prompt = original_name
             .and_then(|name| file.profiles.get(name))
             .and_then(|existing| existing.system_prompt.clone());
@@ -1193,6 +1191,7 @@ impl ProfileCatalog {
                 .unwrap_or_else(|| Path::new("."))
                 .to_owned(),
             profile: Profile {
+                yolo: profile.yolo,
                 disabled_toolsets: profile.disabled_toolsets.clone(),
                 name: name.to_owned(),
                 providers: profile.providers.clone(),

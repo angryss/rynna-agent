@@ -4115,6 +4115,7 @@ dependencies = [
  "rynna-memory-hindsight",
  "rynna-provider-anthropic",
  "rynna-provider-openai",
+ "rynna-runtime",
  "rynna-server",
  "rynna-skills",
  "rynna-tools-command",
@@ -4173,6 +4174,7 @@ dependencies = [
  "rynna-memory-hindsight",
  "rynna-provider-anthropic",
  "rynna-provider-openai",
+ "rynna-runtime",
  "rynna-skills",
  "rynna-tools-command",
  "rynna-tools-filesystem",
@@ -4254,6 +4256,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rynna-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "rynna-config",
+ "rynna-core",
+ "rynna-tools-command",
+ "rynna-tools-filesystem",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "rynna-server"
 version = "0.1.0"
 dependencies = [
@@ -4267,6 +4283,7 @@ dependencies = [
  "rynna-memory-hindsight",
  "rynna-provider-anthropic",
  "rynna-provider-openai",
+ "rynna-runtime",
  "rynna-workflows",
  "serde",
  "serde_json",

@@ -92,6 +92,7 @@ fn test_app() -> axum::Router {
 fn profile(name: &str, reply: &'static str) -> (Profile, Agent) {
     (
         Profile {
+            yolo: false,
             name: name.to_owned(),
             providers: vec![ProfileProvider {
                 provider: format!("{name}-provider"),
@@ -995,6 +996,7 @@ profiles:
     let catalog = ProfileCatalog::load(path).unwrap();
     let provider = Arc::new(CountingProvider(AtomicUsize::new(0)));
     let runtime_profile = Profile {
+        yolo: false,
         name: "alpha".to_owned(),
         providers: vec![ProfileProvider {
             provider: "ollama".to_owned(),
@@ -1076,6 +1078,7 @@ profiles:
     .unwrap();
     let catalog = ProfileCatalog::load(path).unwrap();
     let runtime_profile = Profile {
+        yolo: false,
         name: "alpha".to_owned(),
         providers: vec![ProfileProvider {
             provider: "ollama".to_owned(),
@@ -1372,6 +1375,7 @@ async fn non_streaming_response_releases_profiles_lock_while_provider_is_pending
         release: Notify::new(),
     });
     let runtime_profile = Profile {
+        yolo: false,
         name: "alpha".to_owned(),
         providers: vec![ProfileProvider {
             provider: "test".to_owned(),

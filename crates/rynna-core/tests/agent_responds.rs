@@ -958,7 +958,7 @@ async fn yolo_instructions_are_opt_in_and_can_be_disabled() {
     assert!(
         requests[1].messages[0]
             .content
-            .contains("Respect configured tool access restrictions")
+            .contains("YOLO bypasses Rynna tool permissions")
     );
     assert_eq!(requests[2].messages[0], requests[0].messages[0]);
 }

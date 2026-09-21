@@ -55,6 +55,7 @@ struct AppState {
 
 pub fn router(agent: Agent) -> Router {
     let profile = Profile {
+        yolo: false,
         name: "default".to_owned(),
         providers: vec![ProfileProvider {
             provider: "configured".to_owned(),
@@ -315,6 +316,7 @@ async fn require_loopback_provider_admin(
 
 pub fn router_with_web(agent: Agent, web_dir: impl AsRef<Path>) -> Router {
     let profile = Profile {
+        yolo: false,
         name: "default".to_owned(),
         providers: vec![ProfileProvider {
             provider: "configured".to_owned(),
@@ -524,6 +526,7 @@ async fn update_saved_profile(
     let mut catalog = catalog_store(&state)?.lock().await;
     let original = catalog.resolve(&name).map_err(catalog_error)?.profile;
     if profile.name != name
+        || profile.yolo != original.yolo
         || profile.projects != original.projects
         || profile.default_project_directory != original.default_project_directory
     {
@@ -533,6 +536,27 @@ async fn update_saved_profile(
             .await
             .map_err(workflows::error)?;
     }
+    let updated_native = if profile.yolo != original.yolo {
+        let mut resolved = catalog.resolve(&name).map_err(catalog_error)?;
+        resolved.yolo = profile.yolo
+            || state
+                .profiles
+                .lock()
+                .await
+                .clone_agent(&name)
+                .is_some_and(|a| a.yolo_is_forced());
+        resolved.profile = profile.clone();
+        Some((
+            resolved.yolo,
+            rynna_runtime::native_tools(&resolved).map_err(|message| ApiError {
+                status: StatusCode::BAD_REQUEST,
+                code: "invalid_tools",
+                message,
+            })?,
+        ))
+    } else {
+        None
+    };
     let saved = if let Some(provider_settings) = &state.provider_settings {
         let mut provider_settings = provider_settings.lock().await;
         rynna_config::profile_update::update_profile_with_settings(
@@ -550,6 +574,11 @@ async fn update_saved_profile(
     if saved.name == name {
         let mut runtime = state.profiles.lock().await;
         if runtime.contains(&name) {
+            if let Some((yolo, tools)) = updated_native {
+                runtime
+                    .set_native_tools(&name, yolo, tools)
+                    .map_err(runtime_profile_error)?;
+            }
             runtime
                 .set_project_configuration(
                     &name,

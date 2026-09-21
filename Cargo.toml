@@ -3,6 +3,7 @@ members = [
   "apps/cli",
   "apps/desktop/src-tauri",
   "crates/rynna-config",
+  "crates/rynna-runtime",
   "crates/rynna-core",
   "crates/rynna-workflows",
   "crates/rynna-mcp",

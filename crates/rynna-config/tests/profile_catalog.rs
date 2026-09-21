@@ -1181,6 +1181,7 @@ fn provider_settings_support_a_bare_relative_filename() {
 
 fn editable_profile(name: &str, model: &str) -> Profile {
     Profile {
+        yolo: false,
         name: name.to_owned(),
         providers: vec![ProfileProvider {
             provider: "ollama".to_owned(),
@@ -1981,4 +1982,9 @@ profiles:
     profile.name = "renamed".to_owned();
     catalog.update_profile("default", profile).unwrap();
     assert!(catalog.resolve("renamed").unwrap().yolo);
+    let mut value = serde_yaml_ng::to_value(catalog.resolve("renamed").unwrap().profile).unwrap();
+    value["yolo"] = serde_yaml_ng::Value::Bool(false);
+    let edited: rynna_core::Profile = serde_yaml_ng::from_value(value).unwrap();
+    catalog.update_profile("renamed", edited).unwrap();
+    assert!(!catalog.resolve("renamed").unwrap().yolo);
 }

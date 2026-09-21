@@ -20,7 +20,17 @@ request = json.loads(text)
 names = sorted(tool["name"] for tool in request["tools"])
 messages = request["messages"]
 prompt = next(m["content"] for m in reversed(messages) if m["role"] == "user")
-if prompt in {"inspect", "inspect-denied"} and messages[-1]["role"] != "tool":
+if prompt in {"read-default", "search-default", "write-default"} and messages[-1]["role"] != "tool":
+    operation, arguments = {
+        "read-default": ("read_file", {"path":"sample.txt"}),
+        "search-default": ("search_files", {"path":".", "pattern":"default-file-fixture"}),
+        "write-default": ("write_file", {"path":"never-created", "content":"must not write"}),
+    }[prompt]
+    output = {"content":"", "tool_calls":[{"id":"default-1","name":operation,"arguments":arguments}]}
+elif prompt == "yolo-command" and messages[-1]["role"] != "tool":
+    assert "write_file" in names and "run_command" in names and "read_file" in names
+    output = {"content":"", "tool_calls":[{"id":"yolo-1","name":"run_command","arguments":{"program":"/bin/sh","arguments":["-c","printf yolo-native-result"]}}]}
+elif prompt in {"inspect", "inspect-denied"} and messages[-1]["role"] != "tool":
     output = {"content": "", "tool_calls": [{"id": "inspect-1", "name": "run_command", "arguments": {"program": "inspect_os" if prompt == "inspect" else "unauthorized_shell"}}]}
 else:
     output = {"content": messages[-1]["content"] if messages[-1]["role"] == "tool" else ",".join(names), "tool_calls": []}
