@@ -75,6 +75,53 @@ impl FileSystemToolset {
         })
     }
 
+    /// Search independently rooted capabilities with one shared result/output budget.
+    /// Each supplied root grants authority; no common ancestor is opened or indexed.
+    pub fn code_search_for_roots(
+        config: FileSystemConfig,
+        roots: &[PathBuf],
+    ) -> Result<Arc<dyn Tool>, FileSystemError> {
+        let mut filesystems = Vec::new();
+        for root in roots {
+            let mut config = config.clone();
+            config.root = root.clone();
+            filesystems.push(Arc::new(FileSystem::new(config)?));
+        }
+        if filesystems.is_empty() {
+            filesystems.push(Arc::new(FileSystem::new(config)?));
+        }
+        // A selected ancestor already includes its descendants (including nested repos).
+        let selected: Vec<_> = filesystems.iter().map(|fs| fs.root.clone()).collect();
+        let mut seen = std::collections::BTreeSet::new();
+        filesystems.retain(|fs| {
+            !selected
+                .iter()
+                .any(|root| root != &fs.root && fs.root.starts_with(root))
+                && seen.insert(fs.root.clone())
+        });
+        Ok(Arc::new(code_search::CodeSearchTool::with_roots(
+            filesystems,
+        )))
+    }
+
+    /// Tool schemas without opening or validating a workspace root.
+    pub fn definitions() -> Vec<ToolDefinition> {
+        [
+            Operation::ReadFile,
+            Operation::WriteFile,
+            Operation::EditFile,
+            Operation::ListDirectory,
+            Operation::FindFiles,
+            Operation::SearchFiles,
+            Operation::CreateDirectory,
+            Operation::FileInfo,
+        ]
+        .into_iter()
+        .map(|operation| operation.definition())
+        .chain(std::iter::once(code_search::definition()))
+        .collect()
+    }
+
     pub fn tools(&self) -> Vec<Arc<dyn Tool>> {
         [
             Operation::ReadFile,
@@ -809,13 +856,9 @@ struct SearchArguments {
     include_glob: Option<String>,
 }
 
-#[async_trait]
-impl Tool for FileSystemTool {
-    fn workflow_policy(&self) -> String {
-        format!("{:?}:{:?}", self.filesystem.root, self.filesystem.config)
-    }
+impl Operation {
     fn definition(&self) -> ToolDefinition {
-        match self.operation {
+        match self {
             Operation::ReadFile => path_tool_definition(
                 "read_file",
                 "Read a UTF-8 text file within the configured workspace",
@@ -888,6 +931,16 @@ impl Tool for FileSystemTool {
                 path_tool_definition("file_info", "Inspect a workspace file or directory")
             }
         }
+    }
+}
+
+#[async_trait]
+impl Tool for FileSystemTool {
+    fn workflow_policy(&self) -> String {
+        format!("{:?}:{:?}", self.filesystem.root, self.filesystem.config)
+    }
+    fn definition(&self) -> ToolDefinition {
+        self.operation.definition()
     }
 
     async fn execute(&self, arguments: Value) -> Result<Value, ToolError> {

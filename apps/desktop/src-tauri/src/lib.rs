@@ -1291,6 +1291,23 @@ fn configured_profiles(
             "profile name `{OPENAI_ACCOUNT_PROFILE}` is reserved for the desktop OpenAI account"
         ));
     }
+    let openai_provider: Arc<dyn ModelProvider> =
+        Arc::new(CodexAppServerProvider::with_selectable_home(
+            codex_program(),
+            configured_codex_home()?,
+            credential_selection,
+            None,
+        ));
+    configured.push(compose_openai_account_agent(openai_provider)?);
+
+    AgentProfiles::new(default_profile, configured).map_err(|error| error.to_string())
+}
+
+/// Compose the runtime-only account profile without accessing account credentials.
+#[doc(hidden)]
+pub fn compose_openai_account_agent(
+    openai_provider: Arc<dyn ModelProvider>,
+) -> Result<(Profile, Agent), String> {
     let openai_profile = Profile {
         yolo: false,
         name: OPENAI_ACCOUNT_PROFILE.to_owned(),
@@ -1309,20 +1326,17 @@ fn configured_profiles(
         projects: Vec::new(),
         subagents: Vec::new(),
     };
-    let openai_provider: Arc<dyn ModelProvider> =
-        Arc::new(CodexAppServerProvider::with_selectable_home(
-            codex_program(),
-            configured_codex_home()?,
-            credential_selection,
-            None,
-        ));
-    let openai_agent = Agent::new(
-        openai_provider,
-        "You are Rynna, a careful and capable AI software agent.",
-    );
-    configured.push((openai_profile, openai_agent));
-
-    AgentProfiles::new(default_profile, configured).map_err(|error| error.to_string())
+    let resolved = ResolvedProfile {
+        skills_directory: ".".into(),
+        profile: openai_profile,
+        // The account provider is runtime-only, not resolved from the catalog.
+        providers: Vec::new(),
+        system_prompt: "You are Rynna, a careful and capable AI software agent.".into(),
+        yolo: false,
+        capabilities: Vec::new(),
+    };
+    let openai_agent = compose_agent(&resolved, openai_provider)?;
+    Ok((resolved.profile, openai_agent))
 }
 
 fn openai_account_reuses_existing_credentials(

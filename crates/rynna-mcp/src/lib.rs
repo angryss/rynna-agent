@@ -45,6 +45,12 @@ impl ToolSource for McpToolSource {
     fn for_yolo(&self) -> Option<Arc<dyn ToolSource>> {
         let mut settings = self.0.clone();
         for server in settings.servers.values_mut() {
+            // YOLO enables tools, not replacement aliases: retain only the already
+            // active code_search selection. Newly enabled servers stay namespaced;
+            // if none was active, the built-in remains selected. Edit only this snapshot.
+            if !server.enabled {
+                server.code_search_tool = None;
+            }
             server.enabled = true;
         }
         Some(Arc::new(Self(settings)))

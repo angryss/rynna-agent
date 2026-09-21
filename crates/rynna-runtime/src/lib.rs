@@ -22,12 +22,9 @@ pub fn native_tools(profile: &ResolvedProfile) -> Result<Vec<Arc<dyn Tool>>, Str
         config.max_traversal_files = usize::MAX - 1;
         config.max_traversal_depth = usize::MAX - 1;
         config.max_search_bytes = usize::MAX - 1;
-        for tool in FileSystemToolset::new(config.clone())
-            .map_err(|e| e.to_string())?
-            .tools()
-        {
+        for definition in FileSystemToolset::definitions() {
             tools.push(Arc::new(ProjectFileTool {
-                definition: tool.definition(),
+                definition,
                 config: config.clone(),
                 directories: vec![config.root.clone()],
                 yolo: true,
@@ -93,18 +90,15 @@ pub fn native_tools(profile: &ResolvedProfile) -> Result<Vec<Arc<dyn Tool>>, Str
     {
         let mut config = FileSystemConfig::new(&profile.profile.default_project_directory);
         config.read_only = true;
-        for tool in FileSystemToolset::new(config.clone())
-            .map_err(|e| e.to_string())?
-            .tools()
-        {
+        for definition in FileSystemToolset::definitions() {
             if matches!(
-                tool.definition().name.as_str(),
+                definition.name.as_str(),
                 "write_file" | "edit_file" | "create_directory"
             ) {
                 continue;
             }
             tools.push(Arc::new(ProjectFileTool {
-                definition: tool.definition(),
+                definition,
                 config: config.clone(),
                 directories: vec![config.root.clone()],
                 yolo: false,
@@ -120,7 +114,7 @@ struct ProjectFileTool {
     config: FileSystemConfig,
     directories: Vec<PathBuf>,
     yolo: bool,
-    cache: Mutex<BTreeMap<PathBuf, Arc<dyn Tool>>>,
+    cache: Mutex<BTreeMap<Vec<PathBuf>, Arc<dyn Tool>>>,
 }
 #[async_trait]
 impl Tool for ProjectFileTool {
@@ -140,12 +134,40 @@ impl Tool for ProjectFileTool {
         }))
     }
     async fn execute(&self, mut arguments: Value) -> Result<Value, ToolError> {
+        // Only the default search scope spans all selected repositories. Explicit
+        // paths retain the normal sandbox / YOLO ambient-path behavior below.
+        let search_project = self.definition.name == "code_search"
+            && (arguments.get("path").is_none()
+                || arguments.get("path").and_then(Value::as_str) == Some("."));
         let mut config = self.config.clone();
         config.root = self
             .directories
             .first()
             .cloned()
             .unwrap_or_else(|| config.root.clone());
+        if search_project {
+            // Selected roots are capabilities, not query filters on a broader index.
+            let roots = if self.directories.is_empty() {
+                vec![config.root.clone()]
+            } else {
+                self.directories.clone()
+            };
+            let tool = {
+                let mut cache = self
+                    .cache
+                    .lock()
+                    .map_err(|_| ToolError::new("project tool cache unavailable"))?;
+                if let Some(tool) = cache.get(&roots) {
+                    tool.clone()
+                } else {
+                    let tool = FileSystemToolset::code_search_for_roots(config, &roots)
+                        .map_err(|e| ToolError::new(e.to_string()))?;
+                    cache.insert(roots, tool.clone());
+                    tool
+                }
+            };
+            return tool.execute(arguments).await;
+        }
         if self.yolo {
             // Resolve the requested path (including symlinks) using ambient authority.
             // The native adapter retains argument and optimistic-write validation.
@@ -194,17 +216,17 @@ impl Tool for ProjectFileTool {
                 .cache
                 .lock()
                 .map_err(|_| ToolError::new("project tool cache unavailable"))?;
-            if let Some(tool) = cache.get(&config.root) {
+            let key = vec![config.root.clone()];
+            if let Some(tool) = cache.get(&key) {
                 tool.clone()
             } else {
-                let root = config.root.clone();
                 let tool = FileSystemToolset::new(config)
                     .map_err(|e| ToolError::new(e.to_string()))?
                     .tools()
                     .into_iter()
                     .find(|t| t.definition().name == self.definition.name)
                     .unwrap();
-                cache.insert(root, tool.clone());
+                cache.insert(key, tool.clone());
                 tool
             }
         };
@@ -224,6 +246,114 @@ fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, ToolError> {
         .ok_or_else(|| ToolError::new("invalid path"))?;
     Ok(resolve_existing_ancestor(parent)?.join(name))
 }
+#[cfg(test)]
+mod project_search_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shared_git_ancestor_does_not_cache_unselected_content() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".git")).unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        let outside = root.path().join("outside");
+        for directory in [&first, &second, &outside] {
+            std::fs::create_dir(directory).unwrap();
+        }
+        for directory in [&first, &second] {
+            std::fs::write(directory.join("item.rs"), "needle selected content").unwrap();
+        }
+        let forbidden = "needle UNSELECTED_SIBLING_PRIVATE_CONTENT";
+        std::fs::write(outside.join("private.rs"), forbidden).unwrap();
+        std::fs::write(root.path().join("parent.rs"), forbidden).unwrap();
+        let mut config = FileSystemConfig::new(&first);
+        config.read_only = true;
+        config.code_search_cache = Some(cache.path().to_owned());
+        let search = ProjectFileTool {
+            definition: FileSystemToolset::definitions()
+                .into_iter()
+                .find(|definition| definition.name == "code_search")
+                .unwrap(),
+            config,
+            directories: vec![first.clone(), second.clone()],
+            yolo: false,
+            cache: Mutex::new(BTreeMap::new()),
+        };
+        for (iteration, arguments) in [
+            json!({"query":"needle"}),
+            json!({"query":"needle", "path":"."}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let result = search.execute(arguments).await.unwrap();
+            assert_eq!(result["matches"].as_array().unwrap().len(), 2, "{result}");
+            assert_eq!(
+                result["index"]["files_read"],
+                if iteration == 0 { 2 } else { 0 },
+                "{result}"
+            );
+            for directory in [&first, &second] {
+                assert!(
+                    result["matches"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|hit| hit["repository"] == directory.to_str().unwrap()
+                            && hit["repository_path"] == "item.rs")
+                );
+            }
+            let mut databases = 0;
+            for entry in std::fs::read_dir(cache.path()).unwrap() {
+                let bytes = std::fs::read(entry.unwrap().path().join("index.sqlite3")).unwrap();
+                assert!(
+                    !bytes
+                        .windows(forbidden.len())
+                        .any(|window| window == forbidden.as_bytes()),
+                    "unselected sibling/parent content persisted in code-search cache"
+                );
+                assert!(
+                    bytes
+                        .windows(b"needle selected content".len())
+                        .any(|window| window == b"needle selected content")
+                );
+                databases += 1;
+            }
+            assert_eq!(databases, 2);
+            assert_eq!(result["index"]["files_checked"], 2, "{result}");
+        }
+        let bounded = search
+            .execute(json!({"query":"needle", "max_results":1}))
+            .await
+            .unwrap();
+        assert_eq!(bounded["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(bounded["repository_count"], 2);
+        assert_eq!(bounded["truncated"], true);
+        let explicit = search
+            .execute(json!({"query":"needle", "path":second}))
+            .await
+            .unwrap();
+        assert_eq!(explicit["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            explicit["matches"][0]["repository"],
+            second.to_str().unwrap()
+        );
+        assert!(
+            search
+                .execute(json!({"query":"needle", "path":outside}))
+                .await
+                .is_err()
+        );
+        assert!(
+            search
+                .execute(json!({"query":"needle", "path":"../outside"}))
+                .await
+                .is_err()
+        );
+    }
+}
+
 struct ProjectCommandTool {
     directory: PathBuf,
 }

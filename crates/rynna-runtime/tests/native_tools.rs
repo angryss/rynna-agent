@@ -9,6 +9,105 @@ fn tool(tools: &[Arc<dyn Tool>], name: &str) -> Arc<dyn Tool> {
         .unwrap_or_else(|| panic!("missing {name}"))
         .clone()
 }
+#[tokio::test]
+async fn default_code_search_searches_all_selected_repositories() {
+    let root = tempfile::tempdir().unwrap();
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    let outside = root.path().join("outside");
+    for directory in [&first, &second, &outside] {
+        std::fs::create_dir_all(directory.join(".git")).unwrap();
+        std::fs::write(directory.join("item.rs"), "fn needle() {}").unwrap();
+        std::fs::write(directory.join(".env"), "needle restricted").unwrap();
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.join("item.rs"), second.join("linked.rs")).unwrap();
+    for yolo in [false, true] {
+        let mut profile = ProfileCatalog::built_in().resolve("default").unwrap();
+        profile.yolo = yolo;
+        profile.profile.default_project_directory = first.clone();
+        let tools = rynna_runtime::native_tools(&profile).unwrap();
+        let search = tool(&tools, "code_search");
+        let scoped = search
+            .for_project(&[first.clone(), second.clone()])
+            .unwrap();
+        for arguments in [
+            json!({"query":"needle"}),
+            json!({"query":"needle", "path":"."}),
+        ] {
+            let result = scoped.execute(arguments).await.unwrap();
+            let text = result.to_string();
+            let matches = result["matches"].as_array().unwrap();
+            for directory in [&first, &second] {
+                assert!(
+                    matches
+                        .iter()
+                        .any(|hit| hit["repository"] == directory.to_str().unwrap()
+                            && hit["repository_path"] == "item.rs"),
+                    "yolo={yolo}: {result}"
+                );
+            }
+            assert!(!text.contains(outside.to_str().unwrap()), "{result}");
+            if !yolo {
+                assert!(!text.contains("restricted"), "{result}");
+                assert!(!text.contains("linked.rs"), "{result}");
+            }
+        }
+        let result = search.execute(json!({"query":"needle"})).await.unwrap();
+        assert!(!result.to_string().contains(second.to_str().unwrap()));
+        if !yolo {
+            for path in [
+                outside.to_string_lossy().into_owned(),
+                "../outside".to_owned(),
+            ] {
+                assert!(
+                    scoped
+                        .execute(json!({"query":"needle", "path":path}))
+                        .await
+                        .is_err()
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn stale_inactive_profile_defaults_are_lazy() {
+    let parent = tempfile::tempdir().unwrap();
+    let selected = tempfile::tempdir().unwrap();
+    std::fs::write(selected.path().join("item.txt"), "selected").unwrap();
+    for yolo in [false, true] {
+        let mut profile = ProfileCatalog::built_in().resolve("default").unwrap();
+        profile.yolo = yolo;
+        profile.profile.default_project_directory = parent.path().join("unmounted");
+        let tools = rynna_runtime::native_tools(&profile)
+            .unwrap_or_else(|error| panic!("inactive profile yolo={yolo}: {error}"));
+        let read = tool(&tools, "read_file");
+        assert!(read.execute(json!({"path":"item.txt"})).await.is_err());
+        assert!(
+            tool(&tools, "code_search")
+                .execute(json!({"query":"selected"}))
+                .await
+                .is_err()
+        );
+        let scoped = read.for_project(&[selected.path().into()]).unwrap();
+        assert!(
+            scoped
+                .execute(json!({"path":"item.txt"}))
+                .await
+                .unwrap()
+                .to_string()
+                .contains("selected")
+        );
+        if !yolo {
+            assert!(!tools.iter().any(|tool| matches!(
+                tool.definition().name.as_str(),
+                "write_file" | "edit_file" | "create_directory" | "run_command"
+            )));
+        }
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn yolo_injects_native_write_and_arbitrary_commands_without_capabilities() {
