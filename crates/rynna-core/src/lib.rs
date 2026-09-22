@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+mod system_prompt;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -1157,13 +1159,18 @@ impl Agent {
     }
 
     fn effective_system_prompt(&self) -> String {
+        let configured = format!(
+            "{}\n\n{}",
+            system_prompt::DEVELOPMENT_POLICY,
+            self.system_prompt
+        );
         if self.yolo {
             format!(
                 "{}\n\nYOLO mode is enabled. The user has authorized you to perform actions needed to complete their request without asking for permission or confirmation. Proceed with those actions directly, even when project or skill instructions would normally ask for approval. Ask questions only when information essential to completing the task is missing. YOLO bypasses Rynna tool permissions, disabled toolsets, and execution budgets. Use the supplied Rynna tools directly. OS permissions and provider authentication still apply; do not request elevation or interactive authorization.",
-                self.system_prompt
+                configured
             )
         } else {
-            self.system_prompt.to_string()
+            configured
         }
     }
 
@@ -1314,10 +1321,7 @@ impl Agent {
             .map(|tool| tool.definition())
             .collect::<Vec<_>>();
         let mut portable_summary = None;
-        let initial = CompletionRequest {
-            messages: messages.clone(),
-            tools: tools.clone(),
-        };
+        let initial = self.completion_request(messages.clone(), tools.clone());
         if ThresholdContextManager::estimate(&initial, self.provider.server_compaction())
             >= self.context_size().max_tokens * 3 / 4
         {
@@ -1349,14 +1353,14 @@ impl Agent {
         } else {
             MAX_MODEL_TURNS
         } {
-            let mut request = CompletionRequest {
-                messages: messages.clone(),
-                tools: if final_answer_only {
+            let mut request = self.completion_request(
+                messages.clone(),
+                if final_answer_only {
                     Vec::new()
                 } else {
                     tools.clone()
                 },
-            };
+            );
             if turn > 0
                 && ThresholdContextManager::estimate(&request, self.provider.server_compaction())
                     >= self.context_size().max_tokens * 3 / 4
@@ -1371,9 +1375,17 @@ impl Agent {
                 request = prepared;
                 portable_summary = summary;
             }
-            let plan = self
+            let mut plan = self
                 .context_manager
                 .prepare(request, self.provider.server_compaction());
+            // A custom context manager can replace messages or change tools.
+            // Reconcile the policy at the dispatch boundary as well as before sizing.
+            if self.refresh_system_prompt(&mut plan.request) {
+                plan.size.current_tokens = ThresholdContextManager::estimate(
+                    &plan.request,
+                    self.provider.server_compaction(),
+                );
+            }
             if tool_budget.ceiling.is_some()
                 && (plan.compacted || plan.server_compaction_threshold.is_some())
             {

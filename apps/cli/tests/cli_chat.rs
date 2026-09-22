@@ -4,6 +4,9 @@ use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+mod common;
+use common::has_history;
+
 #[tokio::test(flavor = "multi_thread")]
 async fn chat_removes_terminal_control_characters() {
     let server = MockServer::start().await;
@@ -45,13 +48,16 @@ async fn chat_keeps_history_until_the_user_quits() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .and(body_partial_json(json!({
-            "model": "test-model",
-            "messages": [
-                {"role": "system", "content": "You are Rynna."},
-                {"role": "user", "content": "Hello"}
-            ]
-        })))
+        .and(body_partial_json(json!({"model": "test-model"})))
+        .and(|request: &wiremock::Request| {
+            has_history(
+                request,
+                json!([
+                    {"role": "user", "content": "Hello"}
+                ]),
+                "You are Rynna.",
+            )
+        })
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "choices": [{
                 "message": {"role": "assistant", "content": "Ready."}
@@ -62,15 +68,18 @@ async fn chat_keeps_history_until_the_user_quits() {
         .await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .and(body_partial_json(json!({
-            "model": "test-model",
-            "messages": [
-                {"role": "system", "content": "You are Rynna."},
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Ready."},
-                {"role": "user", "content": "Next"}
-            ]
-        })))
+        .and(body_partial_json(json!({"model": "test-model"})))
+        .and(|request: &wiremock::Request| {
+            has_history(
+                request,
+                json!([
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Ready."},
+                    {"role": "user", "content": "Next"}
+                ]),
+                "You are Rynna.",
+            )
+        })
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "choices": [{
                 "message": {"role": "assistant", "content": "Done."}
@@ -152,9 +161,26 @@ profiles:
         .mount(&server)
         .await;
     Mock::given(path("/v1/chat/completions"))
-        .and(body_partial_json(json!({"model":"second-model","reasoning_effort":"high","messages":[{"role":"system","content":"You are Rynna, a careful and capable AI software agent."},{"role":"user","content":"Hello"},{"role":"assistant","content":"first answer"},{"role":"user","content":"Continue"}]})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"choices":[{"message":{"role":"assistant","content":"second answer"}}]})))
-        .expect(1).mount(&server).await;
+        .and(body_partial_json(
+            json!({"model":"second-model","reasoning_effort":"high"}),
+        ))
+        .and(|request: &wiremock::Request| {
+            has_history(
+                request,
+                json!([
+                    {"role":"user","content":"Hello"},
+                    {"role":"assistant","content":"first answer"},
+                    {"role":"user","content":"Continue"}
+                ]),
+                "You are Rynna, a careful and capable AI software agent.",
+            )
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"choices":[{"message":{"role":"assistant","content":"second answer"}}]}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
     Command::cargo_bin("rynna")
         .unwrap()
         .args(["--config", config.to_str().unwrap(), "chat"])

@@ -82,7 +82,7 @@ if turn["method"] == "thread/inject_items":
     reply(turn, {})
     turn = read()
     reply(turn, {"turn": {"id": "u"}})
-    if p["baseInstructions"].startswith("Reused call test"):
+    if "Reused call test" in p["baseInstructions"].splitlines():
         send({"id": "rpc-2", "method": "item/tool/call", "params": {
             "threadId": "t", "turnId": "u", "callId": "call-1",
             "tool": "inspect_host", "arguments": {"kind": "os"},

@@ -7,6 +7,7 @@ use rynna_core::{
     ProviderContext, ProviderError, Tool, ToolCall, ToolDefinition, ToolError,
 };
 use serde_json::{Value, json};
+mod common;
 
 #[derive(Default)]
 struct RecordingProvider {
@@ -190,6 +191,11 @@ async fn respond_recovers_when_a_tool_turn_ends_with_an_empty_answer() {
     assert_eq!(reply, Message::assistant("The project is Rynna."));
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
+    for request in requests.iter() {
+        common::assert_policy(request);
+    }
+    assert_eq!(requests[0].tools.len(), 1);
+    assert!(requests[2].tools.is_empty());
     assert_eq!(
         requests[2].messages.last().unwrap().content,
         "Provide a concise, non-empty final answer to the original user request using the tool results above. Do not call another tool."
@@ -208,7 +214,8 @@ struct EmptyThenAnswerProvider {
 
 #[async_trait]
 impl ModelProvider for EmptyThenAnswerProvider {
-    async fn complete(&self, _request: CompletionRequest) -> Result<Completion, ProviderError> {
+    async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
+        common::assert_policy(&request);
         if self.requests.fetch_add(1, Ordering::SeqCst) == 0 {
             Ok(Completion::new(Message::assistant(" \n")))
         } else {
@@ -282,10 +289,16 @@ async fn respond_adds_system_history_and_user_messages_in_order() {
         .unwrap();
 
     assert_eq!(reply, Message::assistant("Follow the thread."));
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests[0].messages[0].role, rynna_core::Role::System);
+    assert!(
+        requests[0].messages[0]
+            .content
+            .contains("\n\nYou are Rynna.\n\n")
+    );
     assert_eq!(
-        provider.requests.lock().unwrap()[0].messages,
+        requests[0].messages[1..],
         vec![
-            Message::system("You are Rynna."),
             Message::user("We need a plan."),
             Message::assistant("What are the constraints?"),
             Message::user("It must run locally."),
@@ -949,7 +962,16 @@ async fn yolo_instructions_are_opt_in_and_can_be_disabled() {
         .await
         .unwrap();
     let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests[0].messages[0], Message::system("You are Rynna."));
+    assert!(
+        requests[0].messages[0]
+            .content
+            .contains("\n\nYou are Rynna.\n\n")
+    );
+    assert!(
+        !requests[0].messages[0]
+            .content
+            .contains("YOLO mode is enabled")
+    );
     assert!(
         requests[1].messages[0]
             .content

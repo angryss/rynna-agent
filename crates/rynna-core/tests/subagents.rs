@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+mod common;
 use rynna_core::{
     Agent, AgentProfiles, Completion, CompletionDelta, CompletionRequest, Message, ModelProvider,
     Profile, ProviderError, Subagent, Tool, ToolCall, ToolDefinition, ToolError, ToolSource,
@@ -20,6 +21,7 @@ impl ModelProvider for Provider {
         self.tools_supported
     }
     async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
+        common::assert_policy(&request);
         self.requests.lock().unwrap().push(request.clone());
         let child = request.messages[0].content.contains("Subagent role:");
         if child {

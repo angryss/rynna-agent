@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+mod common;
 use rynna_core::*;
 use std::sync::{Arc, Mutex};
 
@@ -10,9 +11,10 @@ struct Recorder {
 #[async_trait]
 impl ModelProvider for Recorder {
     async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
-        let summarizing = request.messages[0]
-            .content
-            .starts_with("Summarize conversation reference");
+        common::assert_policy(&request);
+        let summarizing = request.messages.iter().any(|m| {
+            m.role == Role::System && m.content.starts_with("Summarize conversation reference")
+        });
         self.requests.lock().unwrap().push(request);
         if summarizing && self.fail_summary {
             return Err(ProviderError::new("summary unavailable"));
@@ -36,6 +38,53 @@ fn history() -> Vec<Message> {
 }
 
 #[tokio::test]
+async fn rolling_summary_fits_composed_policy_and_unicode_excerpts() {
+    for (limit, policy) in [
+        (1024, "policy".to_owned()),
+        (4096, "configuration ".repeat(400)),
+    ] {
+        let provider = Arc::new(Recorder::default());
+        let agent = Agent::new(provider.clone(), policy).with_context_manager(Arc::new(
+            ThresholdContextManager::new(limit, limit * 7 / 8).unwrap(),
+        ));
+        let original = vec![
+            Message::user("目標🙂\n\"".repeat(3000)),
+            Message::assistant("working"),
+        ];
+        let compacted = agent.compact_history(&original).await.unwrap();
+        assert!(matches!(
+            compacted[1].provider_context,
+            Some(ProviderContext::ConversationSummary(_))
+        ));
+        let requests = provider.requests.lock().unwrap();
+        assert!(requests.len() > 1);
+        let mut excerpts = String::new();
+        for request in requests.iter() {
+            assert!(ThresholdContextManager::estimate(request, None) < limit * 3 / 4);
+            let data: serde_json::Value =
+                serde_json::from_str(&request.messages.last().unwrap().content).unwrap();
+            excerpts.push_str(data["excerpt"].as_str().unwrap());
+        }
+        assert_eq!(excerpts, format!("User: {}", original[0].content));
+    }
+}
+
+#[tokio::test]
+async fn summary_rejects_fixed_policy_overhead_without_provider_calls() {
+    let provider = Arc::new(Recorder::default());
+    let agent = Agent::new(provider.clone(), "configuration ".repeat(1000))
+        .with_context_manager(Arc::new(ThresholdContextManager::new(1024, 896).unwrap()));
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        agent.compact_history(&history()),
+    )
+    .await
+    .expect("fixed overhead should fail promptly");
+    assert!(matches!(result, Err(AgentError::ContextLimit)));
+    assert!(provider.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn manual_summary_is_portable_preserves_transcript_and_system_privileges() {
     let provider = Arc::new(Recorder::default());
     let agent = agent(provider.clone());
@@ -55,7 +104,13 @@ async fn manual_summary_is_portable_preserves_transcript_and_system_privileges()
     ));
     let requests = provider.requests.lock().unwrap();
     let request = requests.last().unwrap();
-    assert_eq!(request.messages[0], Message::system("New system policy"));
+    assert_eq!(request.messages[0].role, Role::System);
+    assert!(
+        request.messages[0]
+            .content
+            .contains("\n\nNew system policy\n\n")
+    );
+    assert!(!request.messages[0].content.contains("Goal: fix auth"));
     assert_eq!(request.messages[1].role, Role::User);
     assert!(request.messages[1].content.contains("Goal: fix auth"));
     assert_eq!(request.messages.last().unwrap().content, "continue");
@@ -251,9 +306,9 @@ async fn tool_loop_compaction_retains_goal_without_orphaned_tool_results() {
     #[async_trait]
     impl ModelProvider for Provider {
         async fn complete(&self, request: CompletionRequest) -> Result<Completion, ProviderError> {
-            let summary = request.messages[0]
-                .content
-                .starts_with("Summarize conversation reference");
+            let summary = request.messages.iter().any(|m| {
+                m.role == Role::System && m.content.starts_with("Summarize conversation reference")
+            });
             self.requests.lock().unwrap().push(request);
             if summary {
                 return Ok(Completion::new(Message::assistant(

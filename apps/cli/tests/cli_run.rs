@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+mod common;
 use predicates::prelude::*;
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, body_string_contains, method, path};
@@ -121,13 +122,16 @@ async fn run_emits_one_json_response_for_unattended_use() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .and(body_partial_json(json!({
-            "model": "test-model",
-            "messages": [
-                {"role": "system", "content": "You are Rynna."},
-                {"role": "user", "content": "Do the work"}
-            ]
-        })))
+        .and(body_partial_json(json!({"model": "test-model"})))
+        .and(|request: &wiremock::Request| {
+            common::has_history(
+                request,
+                json!([
+                    {"role": "user", "content": "Do the work"}
+                ]),
+                "You are Rynna.",
+            )
+        })
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "choices": [{
                 "message": {"role": "assistant", "content": "Automated."}
@@ -158,13 +162,16 @@ async fn run_reads_the_prompt_from_stdin_when_the_flag_is_omitted() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .and(body_partial_json(json!({
-            "model": "test-model",
-            "messages": [
-                {"role": "system", "content": "You are Rynna."},
-                {"role": "user", "content": "Prompt from stdin"}
-            ]
-        })))
+        .and(body_partial_json(json!({"model": "test-model"})))
+        .and(|request: &wiremock::Request| {
+            common::has_history(
+                request,
+                json!([
+                    {"role": "user", "content": "Prompt from stdin"}
+                ]),
+                "You are Rynna.",
+            )
+        })
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "choices": [{
                 "message": {"role": "assistant", "content": "Read it."}
@@ -218,13 +225,16 @@ async fn run_uses_the_selected_profiles_provider_model_and_system_prompt() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .and(wiremock::matchers::body_partial_json(json!({
-            "model": "work-model",
-            "messages": [
-                {"role": "system", "content": "Work profile policy"},
-                {"role": "user", "content": "Use my profile"}
-            ]
-        })))
+        .and(body_partial_json(json!({"model": "work-model"})))
+        .and(|request: &wiremock::Request| {
+            common::has_history(
+                request,
+                json!([
+                    {"role": "user", "content": "Use my profile"}
+                ]),
+                "Work profile policy",
+            )
+        })
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "choices": [{
                 "message": {"role": "assistant", "content": "Profile selected."}
