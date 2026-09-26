@@ -10,7 +10,7 @@ import { WorkflowPanel, workflowTerminal } from './components/workflow-panel';
 import type { WorkflowRun } from './contracts';
 import { ModelSelector } from './components/model-selector';
 import { McpSettingsPanel } from './components/mcp-settings';
-import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { MemorySettingsPanel } from './components/memory-settings';
 import { ThemeToggle } from './components/theme-toggle';
@@ -1027,7 +1027,15 @@ export function App({ client }: AppProps) {
     setPending(true);
     setMessages([...displayHistory, { role: 'user', content: prompt }]);
 
-    let activity = [...toolCalls];
+    const previousHistory = conversationHistory(previousMessages);
+    const lastAnswer = previousHistory.map(message => message.role).lastIndexOf('assistant');
+    const previousActivity = toolCalls.map(call => call.message_index === undefined
+      ? { ...call, message_index: lastAnswer < 0 ? previousHistory.length : lastAnswer } : call);
+    // A retry replaces the final turn. Keep its activity with the replacement
+    // answer, not with an earlier answer in the truncated request history.
+    let activity = previousActivity.map(call => previousHistory.length > history.length
+      && call.message_index! > history.length + 1 ? { ...call, message_index: history.length + 1 } : call);
+    setToolCalls(activity);
     const firstCall = activity.length;
     function settleTools(status: ToolCallActivity['status']) {
       activity = activity.map(call => call.status === 'running'
@@ -1070,7 +1078,7 @@ export function App({ client }: AppProps) {
         if (!controller.signal.aborted && activeResponse.current === controller && sessionId.current === currentSessionId) {
           if (delta.kind === 'tool_started') {
             if (!activity.slice(firstCall).some(call => call.id === delta.call.id)) {
-              activity = [...activity, { ...delta.call, started_at: Date.now(), status: 'running' }];
+              activity = [...activity, { ...delta.call, started_at: Date.now(), status: 'running', message_index: history.length + 1 }];
               setToolCalls(activity);
             }
             return;
@@ -1096,6 +1104,10 @@ export function App({ client }: AppProps) {
         return;
       }
       settleTools('error');
+      // Failure restores the original turn and its tool positions. New failed
+      // activity belongs after that restored history, not before its last user.
+      activity = [...previousActivity, ...activity.slice(firstCall).map(call => ({ ...call, message_index: previousHistory.length }))];
+      setToolCalls(activity);
       if (activity.length > firstCall && !isSessionDeleted(currentSessionId)) saveMessages(conversationHistory(previousMessages));
       setError(requestError instanceof Error ? requestError.message : 'Rynna could not complete the request');
       setMessages(previousMessages);
@@ -1125,6 +1137,20 @@ export function App({ client }: AppProps) {
       conversation.scrollTop = conversation.scrollHeight;
     }
   }, [messages, toolCalls, displayedSessionId, view]);
+
+  // Persisted positions exclude transient thinking blocks. Older sessions did
+  // not record a turn, so keep their activity together before the last answer.
+  const messagePositions = messages.flatMap((message, index) => message.role === 'thinking' ? [] : [index]);
+  const legacyPosition = messages.map(message => message.role).lastIndexOf('assistant');
+  const callsByPosition = new Map<number, ToolCallActivity[]>();
+  for (const call of toolCalls) {
+    const position = call.message_index === undefined
+      ? (legacyPosition < 0 ? messages.length : legacyPosition)
+      : (messagePositions[call.message_index] ?? messages.length);
+    const calls = callsByPosition.get(position) ?? [];
+    calls.push(call);
+    callsByPosition.set(position, calls);
+  }
 
   return (
     <main className="app-shell">
@@ -1260,8 +1286,9 @@ export function App({ client }: AppProps) {
                     <p>Ask Rynna to investigate, plan, or execute a development task.</p>
                   </div>
                 ) : (
-                  messages.map((message, index) =>
-                    message.role === 'thinking' ? (
+                  messages.map((message, index) => <Fragment key={`${message.role}-${index}`}>
+                    <ToolCallList calls={callsByPosition.get(index) ?? []} />
+                    {message.role === 'thinking' ? (
                       <details
                         className="thinking-block"
                         key={`thinking-${index}`}
@@ -1287,10 +1314,11 @@ export function App({ client }: AppProps) {
                         <p className="message-role sr-only">{message.role === 'assistant' ? 'Rynna' : 'You'}</p>
                         <p>{message.content}</p>
                       </article>
-                    ),
+                    )}
+                    </Fragment>,
                   )
                 )}
-                <ToolCallList calls={toolCalls} />
+                <ToolCallList calls={callsByPosition.get(messages.length) ?? []} />
               </div>
 
               {storageFailure ? (

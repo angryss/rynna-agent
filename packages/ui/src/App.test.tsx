@@ -2328,11 +2328,147 @@ it('restores compact tool calls across sessions and reload without sending metad
   expect(screen.getByText('Tool calls (1)')).toBeInTheDocument();
   await user.type(screen.getByLabelText('Message Rynna'), 'Again');
   await user.click(screen.getByRole('button', { name: 'Send' }));
-  expect(await screen.findByText('Tool calls (2)')).toBeInTheDocument();
+  expect(await screen.findAllByText('Tool calls (1)')).toHaveLength(2);
   expect(respond.mock.calls[1]![0].history).toEqual([
     { role: 'user', content: 'Inspect tools' }, { role: 'assistant', content: 'Done.' },
   ]);
   expect(readSessions()[0]!.tool_calls).toHaveLength(2);
+});
+
+it.each([false, true])('places each turn’s tools before its answer while streaming and after reload (thinking: %s)', async thinking => {
+  let emit!: NonNullable<Parameters<AgentClient['respond']>[1]>;
+  let finish!: (value: Awaited<ReturnType<AgentClient['respond']>>) => void;
+  const respond = vi.fn<AgentClient['respond']>((_request, onDelta) => {
+    emit = onDelta!;
+    return new Promise(resolve => { finish = resolve; });
+  });
+  const user = userEvent.setup();
+  const mounted = render(<App client={{ respond }} />);
+  const transcript = () => Array.from(screen.getByRole('log').children).filter(node => !node.classList.contains('thinking-block')).map(node =>
+    node.classList.contains('tool-call-list') ? 'tools' : node.querySelector('p:last-child')?.textContent);
+  for (const [prompt, answer] of [['Inspect host', 'Linux'], ['Inspect again', 'Still Linux']]) {
+    await user.type(screen.getByLabelText('Message Rynna'), prompt!);
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    act(() => {
+      if (thinking) emit({ kind: 'thinking', content: 'Checking the host' });
+      emit({ kind: 'tool_started', call: { id: 'same', name: 'host_info', arguments: {} } });
+    });
+    expect(transcript().slice(-2)).toEqual([prompt, 'tools']);
+    act(() => {
+      emit({ kind: 'tool_finished', id: 'same' });
+      emit({ kind: 'content', content: answer! });
+    });
+    expect(transcript().slice(-3)).toEqual([prompt, 'tools', answer]);
+    await act(async () => finish({ message: { role: 'assistant', content: answer! } }));
+    expect(transcript().slice(-3)).toEqual([prompt, 'tools', answer]);
+  }
+  const expected = ['Inspect host', 'tools', 'Linux', 'Inspect again', 'tools', 'Still Linux'];
+  expect(transcript()).toEqual(expected);
+  mounted.unmount();
+  render(<App client={{ respond }} />);
+  await user.click(screen.getByRole('button', { name: 'Inspect host' }));
+  expect(transcript()).toEqual(expected);
+});
+
+it('keeps legacy tool activity with the saved answer on a follow-up turn', async () => {
+  writeSessions([savedSession('Legacy tools', {
+    profile: '',
+    messages: [{ role: 'user', content: 'Old prompt' }, { role: 'assistant', content: 'Old answer' }],
+    tool_calls: [{ id: 'old', name: 'host_info', arguments: {}, started_at: 1, status: 'completed' }],
+  })]);
+  const user = userEvent.setup();
+  render(<App client={{ respond: vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'New answer' } }) }} />);
+  await user.click(screen.getByRole('button', { name: 'Legacy tools' }));
+  const beforeOldAnswer = () => expect(screen.getByRole('region', { name: 'Tool calls' })
+    .compareDocumentPosition(screen.getByText('Old answer')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  beforeOldAnswer();
+  await user.type(screen.getByLabelText('Message Rynna'), 'New prompt');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  await screen.findByText('New answer');
+  beforeOldAnswer();
+});
+
+it.each([
+  [false, false], [true, false], [false, true], [true, true],
+])('keeps legacy /retry tools in their turn and after reload (multiple: %s, failure: %s)', async (multiple, failure) => {
+  const earlier = multiple ? [{ role: 'user' as const, content: 'First prompt' }, { role: 'assistant' as const, content: 'First answer' }] : [];
+  const original = [...earlier, { role: 'user' as const, content: 'Old prompt' }, { role: 'assistant' as const, content: 'Old answer' }];
+  writeSessions([savedSession('Legacy retry', {
+    profile: '', messages: original,
+    tool_calls: [{ id: 'old', name: 'host_info', arguments: {}, started_at: 1, status: 'completed' }],
+  })]);
+  const respond = vi.fn<AgentClient['respond']>(async (_request, emit) => {
+    emit?.({ kind: 'tool_started', call: { id: 'retry', name: 'retry_tool', arguments: {} } });
+    if (failure) throw new Error('Retry failed');
+    return { message: { role: 'assistant', content: 'Replacement answer' } };
+  });
+  const user = userEvent.setup();
+  const mounted = render(<App client={{ respond }} />);
+  await user.click(screen.getByRole('button', { name: 'Legacy retry' }));
+  const transcript = () => Array.from(screen.getByRole('log').children).map(node =>
+    node.classList.contains('tool-call-list') ? 'tools' : node.querySelector('p:last-child')?.textContent);
+  await user.type(screen.getByLabelText('Message Rynna'), '/retry');
+  await user.keyboard('{Enter}');
+  await screen.findByText(failure ? 'Retry failed' : 'Replacement answer');
+  const expected = [...earlier.map(message => message.content), 'Old prompt', 'tools',
+    failure ? 'Old answer' : 'Replacement answer', ...(failure ? ['tools'] : [])];
+  expect(transcript()).toEqual(expected);
+  expect(respond.mock.calls[0]![0].history).toEqual(earlier);
+  expect(readSessions()[0]!.messages).toEqual(failure ? original : [...earlier,
+    { role: 'user', content: 'Old prompt' }, { role: 'assistant', content: 'Replacement answer' }]);
+  expect(readSessions()[0]!.tool_calls).toEqual([
+    expect.objectContaining({ id: 'old', message_index: earlier.length + 1 }),
+    expect.objectContaining({ id: 'retry', message_index: failure ? original.length : earlier.length + 1 }),
+  ]);
+  mounted.unmount();
+  render(<App client={{ respond }} />);
+  await user.click(screen.getByRole('button', { name: 'Legacy retry' }));
+  expect(transcript()).toEqual(expected);
+});
+
+it.each([false, true])('keeps stopped tools before a follow-up and after reload (partial answer: %s)', async partial => {
+  const respond = vi.fn<AgentClient['respond']>()
+    .mockImplementationOnce((_request, emit, signal) => {
+      emit?.({ kind: 'tool_started', call: { id: 'stopped', name: 'host_info', arguments: {} } });
+      if (partial) emit?.({ kind: 'content', content: 'Partial answer' });
+      return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new DOMException('Stopped', 'AbortError'))));
+    })
+    .mockResolvedValue({ message: { role: 'assistant', content: 'Follow-up answer' } });
+  const user = userEvent.setup();
+  const mounted = render(<App client={{ respond }} />);
+  const transcript = () => Array.from(screen.getByRole('log').children).map(node =>
+    node.classList.contains('tool-call-list') ? 'tools' : node.querySelector('p:last-child')?.textContent);
+  await user.type(screen.getByLabelText('Message Rynna'), 'Stop this');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  await user.click(screen.getByRole('button', { name: 'Stop' }));
+  await screen.findByText('Response stopped.');
+  await user.type(screen.getByLabelText('Message Rynna'), 'Follow up');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  await screen.findByText('Follow-up answer');
+  const expected = ['Stop this', 'tools', ...(partial ? ['Partial answer'] : []), 'Follow up', 'Follow-up answer'];
+  expect(transcript()).toEqual(expected);
+  mounted.unmount();
+  render(<App client={{ respond }} />);
+  await user.click(screen.getByRole('button', { name: 'Stop this' }));
+  expect(transcript()).toEqual(expected);
+});
+
+it('keeps failed tool activity before the next prompt when the failed turn is rolled back', async () => {
+  const respond = vi.fn<AgentClient['respond']>()
+    .mockImplementationOnce(async (_request, emit) => {
+      emit?.({ kind: 'tool_started', call: { id: 'failed', name: 'host_info', arguments: {} } });
+      throw new Error('Offline');
+    })
+    .mockResolvedValue({ message: { role: 'assistant', content: 'Recovered' } });
+  const user = userEvent.setup();
+  render(<App client={{ respond }} />);
+  await user.type(screen.getByLabelText('Message Rynna'), 'Retry this');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  await screen.findByText('Offline');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  await screen.findByText('Recovered');
+  expect(screen.getByRole('region', { name: 'Tool calls' })
+    .compareDocumentPosition(within(screen.getByRole('log')).getByText('Retry this')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 it.each(['finish', 'error', 'stop', 'done'] as const)('retains compact tool activity on %s outside model history', async ending => {
