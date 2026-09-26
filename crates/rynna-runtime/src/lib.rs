@@ -12,7 +12,7 @@ use std::{
 };
 
 pub fn native_tools(profile: &ResolvedProfile) -> Result<Vec<Arc<dyn Tool>>, String> {
-    let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(HostInfo)];
+    let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     if profile.yolo {
         let mut config = FileSystemConfig::new(&profile.profile.default_project_directory);
         config.denied_patterns.clear();
@@ -384,6 +384,3 @@ impl Tool for ProjectCommandTool {
             .await
     }
 }
-
-mod host_info;
-use host_info::HostInfo;

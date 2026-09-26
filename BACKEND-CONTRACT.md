@@ -10,10 +10,11 @@
 
 With no explicit filesystem capability, every composed profile receives:
 
-- `host_info`: OS, architecture and live process working directory; no shell or credential inspection.
 - `read_file`, `file_info`, `list_directory`, `find_files`, `search_files`, `code_search`: read-only native access to the session's selected project, or the profile default directory / process cwd.
 
 Relative paths use the project's starting directory. Absolute paths in another configured project directory are allowed; arbitrary outside paths, parent traversal, symlinks and default secret-deny patterns remain blocked. Selecting a different project creates a request-local binding, not a global directory change. Default writes and commands are **not advertised**. Explicit filesystem/command capabilities preserve their existing restrictions; toolset switches can hide them.
+
+OS inspection uses `run_command` under the existing command permissions; no host-inspection tool or command capability is granted by default.
 
 There is no general per-call permission-approval broker in this repository. Normal mode cannot promise an approval dialog or automatically grant write/terminal access. The existing setup path is a named filesystem capability with `read_only: false`, or a named command capability with its explicit executable map, selected in the profile. Capability changes still follow the existing configuration/restart behavior. This change does not claim to replace that setup with an interactive approval system.
 

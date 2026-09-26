@@ -70,7 +70,7 @@ export function ToolsetSettings({ client, profile, runtimeProfile, onSaved }: { 
       <Button className="justify-self-start" type="submit" disabled={saving || !client.updateProfile || yolo === (profile.yolo ?? false)}>{saving ? 'Saving execution mode…' : 'Save execution mode'}</Button>
     </form>
     {runtimeProfile?.yolo && !profile.yolo ? <p role="note">Runtime still reports YOLO despite the saved normal-mode preference. Restart without --yolo to remove a CLI override.</p> : null}
-    <p>host_info is available by default. With no capabilities configured, read/search use the selected project (or profile default directory / process cwd). Writes and commands are not available by default. Toolset switches are preferences, not grants. A tool-capable model is required; MCP servers are managed in MCP settings.</p>
+    <p>OS inspection uses run_command under existing command permissions. With no capabilities configured, read/search use the selected project (or profile default directory / process cwd). Writes and commands are not available by default. Toolset switches are preferences, not grants. A tool-capable model is required; MCP servers are managed in MCP settings.</p>
     {profile.capabilities.length > 0 ? <p>Capability names do not identify their permissions. Native tool readiness needs backend verification; no write or command access is assumed.</p> : null}
     <div className="grid gap-4 sm:grid-cols-2">
       {toolsets.map(group => <article aria-label={group.title} key={group.id} className="rounded-xl border border-border bg-card p-5 shadow-sm">

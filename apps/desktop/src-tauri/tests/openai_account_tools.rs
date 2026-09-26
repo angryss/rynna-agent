@@ -18,19 +18,19 @@ impl ModelProvider for NativeProbe {
             return Ok(Completion::new(Message::assistant(&result.content)));
         }
         let names: Vec<_> = request.tools.iter().map(|t| t.name.as_str()).collect();
-        for name in [
-            "host_info",
-            "read_file",
-            "list_directory",
-            "search_files",
-            "code_search",
-        ] {
+        for name in ["read_file", "list_directory", "search_files", "code_search"] {
             assert!(
                 names.contains(&name),
                 "account profile missing {name}: {names:?}"
             );
         }
-        for name in ["run_command", "write_file", "edit_file", "create_directory"] {
+        for name in [
+            "host_info",
+            "run_command",
+            "write_file",
+            "edit_file",
+            "create_directory",
+        ] {
             assert!(
                 !names.contains(&name),
                 "account profile unexpectedly grants {name}"
@@ -50,7 +50,6 @@ async fn runtime_only_openai_account_executes_shared_native_defaults() {
     std::fs::write(directory.path().join("sample.txt"), "account native read").unwrap();
     std::fs::write(directory.path().join(".env"), "synthetic protected data").unwrap();
     for (tool, arguments) in [
-        ("host_info", json!({})),
         ("read_file", json!({"path":"sample.txt"})),
         ("read_file", json!({"path":".env"})),
     ] {
@@ -75,14 +74,6 @@ async fn runtime_only_openai_account_executes_shared_native_defaults() {
         .unwrap();
         let result: Value = serde_json::from_str(&response.message.content).unwrap();
         match (tool, arguments["path"].as_str()) {
-            ("host_info", _) => {
-                assert_eq!(result["os"], std::env::consts::OS);
-                assert_eq!(result["architecture"], std::env::consts::ARCH);
-                assert_eq!(
-                    result["working_directory"],
-                    json!(std::env::current_dir().unwrap())
-                );
-            }
             (_, Some("sample.txt")) => assert_eq!(result["content"], "account native read"),
             (_, Some(".env")) => {
                 assert!(

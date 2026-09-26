@@ -824,7 +824,7 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
-    async fn default_tools_read_search_host_but_do_not_write() {
+    async fn default_tools_read_search_but_do_not_write_or_run_commands() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("sample.txt"), "native fixture").unwrap();
         let mut profile = rynna_config::ProfileCatalog::built_in()
@@ -854,14 +854,6 @@ mod tests {
                 .unwrap()
                 .to_string()
                 .contains("sample.txt")
-        );
-        let host = tools
-            .iter()
-            .find(|t| t.definition().name == "host_info")
-            .expect("default host_info");
-        assert_eq!(
-            host.execute(serde_json::json!({})).await.unwrap()["os"],
-            std::env::consts::OS
         );
         assert!(
             !tools

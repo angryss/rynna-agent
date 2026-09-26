@@ -1677,8 +1677,7 @@ impl AgentProfiles {
             .ok_or_else(|| ProfileError::UnknownProfile(profile.to_owned()))?;
         let mut updated = (*agent.tools).clone();
         updated.retain(|name, _| {
-            !(name == "host_info"
-                || toolsets::ToolsetId::FileOperations.contains(name)
+            !(toolsets::ToolsetId::FileOperations.contains(name)
                 || toolsets::ToolsetId::CodeSearch.contains(name)
                 || toolsets::ToolsetId::Commands.contains(name))
         });

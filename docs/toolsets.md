@@ -2,7 +2,7 @@
 
 Open **Settings → Toolsets**, select a profile, and choose **Configure** on a card. Clear or select **Enable**, then save. Web and desktop use the same profile settings and show the saved state; a failed save leaves the draft open and does not report success.
 
-Toolsets group agent-invokable tools. In normal mode they are restrictive switches, not grants: enabling a group does not authorize writes or host programs, install skills, or create helpers. Project-scoped read/search tools and read-only `host_info` are available by default without explicit capabilities. Other tools depend on actual configuration. A saved enabled switch alone must not be interpreted as an available executable tool.
+Toolsets group agent-invokable tools. In normal mode they are restrictive switches, not grants: enabling a group does not authorize writes or host programs, install skills, or create helpers. Project-scoped read/search tools are available by default without explicit capabilities. Other tools depend on actual configuration. A saved enabled switch alone must not be interpreted as an available executable tool.
 
 | ID | Group | Tools |
 | --- | --- | --- |
@@ -31,7 +31,7 @@ CLI chat, CLI run, HTTP, desktop, and workflows share enforcement in `rynna-core
 
 ## YOLO override
 
-`Profile.yolo: true` or CLI `--yolo` bypasses these switches, native capability restrictions and execution budgets. Saved switches remain normal-mode preferences; show the effective YOLO override rather than claiming that a disabled group is blocked. No missing integration/helper/credential is created. The built-in `host_info` tool is always read-only and is independent of the Commands group. See the [complete permission contract](../BACKEND-CONTRACT.md).
+`Profile.yolo: true` or CLI `--yolo` bypasses these switches, native capability restrictions and execution budgets. Saved switches remain normal-mode preferences; show the effective YOLO override rather than claiming that a disabled group is blocked. No missing integration/helper/credential is created. OS inspection uses `run_command`, governed by existing command permissions and the Commands group in normal mode. See the [complete permission contract](../BACKEND-CONTRACT.md).
 
 ## Normal-mode enforcement
 

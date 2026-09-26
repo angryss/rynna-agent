@@ -2350,8 +2350,8 @@ it.each([false, true])('places each turn’s tools before its answer while strea
     await user.type(screen.getByLabelText('Message Rynna'), prompt!);
     await user.click(screen.getByRole('button', { name: 'Send' }));
     act(() => {
-      if (thinking) emit({ kind: 'thinking', content: 'Checking the host' });
-      emit({ kind: 'tool_started', call: { id: 'same', name: 'host_info', arguments: {} } });
+      if (thinking) emit({ kind: 'thinking', content: 'Checking the project' });
+      emit({ kind: 'tool_started', call: { id: 'same', name: 'file_info', arguments: { path: '.' } } });
     });
     expect(transcript().slice(-2)).toEqual([prompt, 'tools']);
     act(() => {
@@ -2374,7 +2374,7 @@ it('keeps legacy tool activity with the saved answer on a follow-up turn', async
   writeSessions([savedSession('Legacy tools', {
     profile: '',
     messages: [{ role: 'user', content: 'Old prompt' }, { role: 'assistant', content: 'Old answer' }],
-    tool_calls: [{ id: 'old', name: 'host_info', arguments: {}, started_at: 1, status: 'completed' }],
+    tool_calls: [{ id: 'old', name: 'file_info', arguments: { path: '.' }, started_at: 1, status: 'completed' }],
   })]);
   const user = userEvent.setup();
   render(<App client={{ respond: vi.fn().mockResolvedValue({ message: { role: 'assistant', content: 'New answer' } }) }} />);
@@ -2395,7 +2395,7 @@ it.each([
   const original = [...earlier, { role: 'user' as const, content: 'Old prompt' }, { role: 'assistant' as const, content: 'Old answer' }];
   writeSessions([savedSession('Legacy retry', {
     profile: '', messages: original,
-    tool_calls: [{ id: 'old', name: 'host_info', arguments: {}, started_at: 1, status: 'completed' }],
+    tool_calls: [{ id: 'old', name: 'file_info', arguments: { path: '.' }, started_at: 1, status: 'completed' }],
   })]);
   const respond = vi.fn<AgentClient['respond']>(async (_request, emit) => {
     emit?.({ kind: 'tool_started', call: { id: 'retry', name: 'retry_tool', arguments: {} } });
@@ -2429,7 +2429,7 @@ it.each([
 it.each([false, true])('keeps stopped tools before a follow-up and after reload (partial answer: %s)', async partial => {
   const respond = vi.fn<AgentClient['respond']>()
     .mockImplementationOnce((_request, emit, signal) => {
-      emit?.({ kind: 'tool_started', call: { id: 'stopped', name: 'host_info', arguments: {} } });
+      emit?.({ kind: 'tool_started', call: { id: 'stopped', name: 'file_info', arguments: { path: '.' } } });
       if (partial) emit?.({ kind: 'content', content: 'Partial answer' });
       return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new DOMException('Stopped', 'AbortError'))));
     })
@@ -2456,7 +2456,7 @@ it.each([false, true])('keeps stopped tools before a follow-up and after reload 
 it('keeps failed tool activity before the next prompt when the failed turn is rolled back', async () => {
   const respond = vi.fn<AgentClient['respond']>()
     .mockImplementationOnce(async (_request, emit) => {
-      emit?.({ kind: 'tool_started', call: { id: 'failed', name: 'host_info', arguments: {} } });
+      emit?.({ kind: 'tool_started', call: { id: 'failed', name: 'file_info', arguments: { path: '.' } } });
       throw new Error('Offline');
     })
     .mockResolvedValue({ message: { role: 'assistant', content: 'Recovered' } });
