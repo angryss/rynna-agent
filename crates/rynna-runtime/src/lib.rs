@@ -12,7 +12,7 @@ use std::{
 };
 
 pub fn native_tools(profile: &ResolvedProfile) -> Result<Vec<Arc<dyn Tool>>, String> {
-    let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(HostInfo)];
+    let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     if profile.yolo {
         let mut config = FileSystemConfig::new(&profile.profile.default_project_directory);
         config.denied_patterns.clear();
@@ -246,6 +246,38 @@ fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, ToolError> {
         .ok_or_else(|| ToolError::new("invalid path"))?;
     Ok(resolve_existing_ancestor(parent)?.join(name))
 }
+
+struct ProjectCommandTool {
+    directory: PathBuf,
+}
+#[async_trait]
+impl Tool for ProjectCommandTool {
+    fn definition(&self) -> ToolDefinition {
+        // Definition must not depend on whether the selected project still exists.
+        ToolDefinition::new(
+            "run_command",
+            "YOLO: run any executable (PATH name or absolute path) in the selected project. Pass shell syntax via an explicit shell. Inherits process environment and OS permissions, no permission prompts, stdin closed.",
+            json!({"type":"object","properties":{"program":{"type":"string"},"arguments":{"type":"array","items":{"type":"string"}}},"required":["program"],"additionalProperties":false}),
+        )
+    }
+    fn workflow_policy(&self) -> String {
+        format!("yolo-command:{:?}", self.directory)
+    }
+    fn for_project(&self, directories: &[PathBuf]) -> Option<Arc<dyn Tool>> {
+        directories.first().map(|d| {
+            Arc::new(Self {
+                directory: d.clone(),
+            }) as Arc<dyn Tool>
+        })
+    }
+    async fn execute(&self, arguments: Value) -> Result<Value, ToolError> {
+        CommandTool::new_yolo(self.directory.clone())
+            .map_err(|e| ToolError::new(e.to_string()))?
+            .execute(arguments)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod project_search_tests {
     use super::*;
@@ -353,37 +385,3 @@ mod project_search_tests {
         );
     }
 }
-
-struct ProjectCommandTool {
-    directory: PathBuf,
-}
-#[async_trait]
-impl Tool for ProjectCommandTool {
-    fn definition(&self) -> ToolDefinition {
-        // Definition must not depend on whether the selected project still exists.
-        ToolDefinition::new(
-            "run_command",
-            "YOLO: run any executable (PATH name or absolute path) in the selected project. Pass shell syntax via an explicit shell. Inherits process environment and OS permissions, no permission prompts, stdin closed.",
-            json!({"type":"object","properties":{"program":{"type":"string"},"arguments":{"type":"array","items":{"type":"string"}}},"required":["program"],"additionalProperties":false}),
-        )
-    }
-    fn workflow_policy(&self) -> String {
-        format!("yolo-command:{:?}", self.directory)
-    }
-    fn for_project(&self, directories: &[PathBuf]) -> Option<Arc<dyn Tool>> {
-        directories.first().map(|d| {
-            Arc::new(Self {
-                directory: d.clone(),
-            }) as Arc<dyn Tool>
-        })
-    }
-    async fn execute(&self, arguments: Value) -> Result<Value, ToolError> {
-        CommandTool::new_yolo(self.directory.clone())
-            .map_err(|e| ToolError::new(e.to_string()))?
-            .execute(arguments)
-            .await
-    }
-}
-
-mod host_info;
-use host_info::HostInfo;

@@ -47,7 +47,7 @@ Model providers and native tools enter through explicit core ports. In normal mo
 
 ## Native tool defaults and permission mode
 
-`rynna-runtime` composes native adapters for CLI/server and desktop, depending inward on core and the configuration/tool adapters. It supplies `host_info` plus project-bound read/search defaults when no explicit filesystem capability is selected. Core remains framework-independent. Explicit `Profile.yolo` bypasses toolset filtering and core execution budgets; the runtime supplies filesystem and command adapters without configured permission restrictions. Request-local project rebinding and helper inheritance use core ports. Workflows query the effective executor mode while preserving verification and durable state integrity. See the [full permission contract](../BACKEND-CONTRACT.md).
+`rynna-runtime` composes native adapters for CLI/server and desktop, depending inward on core and the configuration/tool adapters. It supplies project-bound read/search defaults when no explicit filesystem capability is selected. Core remains framework-independent. Explicit `Profile.yolo` bypasses toolset filtering and core execution budgets; the runtime supplies filesystem and command adapters without configured permission restrictions. Request-local project rebinding and helper inheritance use core ports. Workflows query the effective executor mode while preserving verification and durable state integrity. See the [full permission contract](../BACKEND-CONTRACT.md).
 
 ## Profile toolsets
 

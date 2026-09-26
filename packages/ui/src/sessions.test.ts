@@ -22,6 +22,18 @@ describe('sessions', () => {
     expect(sessionName('a'.repeat(60))).toBe(`${'a'.repeat(51)}…`);
   });
 
+  it('validates optional tool message positions while retaining legacy activity', () => {
+    const call = { id: 'tool', name: 'file_info', started_at: 1, status: 'completed' };
+    const session = { id: 's', name: 'Saved', profile: '', project: null, messages: [], created_at: '', updated_at: '' };
+    for (const message_index of [undefined, 0, 3, -1, 0.5, '1', null]) {
+      const activity = { ...call, message_index };
+      const stored = JSON.stringify([{ ...session, tool_calls: [activity] }]);
+      const valid = message_index === undefined || message_index === 0 || message_index === 3;
+      expect(readSessions({ getItem: key => key === 'rynna-sessions-v1' ? stored : null })[0]!.tool_calls)
+        .toEqual(valid ? [activity] : []);
+    }
+  });
+
   it('round trips valid sessions and ignores malformed stored entries', () => {
     let value = '';
     const storage = {

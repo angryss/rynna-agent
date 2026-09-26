@@ -178,7 +178,7 @@ async fn desktop_mode_edits_replace_native_tools_without_restart() {
             .iter()
             .map(|t| t.name.as_str())
             .collect::<Vec<_>>();
-        assert!(names.contains(&"host_info") && names.contains(&"read_file"));
+        assert!(names.contains(&"read_file"));
         assert!(!names.contains(&"run_command") && !names.contains(&"write_file"));
     }
     for yolo in [true, false] {

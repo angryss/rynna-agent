@@ -5,6 +5,8 @@ export interface ToolCallActivity {
   name: string;
   arguments: unknown;
   started_at: number;
+  /** Position before this non-thinking message; UI-only, stable across reloads. */
+  message_index?: number;
   elapsed_ms?: number;
   status: 'running' | 'completed' | 'error' | 'cancelled' | 'interrupted';
 }
@@ -151,6 +153,7 @@ function isToolCallActivity(value: unknown): value is ToolCallActivity {
   const call = value as Partial<ToolCallActivity>;
   return typeof call.id === 'string' && typeof call.name === 'string' &&
     typeof call.started_at === 'number' && Number.isFinite(call.started_at) &&
+    (call.message_index === undefined || Number.isSafeInteger(call.message_index) && call.message_index >= 0) &&
     (call.elapsed_ms === undefined || typeof call.elapsed_ms === 'number' && Number.isFinite(call.elapsed_ms) && call.elapsed_ms >= 0) &&
     ['running', 'completed', 'error', 'cancelled', 'interrupted'].includes(call.status ?? '');
 }

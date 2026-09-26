@@ -9,6 +9,25 @@ fn tool(tools: &[Arc<dyn Tool>], name: &str) -> Arc<dyn Tool> {
         .unwrap_or_else(|| panic!("missing {name}"))
         .clone()
 }
+#[test]
+fn composed_profiles_do_not_advertise_host_info() {
+    for yolo in [false, true] {
+        let mut profile = ProfileCatalog::built_in().resolve("default").unwrap();
+        profile.yolo = yolo;
+        let names: Vec<_> = rynna_runtime::native_tools(&profile)
+            .unwrap()
+            .iter()
+            .map(|tool| tool.definition().name)
+            .collect();
+        assert!(
+            !names.iter().any(|name| name == "host_info"),
+            "yolo={yolo}: {names:?}"
+        );
+        assert_eq!(names.iter().any(|name| name == "run_command"), yolo);
+        assert!(names.iter().any(|name| name == "read_file"));
+    }
+}
+
 #[tokio::test]
 async fn default_code_search_searches_all_selected_repositories() {
     let root = tempfile::tempdir().unwrap();
