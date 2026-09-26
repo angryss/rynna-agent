@@ -246,6 +246,38 @@ fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, ToolError> {
         .ok_or_else(|| ToolError::new("invalid path"))?;
     Ok(resolve_existing_ancestor(parent)?.join(name))
 }
+
+struct ProjectCommandTool {
+    directory: PathBuf,
+}
+#[async_trait]
+impl Tool for ProjectCommandTool {
+    fn definition(&self) -> ToolDefinition {
+        // Definition must not depend on whether the selected project still exists.
+        ToolDefinition::new(
+            "run_command",
+            "YOLO: run any executable (PATH name or absolute path) in the selected project. Pass shell syntax via an explicit shell. Inherits process environment and OS permissions, no permission prompts, stdin closed.",
+            json!({"type":"object","properties":{"program":{"type":"string"},"arguments":{"type":"array","items":{"type":"string"}}},"required":["program"],"additionalProperties":false}),
+        )
+    }
+    fn workflow_policy(&self) -> String {
+        format!("yolo-command:{:?}", self.directory)
+    }
+    fn for_project(&self, directories: &[PathBuf]) -> Option<Arc<dyn Tool>> {
+        directories.first().map(|d| {
+            Arc::new(Self {
+                directory: d.clone(),
+            }) as Arc<dyn Tool>
+        })
+    }
+    async fn execute(&self, arguments: Value) -> Result<Value, ToolError> {
+        CommandTool::new_yolo(self.directory.clone())
+            .map_err(|e| ToolError::new(e.to_string()))?
+            .execute(arguments)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod project_search_tests {
     use super::*;
@@ -351,36 +383,5 @@ mod project_search_tests {
                 .await
                 .is_err()
         );
-    }
-}
-
-struct ProjectCommandTool {
-    directory: PathBuf,
-}
-#[async_trait]
-impl Tool for ProjectCommandTool {
-    fn definition(&self) -> ToolDefinition {
-        // Definition must not depend on whether the selected project still exists.
-        ToolDefinition::new(
-            "run_command",
-            "YOLO: run any executable (PATH name or absolute path) in the selected project. Pass shell syntax via an explicit shell. Inherits process environment and OS permissions, no permission prompts, stdin closed.",
-            json!({"type":"object","properties":{"program":{"type":"string"},"arguments":{"type":"array","items":{"type":"string"}}},"required":["program"],"additionalProperties":false}),
-        )
-    }
-    fn workflow_policy(&self) -> String {
-        format!("yolo-command:{:?}", self.directory)
-    }
-    fn for_project(&self, directories: &[PathBuf]) -> Option<Arc<dyn Tool>> {
-        directories.first().map(|d| {
-            Arc::new(Self {
-                directory: d.clone(),
-            }) as Arc<dyn Tool>
-        })
-    }
-    async fn execute(&self, arguments: Value) -> Result<Value, ToolError> {
-        CommandTool::new_yolo(self.directory.clone())
-            .map_err(|e| ToolError::new(e.to_string()))?
-            .execute(arguments)
-            .await
     }
 }
