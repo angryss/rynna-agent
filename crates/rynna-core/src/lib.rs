@@ -991,6 +991,20 @@ struct ToolBudget {
     result_bytes: AtomicUsize,
 }
 
+fn reserve_tool_budget(counter: &AtomicUsize, amount: usize, limit: usize) -> Result<(), ()> {
+    let mut used = counter.load(Ordering::Relaxed);
+    loop {
+        let total = used
+            .checked_add(amount)
+            .filter(|total| *total <= limit)
+            .ok_or(())?;
+        match counter.compare_exchange_weak(used, total, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return Ok(()),
+            Err(current) => used = current,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Agent {
     disabled_toolsets: Vec<toolsets::ToolsetId>,
@@ -1498,15 +1512,16 @@ impl Agent {
             if !self.yolo && turn + 1 == MAX_MODEL_TURNS {
                 return Err(AgentError::ToolLoopLimit(MAX_MODEL_TURNS));
             }
-            tool_budget
-                .calls
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                    used.checked_add(completion.message.tool_calls.len())
-                        .filter(|total| {
-                            self.yolo || *total <= tool_budget.ceiling.unwrap_or(MAX_TOOL_CALLS)
-                        })
-                })
-                .map_err(|_| AgentError::ToolCallLimit(MAX_TOOL_CALLS))?;
+            reserve_tool_budget(
+                &tool_budget.calls,
+                completion.message.tool_calls.len(),
+                if self.yolo {
+                    usize::MAX
+                } else {
+                    tool_budget.ceiling.unwrap_or(MAX_TOOL_CALLS)
+                },
+            )
+            .map_err(|_| AgentError::ToolCallLimit(MAX_TOOL_CALLS))?;
             tool_calls_used += completion.message.tool_calls.len();
 
             let tool_calls = completion.message.tool_calls.clone();
@@ -1531,13 +1546,16 @@ impl Agent {
                     None => serde_json::json!({"error": format!("unknown tool `{}`", call.name)}),
                 };
                 let result = result.to_string();
-                tool_budget
-                    .result_bytes
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                        used.checked_add(result.len())
-                            .filter(|total| self.yolo || *total <= MAX_TOOL_RESULT_BYTES)
-                    })
-                    .map_err(|_| AgentError::ToolResultByteLimit(MAX_TOOL_RESULT_BYTES))?;
+                reserve_tool_budget(
+                    &tool_budget.result_bytes,
+                    result.len(),
+                    if self.yolo {
+                        usize::MAX
+                    } else {
+                        MAX_TOOL_RESULT_BYTES
+                    },
+                )
+                .map_err(|_| AgentError::ToolResultByteLimit(MAX_TOOL_RESULT_BYTES))?;
                 messages.push(Message::tool(call.id, result));
             }
         }
@@ -2013,5 +2031,43 @@ impl AgentProfiles {
             .get(profile)
             .ok_or_else(|| ProfileAgentError::UnknownProfile(profile.to_owned()))?;
         Ok(agent.respond_stream(history, input, on_delta).await?)
+    }
+}
+
+#[cfg(test)]
+mod tool_budget_tests {
+    use super::*;
+
+    #[test]
+    fn reservations_preserve_limits_and_reject_overflow() {
+        let counter = AtomicUsize::new(0);
+        assert_eq!(reserve_tool_budget(&counter, 64, 64), Ok(()));
+        assert_eq!(reserve_tool_budget(&counter, 1, 64), Err(()));
+        assert_eq!(counter.load(Ordering::Relaxed), 64);
+        assert_eq!(
+            reserve_tool_budget(&counter, usize::MAX - 64, usize::MAX),
+            Ok(())
+        );
+        assert_eq!(reserve_tool_budget(&counter, 1, usize::MAX), Err(()));
+        assert_eq!(counter.load(Ordering::Relaxed), usize::MAX);
+    }
+
+    #[test]
+    fn concurrent_reservations_do_not_exceed_the_shared_limit() {
+        let counter = AtomicUsize::new(0);
+        let successes = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..256 {
+                        if reserve_tool_budget(&counter, 1, 1000).is_ok() {
+                            successes.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(counter.load(Ordering::Relaxed), 1000);
+        assert_eq!(successes.load(Ordering::Relaxed), 1000);
     }
 }
