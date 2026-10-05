@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@rynna/ui": "*",
-    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/api": "^2.12.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
