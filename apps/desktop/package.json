@@ -15,7 +15,7 @@
     "@rynna/ui": "*",
     "@tauri-apps/api": "^2.12.2",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.1"
