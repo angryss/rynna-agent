@@ -41,7 +41,7 @@ See [the architecture guide](docs/architecture.md) for dependency boundaries and
 
 ## Prerequisites
 
-- Rust 1.88 or newer
+- Rust 1.89 or newer
 - Node.js 22 or newer and npm
 - [Ollama](https://ollama.com/) for the default local provider, or another OpenAI-compatible endpoint
 - An [OpenRouter API key](https://openrouter.ai/keys) when using OpenRouter
